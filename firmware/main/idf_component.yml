@@ -1,0 +1,10 @@
+dependencies:
+  esp-idf-lib/lm75:
+    version: "~1.0.7"
+  espressif/ethernet_init:
+    version: "~1.3.0"
+  espressif/led_indicator:
+    version: "~2.1.2"
+  espressif/mqtt:
+    version: "~1.0.0"
+  pcap: "^1.0.0"
