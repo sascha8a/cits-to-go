@@ -1,0 +1,4 @@
+# CITS-to-go is published through GitHub Releases only.
+# This Appfile intentionally does not configure Google Play / supply.
+
+package_name('org.opentrafficmap.citslogger')

@@ -2,6 +2,12 @@ plugins {
     id 'com.android.application'
 }
 
+def releaseStoreFile = System.getenv('CITS_RELEASE_STORE_FILE')
+def releaseStorePassword = System.getenv('CITS_RELEASE_STORE_PASSWORD')
+def releaseKeyAlias = System.getenv('CITS_RELEASE_KEY_ALIAS')
+def releaseKeyPassword = System.getenv('CITS_RELEASE_KEY_PASSWORD')
+def hasReleaseSigning = releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+
 android {
     namespace 'org.opentrafficmap.citslogger'
     compileSdk 35
@@ -12,6 +18,28 @@ android {
         targetSdk 35
         versionCode 1
         versionName '1.0'
+    }
+
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            shrinkResources false
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+        }
     }
 
     compileOptions {

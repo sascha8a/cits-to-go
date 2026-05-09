@@ -1,0 +1,153 @@
+# frozen_string_literal: true
+
+require 'fileutils'
+require 'shellwords'
+
+# Always resolve paths from android-app/, regardless of where fastlane was
+# started from. This avoids missing app/build/outputs/apk/... when Fastlane's
+# current directory is android-app/fastlane.
+APP_ROOT = File.expand_path('..', __dir__)
+DEFAULT_OUTPUT_DIR = File.join(APP_ROOT, 'dist')
+
+Dir.chdir(APP_ROOT)
+
+def gradle_value(name)
+  gradle_file = File.read(File.join(APP_ROOT, 'app', 'build.gradle'))
+  match = gradle_file.match(/#{name}\s+['"]?([^'"\n]+)['"]?/)
+  match ? match[1].strip : 'unknown'
+end
+
+def lane_context_value(shared_value_name)
+  return nil unless Object.const_defined?(:SharedValues)
+  return nil unless SharedValues.const_defined?(shared_value_name, false)
+
+  Actions.lane_context[SharedValues.const_get(shared_value_name)]
+rescue StandardError
+  nil
+end
+
+def flatten_paths(value)
+  case value
+  when nil
+    []
+  when String
+    [value]
+  when Array
+    value.flat_map { |v| flatten_paths(v) }
+  else
+    value.respond_to?(:to_s) ? [value.to_s] : []
+  end
+end
+
+def release_apk_candidates
+  candidates = []
+
+  # Prefer paths reported by Fastlane's Gradle action when available.
+  candidates.concat(flatten_paths(lane_context_value(:GRADLE_APK_OUTPUT_PATH)))
+  candidates.concat(flatten_paths(lane_context_value(:GRADLE_ALL_APK_OUTPUT_PATHS)))
+
+  # Robust fallback for Android Gradle Plugin output locations.
+  candidates.concat(Dir[File.join(APP_ROOT, 'app', 'build', 'outputs', 'apk', '**', '*.apk')])
+
+  candidates
+    .map { |p| File.expand_path(p, APP_ROOT) }
+    .uniq
+    .select { |p| File.file?(p) }
+    .reject { |p| p.end_with?('.idsig') }
+end
+
+def release_apk_path
+  candidates = release_apk_candidates
+  release_candidates = candidates.select { |p| File.basename(p).downcase.include?('release') }
+  signed_release = release_candidates.reject { |p| File.basename(p).downcase.include?('unsigned') }
+
+  signed_release.first || release_candidates.first || candidates.first
+end
+
+def copy_release_artifacts(apk_path:, output_dir: DEFAULT_OUTPUT_DIR)
+  version_name = gradle_value('versionName')
+  version_code = gradle_value('versionCode')
+  FileUtils.mkdir_p(output_dir)
+
+  output_apk = File.join(output_dir, "CITS-to-go-v#{version_name}-#{version_code}.apk")
+  FileUtils.cp(apk_path, output_apk)
+
+  sh("shasum -a 256 #{Shellwords.escape(output_apk)} > #{Shellwords.escape(output_apk + '.sha256')}")
+  UI.success("Release APK: #{output_apk}")
+  UI.success("SHA-256:     #{output_apk}.sha256")
+end
+
+def ensure_release_signing!
+  missing = %w[
+    CITS_RELEASE_STORE_FILE
+    CITS_RELEASE_STORE_PASSWORD
+    CITS_RELEASE_KEY_ALIAS
+    CITS_RELEASE_KEY_PASSWORD
+  ].select { |key| ENV[key].to_s.empty? }
+
+  unless missing.empty?
+    UI.user_error!("Missing release signing environment variables: #{missing.join(', ')}")
+  end
+
+  unless File.exist?(ENV.fetch('CITS_RELEASE_STORE_FILE'))
+    UI.user_error!("CITS_RELEASE_STORE_FILE does not exist: #{ENV.fetch('CITS_RELEASE_STORE_FILE')}")
+  end
+end
+
+def common_release_notes
+  notes = []
+  notes << "CITS-to-go Android release build"
+  notes << "Package: org.opentrafficmap.citslogger"
+  notes << "Version: #{gradle_value('versionName')} (#{gradle_value('versionCode')})"
+  notes << ""
+  notes << "This APK is intended for GitHub Releases only."
+  notes << "It is not configured for Google Play upload."
+  notes.join("\n")
+end
+
+def print_apk_diagnostics
+  UI.message("Fastlane APP_ROOT: #{APP_ROOT}")
+  UI.message("APK candidates:")
+  release_apk_candidates.each { |p| UI.message("  - #{p}") }
+end
+
+platform :android do
+  desc 'Build a signed release APK for attaching to a GitHub Release'
+  lane :release do
+    ensure_release_signing!
+    gradle(task: 'clean', project_dir: APP_ROOT)
+    gradle(task: 'assembleRelease', project_dir: APP_ROOT)
+
+    print_apk_diagnostics
+    apk = release_apk_path
+    UI.user_error!('Release APK was not generated') unless apk && File.exist?(apk)
+    UI.user_error!("Release APK appears to be unsigned: #{apk}") if File.basename(apk).downcase.include?('unsigned')
+
+    copy_release_artifacts(apk_path: apk)
+  end
+
+  desc 'Build an unsigned release APK for local testing only'
+  lane :unsigned_release do
+    gradle(task: 'clean', project_dir: APP_ROOT)
+    gradle(task: 'assembleRelease', project_dir: APP_ROOT)
+
+    print_apk_diagnostics
+    apk = release_apk_path
+    UI.user_error!('Release APK was not generated') unless apk && File.exist?(apk)
+    copy_release_artifacts(apk_path: apk, output_dir: File.join(APP_ROOT, 'dist-unsigned'))
+    UI.important('This APK may be unsigned and is intended only for local testing.')
+  end
+
+  desc 'Build the debug APK'
+  lane :debug do
+    gradle(task: 'assembleDebug', project_dir: APP_ROOT)
+  end
+
+  desc 'Create release notes text for a GitHub Release'
+  lane :github_release_notes do
+    FileUtils.mkdir_p(DEFAULT_OUTPUT_DIR)
+    path = File.join(DEFAULT_OUTPUT_DIR, 'github-release-notes.txt')
+    File.write(path, common_release_notes)
+    UI.success("Release notes: #{path}")
+  end
+end

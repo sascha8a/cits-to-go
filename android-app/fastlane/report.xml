@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="fastlane.lanes">
+    
+    
+    
+      
+      <testcase classname="fastlane.lanes" name="0: clean" time="0.523526352">
+        
+      </testcase>
+    
+      
+      <testcase classname="fastlane.lanes" name="1: assembleRelease" time="2.76441">
+        
+      </testcase>
+    
+      
+      <testcase classname="fastlane.lanes" name="2: shasum -a 256 /home/sascha/workspace/cits-esp32c5-android-bridge-bundle/android-app/dist/CITS-to-go-v1.0-1.apk &gt; /home/sascha/workspace/cits-esp32c5-android-bridge-bundle/android-app/dist/CITS-to-go-v1.0-1.apk.sha256" time="0.024759448">
+        
+      </testcase>
+    
+  </testsuite>
+</testsuites>

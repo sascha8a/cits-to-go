@@ -1,0 +1,17 @@
+# Android / Gradle
+.gradle/
+build/
+app/build/
+
+# Fastlane / release output
+dist/
+dist-unsigned/
+
+# Local signing secrets
+.env.release
+*.jks
+*.keystore
+
+# Local IDE files
+.idea/
+*.iml

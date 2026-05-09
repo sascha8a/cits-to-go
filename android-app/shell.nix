@@ -27,6 +27,7 @@ pkgs.mkShell {
   packages = with pkgs; [
     android-studio
     androidSdk
+    fastlane
     gradle
     jdk17
   ];

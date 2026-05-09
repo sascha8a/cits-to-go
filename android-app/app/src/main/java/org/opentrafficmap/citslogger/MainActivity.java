@@ -243,6 +243,9 @@ public class MainActivity extends Activity {
         String ts = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(new Date());
         Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION |
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         intent.setType("application/vnd.tcpdump.pcap");
         intent.putExtra(Intent.EXTRA_TITLE, "cits-" + ts + ".pcap");
         startActivityForResult(intent, REQUEST_CREATE_PCAP);
@@ -255,10 +258,16 @@ public class MainActivity extends Activity {
             Uri uri = data.getData();
             if (uri == null) return;
             try {
-                final int flags = data.getFlags() &
-                        (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-                getContentResolver().takePersistableUriPermission(uri, flags);
-            } catch (Exception ignored) {}
+                final int returnedFlags = data.getFlags();
+                if ((returnedFlags & Intent.FLAG_GRANT_READ_URI_PERMISSION) != 0) {
+                    getContentResolver().takePersistableUriPermission(uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                }
+                if ((returnedFlags & Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0) {
+                    getContentResolver().takePersistableUriPermission(uri,
+                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                }
+            } catch (SecurityException ignored) {}
             startForegroundBridge(startServiceAction(CitsBridgeService.ACTION_START_PCAP)
                     .putExtra(CitsBridgeService.EXTRA_PCAP_URI, uri.toString()));
         }
