@@ -9,11 +9,29 @@ The ESP32-C5 firmware listens for C-ITS packets, forwards them over USB serial, 
 
 ---
 
+## Acknowledgements
+
+CITS-to-go is heavily inspired by and derived from the work of the **OpenTrafficMap** project.
+
+OpenTrafficMap has done the important groundwork of exploring low-cost C-ITS / ITS-G5 reception, ESP32-C5 receiver firmware, packet forwarding, and public traffic-map tooling.
+
+Huge thanks and praise to the OpenTrafficMap contributors for making their work available and for pushing open, accessible traffic infrastructure research forward.
+
+Links:
+
+- OpenTrafficMap website: <https://opentrafficmap.org>
+- OpenTrafficMap Codeberg organization: <https://codeberg.org/opentrafficmap>
+- Original repository family: <https://codeberg.org/opentrafficmap>
+
+This project is not an official OpenTrafficMap release.
+
+---
+
 ## Project status
 
 This project is experimental.
 
-Current goals:
+Currently implemented goals:
 
 - Capture C-ITS / ITS-G5 packets with a Seeed Studio XIAO ESP32-C5.
 - Blink the onboard USER LED when messages are received.
@@ -31,7 +49,7 @@ To build and use CITS-to-go, you need:
 - **Android phone** with USB host / OTG support
 - **Seeed Studio XIAO ESP32-C5**
 - **USB-C to USB-C cable**
-- Suitable antenna / RF setup for the intended C-ITS / ITS-G5 reception band
+- Suitable antenna / RF setup for the intended C-ITS / ITS-G5 reception band (Already shipped with the XIAO ESP32-C5, but performance may be improved with a better antenna or external RF front-end)
 - Optional: MQTT broker reachable from the Android phone
 
 Notes:
@@ -96,54 +114,48 @@ its/<nodeid>/stats
 
 ---
 
-## Acknowledgements
+## How to build
 
-CITS-to-go is heavily inspired by and derived from the work of the **OpenTrafficMap** project.
-
-OpenTrafficMap has done the important groundwork of exploring low-cost C-ITS / ITS-G5 reception, ESP32-C5 receiver firmware, packet forwarding, and public traffic-map tooling.
-
-Huge thanks and praise to the OpenTrafficMap contributors for making their work available and for pushing open, accessible traffic infrastructure research forward.
-
-Links:
-
-- OpenTrafficMap website: <https://opentrafficmap.org>
-- OpenTrafficMap Codeberg organization: <https://codeberg.org/opentrafficmap>
-- Original repository family: <https://codeberg.org/opentrafficmap>
-
-This project is not an official OpenTrafficMap release.
+A detailed step-by-step how-to build this project can be found in the relevant folders.
 
 ---
 
-## Safety, privacy, and legal notes
+## Troubleshooting
 
-C-ITS / ITS-G5 messages may contain sensitive operational or location-related data.
+### Android asks for USB permission repeatedly
 
-Before capturing, storing, forwarding, or publishing packets:
+Try:
 
-- Check the rules in your jurisdiction.
-- Avoid publishing raw captures that could identify vehicles, infrastructure, routes, or individuals.
-- Treat PCAP files as potentially sensitive data.
-- Do not use this project for unlawful monitoring or interference.
-- This project is receive/logging oriented and must not be used to transmit unauthorized messages.
+- Reconnecting the XIAO.
+- Using a different USB-C data cable.
+- Checking that the phone supports USB host / OTG mode.
+- Reopening the app after granting permission.
 
----
+### No packets appear
 
-## How to build and use
+Check:
 
-TODO.
+- The firmware is flashed and running.
+- The phone has USB permission.
+- The foreground service is active.
+- The XIAO USER LED blinks when packets are received.
+- There is C-ITS / ITS-G5 traffic nearby.
 
-A detailed step-by-step how-to will be added next.
+### MQTT says `broken pipe`
 
-Planned how-to sections:
+The current app should treat this as a reconnectable network failure:
 
-- Flashing the ESP32-C5 firmware
-- Installing the Android app
-- Connecting the XIAO ESP32-C5 to the phone
-- Starting a capture
-- Saving PCAP files
-- Configuring MQTT
-- Replaying PCAP files to MQTT
-- Troubleshooting USB, Android lock-screen behavior, and MQTT reconnects
+- The MQTT socket is closed.
+- Packets remain in the retry spool.
+- The app reconnects with backoff.
+- Publishing resumes from the spool.
+
+If it still happens repeatedly:
+
+- Disable battery optimization for the app.
+- Keep the foreground notification active.
+- Check mobile/Wi-Fi connectivity.
+- Check broker keepalive/firewall settings.
 
 ---
 
@@ -160,6 +172,18 @@ Because this repository is mostly AI-generated, contributors should be especiall
 - Avoiding accidental changes to packet format compatibility
 
 ---
+
+## Safety, privacy, and legal notes
+
+C-ITS / ITS-G5 messages may contain sensitive operational or location-related data.
+
+Before capturing, storing, forwarding, or publishing packets:
+
+- Check the rules in your jurisdiction.
+- Avoid publishing raw captures that could identify vehicles, infrastructure, routes, or individuals.
+- Treat PCAP files as potentially sensitive data.
+- Do not use this project for unlawful monitoring or interference.
+- This project is receive/logging oriented and must not be used to transmit unauthorized messages.
 
 ## License
 
