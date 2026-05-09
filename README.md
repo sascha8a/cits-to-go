@@ -184,9 +184,3 @@ Before capturing, storing, forwarding, or publishing packets:
 - Treat PCAP files as potentially sensitive data.
 - Do not use this project for unlawful monitoring or interference.
 - This project is receive/logging oriented and must not be used to transmit unauthorized messages.
-
-## License
-
-TODO.
-
-Add the correct license after reviewing the license terms of all included source material and dependencies.
