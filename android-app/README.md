@@ -10,7 +10,7 @@ The app reads packets from the Seeed Studio XIAO ESP32-C5 over USB serial, saves
 
 The latest debug APK can be downloaded from the releases page:
 
-<https://github.com/sascha8a/CITS-to-go/releases>
+<https://codeberg.org/sascha8a/cits-to-go/releases>
 
 ---
 
