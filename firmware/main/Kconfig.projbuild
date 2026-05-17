@@ -1,51 +1,43 @@
-menu "Example Configuration"
+menu "CITS-to-go firmware"
 
     orsource "$IDF_PATH/examples/common_components/env_caps/$IDF_TARGET/Kconfig.env_caps"
 
     config HW_VARIANT
         string "Hardware variant"
-        default "custom"
+        default "seeed-xiao-esp32c5"
         help
-            Any hardware with the same HW_VARIANT is assumed to be binary compatible and can receive OTA updates.
-            If you set this to "custom", this means that the hardware is not binary compatible with any other known
-            hardware, and you will not receive (potentially incompatible) OTA updates.
+            Hardware identifier emitted in CITSMETA. CITS-to-go currently
+            targets the Seeed Studio XIAO ESP32-C5.
 
-    config ENABLE_SD
-        bool "Enable SD card"
+    config CITS_DEFAULT_FREQUENCY_MHZ
+        int "Default ITS-G5 frequency in MHz"
+        range 5800 5900
+        default 5900
+        help
+            Frequency used by sniffer_autostart() when no NVS override exists.
+            G5CC is 5900 MHz.
+
+    config CITS_BROADCAST_ONLY
+        bool "Capture broadcast 802.11 frames only"
         default y
         help
-            General toggle for enabling/disabling SD card related functionality.
-
-    config SNIFFER_STORE_HISTORY
-        bool "Store command history into flash"
-        default y
-        help
-            Linenoise line editing library provides functions to save and load command history.
-            If this option is enabled, initializes a FAT filesystem and uses it to store command history.
-
-    config CITS_USB_SERIAL_ONLY
-        bool "USB serial logger only; do not start Ethernet, MQTT or OTA"
-        default y
-        help
-            Build/runtime mode for a standalone ESP32-C5 C-ITS receiver that logs
-            captured ITS-G5 frames over the console, normally USB Serial/JTAG.
-            This avoids requiring the Ethernet module and MQTT backend.
+            Ignore non-broadcast frames before serial logging. This matches the
+            intended C-ITS receive path and reduces USB/MQTT load.
 
     config CITS_ENABLE_USB_SERIAL_LOG
-        bool "Log captured C-ITS packets over console / USB serial"
+        bool "Stream captured C-ITS packets over USB serial"
         default y
         help
-            Emits one line per captured packet beginning with CITS,. The line
-            includes timestamp, configured ITS-G5 frequency, RSSI, captured
-            length, truncation flag and raw 802.11 MPDU bytes encoded as hex.
+            Emits accepted C-ITS packets over the ESP-IDF console, normally
+            USB Serial/JTAG on the XIAO ESP32-C5.
 
     config CITS_USB_SERIAL_LOG_GEONET_ONLY
         bool "Only serial-log ETSI GeoNetworking EtherType 0x8947 frames"
         depends on CITS_ENABLE_USB_SERIAL_LOG
         default y
         help
-            Filters the serial log to 802.11 data frames carrying LLC/SNAP
-            EtherType 0x8947. Disable this when debugging PHY/channel capture.
+            Filters to 802.11 data frames carrying LLC/SNAP EtherType 0x8947.
+            Disable only when debugging PHY/channel capture.
 
     config CITS_USB_SERIAL_LOG_MAX_LEN
         int "Maximum bytes logged per serial packet"
@@ -53,184 +45,64 @@ menu "Example Configuration"
         range 64 4096
         default 4096
         help
-            Longer frames are truncated before serial output to keep USB
-            bandwidth and host memory bounded. Keep this high when forwarding
-            to MQTT so the Android bridge can publish the same raw packet bytes
-            as the original firmware.
+            Longer frames are truncated before serial output.
 
     config CITS_USB_SERIAL_BINARY_FRAMING
         bool "Use optimized binary USB serial packet framing"
         depends on CITS_ENABLE_USB_SERIAL_LOG
         default y
         help
-            Emits accepted C-ITS packets as compact binary frames instead of
-            ASCII hex lines. This roughly halves USB bandwidth and reduces CPU
-            on the Android bridge. The Android app still accepts the older
-            ASCII CITS,... lines for compatibility.
+            Emits compact binary CITS frames instead of ASCII hex lines. The
+            Android app also accepts legacy ASCII CITS lines.
 
     config CITS_USB_SERIAL_BINARY_CRC32
         bool "Add CRC32 to binary USB serial frames"
         depends on CITS_USB_SERIAL_BINARY_FRAMING
         default y
         help
-            Adds a CRC32/IEEE checksum over the captured payload so the Android
-            bridge can resynchronize safely if logs or other bytes appear on
-            the same USB console stream.
+            Adds CRC32/IEEE over the captured payload to make Android-side
+            resynchronization safe.
 
     config CITS_RX_LED_PULSE_MS
         int "C-ITS receive LED blink duration in milliseconds"
         range 10 1000
         default 60
         help
-            Duration of the C-ITS activity LED pulse after each packet that is
-            accepted by the USB serial logger. The LED will stay continuously
-            lit if packets arrive faster than this timeout.
-
-    config CITS_USE_XIAO_USER_LED
-        bool "Use Seeed Studio XIAO ESP32-C5 onboard USER LED"
-        default y if CITS_USB_SERIAL_ONLY
-        default n
-        help
-            Use the onboard L/USER LED on the Seeed Studio XIAO ESP32-C5
-            instead of the original firmware's external WS2812 LED strip.
-            This is the correct mode for the XIAO ESP32-C5 USB-serial logger.
+            Pulse duration for the XIAO USER LED after each accepted packet.
 
     config CITS_USER_LED_GPIO
         int "XIAO ESP32-C5 USER LED GPIO"
-        depends on CITS_USE_XIAO_USER_LED
         range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
         default 27
         help
-            The Seeed Studio XIAO ESP32-C5 onboard L/USER LED is connected
-            to GPIO27.
+            The Seeed Studio XIAO ESP32-C5 onboard L/USER LED is GPIO27.
 
     config CITS_USER_LED_ACTIVE_LOW
         bool "XIAO ESP32-C5 USER LED is active-low"
-        depends on CITS_USE_XIAO_USER_LED
         default y
         help
-            The XIAO ESP32-C5 onboard L/USER LED turns on when GPIO27 is
-            driven low and turns off when GPIO27 is driven high.
-
-    choice SNIFFER_PCAP_DESTINATION
-        prompt "Select destination to store pcap file"
-        default SNIFFER_PCAP_DESTINATION_SD
-        help
-            Select where to store the pcap file.
-            Currently support storing files to SD card or to host via JTAG interface with 'Trace memory' enabled.
-        config SNIFFER_PCAP_DESTINATION_SD
-            bool "SD Card"
-            depends on ENABLE_SD
-            help
-                Store pcap file to SD card.
-        config SNIFFER_PCAP_DESTINATION_JTAG
-            bool "JTAG (App Trace)"
-            depends on APPTRACE_DEST_JTAG
-            help
-                Store pcap file to host via JTAG interface.
-        config SNIFFER_PCAP_DESTINATION_MEMORY
-            bool "Memory"
-            help
-                Store pcap file to memory.
-    endchoice
-
-    if ENABLE_SD
-        choice SNIFFER_SD_MODE
-            prompt "Select SD card work mode"
-            default SNIFFER_SD_SDMMC_MODE
-            help
-                Select which peripheral SD card should use.
-            config SNIFFER_SD_SDMMC_MODE
-                bool "SDMMC"
-                depends on SOC_SDMMC_HOST_SUPPORTED
-                help
-                    Use SDMMC mode (Not support on esp32c3).
-            config SNIFFER_SD_SPI_MODE
-                bool "SPI"
-                help
-                    Use SPI mode.
-        endchoice
-        menu "SD card pin configuration (SPI)"
-            depends on SNIFFER_SD_SPI_MODE
-
-            config SNIFFER_PIN_MOSI
-                int "MOSI GPIO number"
-                range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
-                default 7
-                help
-                    GPIO pin number for SPI MOSI (Master Out Slave In).
-
-            config SNIFFER_PIN_MISO
-                int "MISO GPIO number"
-                range ENV_GPIO_RANGE_MIN ENV_GPIO_IN_RANGE_MAX
-                default 2
-                help
-                    GPIO pin number for SPI MISO (Master In Slave Out).
-
-            config SNIFFER_PIN_CLK
-                int "CLK GPIO number"
-                range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
-                default 6
-                help
-                    GPIO pin number for SPI Clock.
-
-            config SNIFFER_PIN_CS
-                int "CS GPIO number"
-                range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
-                default 27
-                help
-                    GPIO pin number for SPI Chip Select.
-        endmenu
-        config SNIFFER_MOUNT_POINT
-            string "SD card mount point in the filesystem"
-            default "/sdcard"
-            help
-                Specify the mount point in the VFS (Virtual File System) for SD card.
-    endif
-    if SNIFFER_PCAP_DESTINATION_SD
-        config SNIFFER_PCAP_FILE_NAME_MAX_LEN
-            int "Max name length of pcap file"
-            default 32
-            help
-                Specify maximum name length of pcap file.
-    endif
-
-    if SNIFFER_PCAP_DESTINATION_MEMORY
-        config SNIFFER_PCAP_MEMORY_SIZE
-            int "Memory size of the '.pcap' file in memory"
-            default 4096
-            help
-                Max memory size to storage packet in memory.
-    endif
+            The XIAO USER LED turns on when GPIO27 is driven low.
 
     config SNIFFER_WORK_QUEUE_LEN
         int "Length of sniffer work queue"
+        range 8 1024
         default 128
         help
-            The sniffer callback function should not do heavy work, so we put all heavy IO operation to another task.
-            The task gets some basic info of sniffer packet via queue.
-            Here you should specify the length of queue.
+            Packets are copied from the Wi-Fi callback into this queue before
+            serial logging. Increase this if USB logging bursts cause drops.
 
     config SNIFFER_TASK_STACK_SIZE
         int "Stack size of sniffer task"
+        range 2048 16384
         default 4096
         help
-            Stack size of sniffer task.
+            Stack size for the packet processing task.
 
     config SNIFFER_TASK_PRIORITY
         int "Priority of sniffer task"
+        range 1 20
         default 2
         help
-            Priority of sniffer task.
+            FreeRTOS priority for the packet processing task.
 
-    config LEDSTRIP_PIN
-        int "LED strip pin"
-        range ENV_GPIO_RANGE_MIN ENV_GPIO_OUT_RANGE_MAX
-        default 26
-        help
-            GPIO number where the LED strip is connected
-
-    config ENABLE_TEMPERATURE
-        bool "Enable I2C temperature sensor"
-        default y
 endmenu

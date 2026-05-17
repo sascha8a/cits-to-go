@@ -7,18 +7,27 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "esp_app_format.h"
-#include "esp_ota_ops.h"
-
 #include "cmd_sniffer.h"
 #include "config.h"
 #include "serial_logger.h"
 
+#ifndef PROJECT_VER
+#define PROJECT_VER "unknown"
+#endif
+
 #if CONFIG_CITS_ENABLE_USB_SERIAL_LOG
+
+#if CONFIG_CITS_USB_SERIAL_BINARY_FRAMING && (defined(CONFIG_LIBC_STDOUT_LINE_ENDING_CRLF) || defined(CONFIG_NEWLIB_STDOUT_LINE_ENDING_CRLF) || defined(CONFIG_LIBC_STDOUT_LINE_ENDING_CR) || defined(CONFIG_NEWLIB_STDOUT_LINE_ENDING_CR))
+#error "Binary CITS serial framing requires LF-only stdout line endings; CR/CRLF corrupt raw packet bytes"
+#endif
+
 
 #define CITS_BINARY_VERSION       1U
 #define CITS_BINARY_HEADER_LEN    28U
 #define CITS_BINARY_FLAG_TRUNC    0x01U
+#define CITS_BINARY_FLUSH_PACKETS 16U
+
+static uint32_t packets_since_flush;
 
 static inline uint16_t read_le16(const uint8_t *p)
 {
@@ -50,7 +59,7 @@ static uint32_t crc32_ieee(const uint8_t *data, uint32_t len)
     for (uint32_t i = 0; i < len; ++i) {
         crc ^= data[i];
         for (uint8_t bit = 0; bit < 8; ++bit) {
-            uint32_t mask = 0U - (crc & 1U);
+            const uint32_t mask = 0U - (crc & 1U);
             crc = (crc >> 1) ^ (0xedb88320U & mask);
         }
     }
@@ -59,7 +68,7 @@ static uint32_t crc32_ieee(const uint8_t *data, uint32_t len)
 
 static bool is_geonetworking_80211_frame(const uint8_t *frame, uint32_t length)
 {
-    if (length < 24 + 8) {
+    if (length < 24U + 8U) {
         return false;
     }
 
@@ -67,7 +76,6 @@ static bool is_geonetworking_80211_frame(const uint8_t *frame, uint32_t length)
     const uint8_t type = (fc >> 2) & 0x03;
     const uint8_t subtype = (fc >> 4) & 0x0f;
 
-    // IEEE 802.11 data frame
     if (type != 2) {
         return false;
     }
@@ -79,22 +87,20 @@ static bool is_geonetworking_80211_frame(const uint8_t *frame, uint32_t length)
 
     uint32_t hdr_len = 24;
     if (to_ds && from_ds) {
-        hdr_len += 6;       // Address 4
+        hdr_len += 6;
     }
     if (qos) {
-        hdr_len += 2;       // QoS control
+        hdr_len += 2;
     }
     if (order) {
-        hdr_len += 4;       // HT control
+        hdr_len += 4;
     }
 
-    if (length < hdr_len + 8) {
+    if (length < hdr_len + 8U) {
         return false;
     }
 
     const uint8_t *llc = frame + hdr_len;
-
-    // 802.2 LLC/SNAP: AA AA 03 00 00 00 <EtherType>
     if (llc[0] != 0xaa || llc[1] != 0xaa || llc[2] != 0x03) {
         return false;
     }
@@ -102,7 +108,6 @@ static bool is_geonetworking_80211_frame(const uint8_t *frame, uint32_t length)
         return false;
     }
 
-    // ETSI GeoNetworking EtherType
     return read_be16(&llc[6]) == 0x8947;
 }
 
@@ -110,6 +115,7 @@ static uint32_t packet_caplen(const sniffer_packet_info_t *packet, bool *truncat
 {
     uint32_t caplen = packet->length;
     *truncated = false;
+
     if (caplen > CONFIG_CITS_USB_SERIAL_LOG_MAX_LEN) {
         caplen = CONFIG_CITS_USB_SERIAL_LOG_MAX_LEN;
         *truncated = true;
@@ -118,7 +124,17 @@ static uint32_t packet_caplen(const sniffer_packet_info_t *packet, bool *truncat
         caplen = UINT16_MAX;
         *truncated = true;
     }
+
     return caplen;
+}
+
+static void maybe_flush_stdout(void)
+{
+    packets_since_flush++;
+    if (packets_since_flush >= CITS_BINARY_FLUSH_PACKETS) {
+        fflush(stdout);
+        packets_since_flush = 0;
+    }
 }
 
 #if CONFIG_CITS_USB_SERIAL_BINARY_FRAMING
@@ -136,20 +152,6 @@ static bool serial_logger_write_binary_packet(const sniffer_packet_info_t *packe
         return false;
     }
 
-    // Binary frame, little-endian:
-    // 0..3   magic "CITS"
-    // 4      version = 1
-    // 5      flags bit0 = original packet was truncated
-    // 6..7   header length, currently 28
-    // 8..11  seconds
-    // 12..15 microseconds
-    // 16..17 frequency MHz
-    // 18     RSSI dBm, int8
-    // 19     reserved
-    // 20..21 captured payload length
-    // 22..23 original packet length, saturated to 65535
-    // 24..27 CRC32/IEEE over captured payload, or 0 if disabled
-    // 28..   raw 802.11 MPDU payload
     frame[0] = 'C';
     frame[1] = 'I';
     frame[2] = 'T';
@@ -172,9 +174,13 @@ static bool serial_logger_write_binary_packet(const sniffer_packet_info_t *packe
     memcpy(&frame[CITS_BINARY_HEADER_LEN], payload, caplen);
 
     const size_t written = fwrite(frame, 1, total_len, stdout);
-    fflush(stdout);
     free(frame);
-    return written == total_len;
+
+    if (written == total_len) {
+        maybe_flush_stdout();
+        return true;
+    }
+    return false;
 }
 #endif
 
@@ -184,7 +190,6 @@ static bool serial_logger_write_ascii_packet(const sniffer_packet_info_t *packet
     const uint32_t caplen = packet_caplen(packet, &truncated);
     const uint8_t *payload = (const uint8_t *)packet->payload;
 
-    // One complete frame per line. Host tools can tee this stream and parse only lines beginning with CITS,.
     printf("CITS,%" PRIu32 ",%06" PRIu32 ",%" PRIu32 ",%d,%" PRIu32 ",%u,",
            packet->seconds,
            packet->microseconds,
@@ -205,24 +210,17 @@ void serial_logger_print_startup_info(void)
 {
     char nodeid[CONFIG_NODEID_BUFFER_SIZE];
     size_t nodeid_size = sizeof(nodeid);
-    esp_err_t res = config_get_str(CONFIG_INDEX_NODEID, nodeid, &nodeid_size);
-    if (res != ESP_OK) {
-        // Keep the machine-readable stream usable even if NVS lookup fails.
+    if (config_get_str(CONFIG_INDEX_NODEID, nodeid, &nodeid_size) != ESP_OK) {
         snprintf(nodeid, sizeof(nodeid), "unknown");
     }
 
-    const esp_app_desc_t *app_desc = esp_app_get_description();
-    const char *version = app_desc && app_desc->version[0] ? app_desc->version : "unknown";
-
-    // Host applications can parse this line to learn the original MQTT topic
-    // prefix. Packet payloads still publish to its/<nodeid>/packet as raw bytes.
     printf("CITSMETA,%s,its/%s/packet,%s,%s\n",
            nodeid,
            nodeid,
            CONFIG_HW_VARIANT,
-           version);
+           PROJECT_VER);
 #if CONFIG_CITS_USB_SERIAL_BINARY_FRAMING
-    printf("CITSPROTO,binary-v1,header=%u,crc32=%u\n",
+    printf("CITSPROTO,binary-v1,header=%u,crc32=%u,stdout_line_endings=lf-required\n",
            CITS_BINARY_HEADER_LEN,
 #if CONFIG_CITS_USB_SERIAL_BINARY_CRC32
            1

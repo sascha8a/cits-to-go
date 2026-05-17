@@ -2,28 +2,18 @@
 
 #include "esp_event.h"
 
-ESP_EVENT_DECLARE_BASE(APP_EVENT_BASE);
-
-enum AppEvent
-{
-    APP_ETHERNET_MGMT_INTERFACE_CONNECTED,
-    APP_ETHERNET_MGMT_INTERFACE_DISCONNECTED,
-    APP_ETHERNET_MGMT_INTERFACE_GOT_IP,
-    APP_ETHERNET_MGMT_INTERFACE_LOST_IP
-};
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 ESP_EVENT_DECLARE_BASE(SNIFFER_EVENT_BASE);
 
-enum SnifferEvent
-{
-    SNIFFER_STARTED,
+typedef enum {
+    SNIFFER_STARTED = 1,
     SNIFFER_STOPPED,
-    SNIFFER_RECEIVED_PACKET
-};
+    SNIFFER_RECEIVED_PACKET,
+} sniffer_event_id_t;
 
-ESP_EVENT_DECLARE_BASE(MQTT_EVENT_BASE);
-
-enum MQTTEvent {
-    MQTT_CONNECTED,
-    MQTT_DISCONNECTED
-};
+#ifdef __cplusplus
+}
+#endif
