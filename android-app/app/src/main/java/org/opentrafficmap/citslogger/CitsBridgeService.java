@@ -25,7 +25,7 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
 
-public class CitsBridgeService extends Service implements SerialCitsReader.Listener {
+public class CitsBridgeService extends Service implements SerialLineReader.Listener {
     static final String ACTION_START_USB = "org.opentrafficmap.citslogger.action.START_USB";
     static final String ACTION_STOP_USB = "org.opentrafficmap.citslogger.action.STOP_USB";
     static final String ACTION_START_MQTT = "org.opentrafficmap.citslogger.action.START_MQTT";
@@ -52,7 +52,7 @@ public class CitsBridgeService extends Service implements SerialCitsReader.Liste
 
     private UsbManager usbManager;
     private UsbCdcSerial serial;
-    private SerialCitsReader reader;
+    private SerialLineReader reader;
     private Thread readerThread;
     private PcapWriter pcapWriter;
     private MqttSpool mqttSpool;
@@ -76,7 +76,6 @@ public class CitsBridgeService extends Service implements SerialCitsReader.Liste
     private long mqttCount;
     private long truncatedCount;
     private long mqttDropCount;
-    private long binaryPacketCount;
 
     private final Runnable mqttFlushRunnable = new Runnable() {
         @Override
@@ -249,8 +248,8 @@ public class CitsBridgeService extends Service implements SerialCitsReader.Liste
         try {
             serial = new UsbCdcSerial(usbManager, device);
             serial.open(115200);
-            reader = new SerialCitsReader(serial, this);
-            readerThread = new Thread(reader, "serial-cits-reader");
+            reader = new SerialLineReader(serial, this);
+            readerThread = new Thread(reader, "serial-line-reader");
             readerThread.start();
             broadcastStatus("USB connected: " + serial.describe());
         } catch (Exception e) {
@@ -444,11 +443,6 @@ public class CitsBridgeService extends Service implements SerialCitsReader.Liste
     }
 
     @Override
-    public void onSerialPacket(CitsPacket packet) {
-        handlePacket(packet, true);
-    }
-
-    @Override
     public void onSerialLine(String line) {
         if (line.contains("CITS,")) {
             handlePacketLine(line);
@@ -491,12 +485,11 @@ public class CitsBridgeService extends Service implements SerialCitsReader.Liste
             return;
         }
         if (packet == null) return;
-        handlePacket(packet, false);
+        handlePacket(packet);
     }
 
-    private void handlePacket(CitsPacket packet, boolean binary) {
+    private void handlePacket(CitsPacket packet) {
         packetCount++;
-        if (binary) binaryPacketCount++;
         if (packet.truncated) truncatedCount++;
 
         synchronized (pcapLock) {
@@ -514,7 +507,7 @@ public class CitsBridgeService extends Service implements SerialCitsReader.Liste
         spoolMqtt(packet.payload);
 
         if ((packetCount % 25) == 1) {
-            broadcastStatus("Packets=" + packetCount + " last=" + packet.payload.length + "B rssi=" + packet.rssiDbm + "dBm freq=" + packet.frequencyMhz + "MHz" + (binary ? " binary" : " ascii"));
+            broadcastStatus("Packets=" + packetCount + " last=" + packet.payload.length + "B rssi=" + packet.rssiDbm + "dBm freq=" + packet.frequencyMhz + "MHz");
         } else {
             broadcastStatus(null);
         }
@@ -549,7 +542,6 @@ public class CitsBridgeService extends Service implements SerialCitsReader.Liste
         i.putExtra("mqttCount", mqttCount);
         i.putExtra("truncatedCount", truncatedCount);
         i.putExtra("mqttDropCount", mqttDropCount);
-        i.putExtra("binaryPacketCount", binaryPacketCount);
         i.putExtra("nodeId", currentNodeId);
         if (log != null && !log.isEmpty()) i.putExtra("log", log);
         sendBroadcast(i);

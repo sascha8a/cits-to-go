@@ -47,22 +47,6 @@ menu "CITS-to-go firmware"
         help
             Longer frames are truncated before serial output.
 
-    config CITS_USB_SERIAL_BINARY_FRAMING
-        bool "Use optimized binary USB serial packet framing"
-        depends on CITS_ENABLE_USB_SERIAL_LOG
-        default y
-        help
-            Emits compact binary CITS frames instead of ASCII hex lines. The
-            Android app also accepts legacy ASCII CITS lines.
-
-    config CITS_USB_SERIAL_BINARY_CRC32
-        bool "Add CRC32 to binary USB serial frames"
-        depends on CITS_USB_SERIAL_BINARY_FRAMING
-        default y
-        help
-            Adds CRC32/IEEE over the captured payload to make Android-side
-            resynchronization safe.
-
     config CITS_RX_LED_PULSE_MS
         int "C-ITS receive LED blink duration in milliseconds"
         range 10 1000

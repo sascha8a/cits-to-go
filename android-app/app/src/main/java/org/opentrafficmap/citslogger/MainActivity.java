@@ -52,7 +52,6 @@ public class MainActivity extends Activity {
     private long mqttCount;
     private long truncatedCount;
     private long mqttDropCount;
-    private long binaryPacketCount;
 
     private final BroadcastReceiver usbPermissionReceiver = new BroadcastReceiver() {
         @Override
@@ -83,7 +82,6 @@ public class MainActivity extends Activity {
             mqttCount = intent.getLongExtra("mqttCount", mqttCount);
             truncatedCount = intent.getLongExtra("truncatedCount", truncatedCount);
             mqttDropCount = intent.getLongExtra("mqttDropCount", mqttDropCount);
-            binaryPacketCount = intent.getLongExtra("binaryPacketCount", binaryPacketCount);
             String nodeId = intent.getStringExtra("nodeId");
             if (nodeId != null && !nodeId.isEmpty() && !"unknown".equals(nodeId)
                     && nodeIdText.getText().toString().trim().isEmpty()) {
@@ -300,7 +298,7 @@ public class MainActivity extends Activity {
                 " | PCAP: " + (pcapRecording ? "recording" : "closed") +
                 " | MQTT: " + mqttState +
                 " | MQTT spool: " + mqttQueue +
-                "\nPackets: " + packetCount + " | binary: " + binaryPacketCount +
+                "\nPackets: " + packetCount +
                 " | PCAP: " + pcapCount + " | MQTT: " + mqttCount +
                 " | truncated: " + truncatedCount + " | MQTT dropped: " + mqttDropCount;
         statusText.setText(s);
