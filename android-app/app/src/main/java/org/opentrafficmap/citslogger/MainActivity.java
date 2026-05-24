@@ -17,6 +17,7 @@ import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -39,6 +40,7 @@ public class MainActivity extends Activity {
 
     private EditText mqttUriText;
     private EditText nodeIdText;
+    private CheckBox deviceNotificationsCheck;
     private TextView statusText;
     private TextView logText;
 
@@ -52,6 +54,10 @@ public class MainActivity extends Activity {
     private long mqttCount;
     private long truncatedCount;
     private long mqttDropCount;
+    private int seenDeviceCount;
+    private long newDeviceCount;
+    private boolean deviceNotificationsEnabled;
+    private boolean updatingUi;
 
     private final BroadcastReceiver usbPermissionReceiver = new BroadcastReceiver() {
         @Override
@@ -82,6 +88,14 @@ public class MainActivity extends Activity {
             mqttCount = intent.getLongExtra("mqttCount", mqttCount);
             truncatedCount = intent.getLongExtra("truncatedCount", truncatedCount);
             mqttDropCount = intent.getLongExtra("mqttDropCount", mqttDropCount);
+            seenDeviceCount = intent.getIntExtra("seenDeviceCount", seenDeviceCount);
+            newDeviceCount = intent.getLongExtra("newDeviceCount", newDeviceCount);
+            deviceNotificationsEnabled = intent.getBooleanExtra("deviceNotificationsEnabled", deviceNotificationsEnabled);
+            if (deviceNotificationsCheck != null && deviceNotificationsCheck.isChecked() != deviceNotificationsEnabled) {
+                updatingUi = true;
+                deviceNotificationsCheck.setChecked(deviceNotificationsEnabled);
+                updatingUi = false;
+            }
             String nodeId = intent.getStringExtra("nodeId");
             if (nodeId != null && !nodeId.isEmpty() && !"unknown".equals(nodeId)
                     && nodeIdText.getText().toString().trim().isEmpty()) {
@@ -178,7 +192,17 @@ public class MainActivity extends Activity {
 
         LinearLayout row4 = row();
         row4.addView(button("Stop Bridge", v -> sendAction(CitsBridgeService.ACTION_STOP_ALL)), weightParams());
+        row4.addView(button("Clear Seen Devices", v -> sendAction(CitsBridgeService.ACTION_CLEAR_SEEN_DEVICES)), weightParams());
         root.addView(row4);
+
+        deviceNotificationsCheck = new CheckBox(this);
+        deviceNotificationsCheck.setText("Notify once for each newly discovered C-ITS MAC address");
+        deviceNotificationsCheck.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            if (updatingUi) return;
+            startForegroundBridge(startServiceAction(CitsBridgeService.ACTION_SET_DEVICE_NOTIFICATIONS)
+                    .putExtra(CitsBridgeService.EXTRA_DEVICE_NOTIFICATIONS_ENABLED, isChecked));
+        });
+        root.addView(deviceNotificationsCheck);
 
         statusText = new TextView(this);
         statusText.setTextSize(14);
@@ -300,7 +324,10 @@ public class MainActivity extends Activity {
                 " | MQTT spool: " + mqttQueue +
                 "\nPackets: " + packetCount +
                 " | PCAP: " + pcapCount + " | MQTT: " + mqttCount +
-                " | truncated: " + truncatedCount + " | MQTT dropped: " + mqttDropCount;
+                " | truncated: " + truncatedCount + " | MQTT dropped: " + mqttDropCount +
+                "\nSeen C-ITS devices: " + seenDeviceCount +
+                " | New this run: " + newDeviceCount +
+                " | notifications: " + (deviceNotificationsEnabled ? "on" : "off");
         statusText.setText(s);
     }
 

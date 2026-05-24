@@ -33,15 +33,20 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     static final String ACTION_START_PCAP = "org.opentrafficmap.citslogger.action.START_PCAP";
     static final String ACTION_STOP_PCAP = "org.opentrafficmap.citslogger.action.STOP_PCAP";
     static final String ACTION_STOP_ALL = "org.opentrafficmap.citslogger.action.STOP_ALL";
+    static final String ACTION_SET_DEVICE_NOTIFICATIONS = "org.opentrafficmap.citslogger.action.SET_DEVICE_NOTIFICATIONS";
+    static final String ACTION_CLEAR_SEEN_DEVICES = "org.opentrafficmap.citslogger.action.CLEAR_SEEN_DEVICES";
     static final String ACTION_STATUS = "org.opentrafficmap.citslogger.action.STATUS";
 
     static final String EXTRA_DEVICE_NAME = "deviceName";
     static final String EXTRA_MQTT_URI = "mqttUri";
     static final String EXTRA_NODE_ID = "nodeId";
     static final String EXTRA_PCAP_URI = "pcapUri";
+    static final String EXTRA_DEVICE_NOTIFICATIONS_ENABLED = "deviceNotificationsEnabled";
 
     private static final String CHANNEL_ID = "cits_bridge";
+    private static final String DEVICE_CHANNEL_ID = "cits_device_discovery";
     private static final int NOTIFICATION_ID = 23;
+    private static final int DEVICE_NOTIFICATION_BASE_ID = 10000;
     private static final int MQTT_FLUSH_INTERVAL_MS = 250;
     private static final int MQTT_MAX_PACKETS_PER_FLUSH = 100;
     private static final int MQTT_MAX_BACKOFF_MS = 60000;
@@ -57,6 +62,7 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     private PcapWriter pcapWriter;
     private MqttSpool mqttSpool;
     private MiniMqttClient mqttClient = new MiniMqttClient();
+    private CitsDeviceTracker deviceTracker;
 
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
@@ -76,6 +82,7 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     private long mqttCount;
     private long truncatedCount;
     private long mqttDropCount;
+    private long newDeviceCount;
 
     private final Runnable mqttFlushRunnable = new Runnable() {
         @Override
@@ -102,6 +109,7 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     public void onCreate() {
         super.onCreate();
         usbManager = (UsbManager) getSystemService(USB_SERVICE);
+        deviceTracker = new CitsDeviceTracker(this);
         try {
             mqttSpool = new MqttSpool(this);
         } catch (Exception e) {
@@ -137,6 +145,10 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
             startPcap(intent.getStringExtra(EXTRA_PCAP_URI));
         } else if (ACTION_STOP_PCAP.equals(action)) {
             closePcap();
+        } else if (ACTION_SET_DEVICE_NOTIFICATIONS.equals(action)) {
+            setDeviceNotifications(intent.getBooleanExtra(EXTRA_DEVICE_NOTIFICATIONS_ENABLED, false));
+        } else if (ACTION_CLEAR_SEEN_DEVICES.equals(action)) {
+            clearSeenDevices();
         } else if (ACTION_STOP_ALL.equals(action)) {
             stopEverything();
             stopSelf();
@@ -205,6 +217,13 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
                 NotificationManager.IMPORTANCE_LOW);
         ch.setDescription("Keeps USB serial capture and MQTT forwarding active while the phone is locked.");
         nm.createNotificationChannel(ch);
+
+        NotificationChannel deviceCh = new NotificationChannel(
+                DEVICE_CHANNEL_ID,
+                "New C-ITS devices",
+                NotificationManager.IMPORTANCE_DEFAULT);
+        deviceCh.setDescription("Notifications for newly discovered C-ITS source MAC addresses.");
+        nm.createNotificationChannel(deviceCh);
     }
 
     private void acquireLocks() {
@@ -325,6 +344,52 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
                 try { pcapWriter.flush(); } catch (Exception ignored) {}
             }
         }
+    }
+
+    private void setDeviceNotifications(boolean enabled) {
+        if (deviceTracker != null) deviceTracker.setNotificationsEnabled(enabled);
+        broadcastStatus("New-device notifications " + (enabled ? "enabled" : "disabled"));
+    }
+
+    private void clearSeenDevices() {
+        if (deviceTracker != null) deviceTracker.clearSeenDevices();
+        newDeviceCount = 0;
+        broadcastStatus("Seen C-ITS device MAC list cleared");
+    }
+
+    private void maybeNotifyNewDevice(CitsDeviceTracker.Discovery discovery) {
+        if (discovery == null || deviceTracker == null || !deviceTracker.isNotificationsEnabled()) return;
+
+        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+        if (nm == null) return;
+
+        Intent openIntent = new Intent(this, MainActivity.class);
+        PendingIntent openPi = PendingIntent.getActivity(this, 2, openIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        String title = "New C-ITS device discovered";
+        String text = discovery.sourceMac + " • " + discovery.frequencyMhz + " MHz • " +
+                discovery.rssiDbm + " dBm";
+        StringBuilder details = new StringBuilder(text);
+        if (discovery.transmitterMac != null && !discovery.transmitterMac.isEmpty()
+                && !discovery.transmitterMac.equals(discovery.sourceMac)) {
+            details.append("\nTransmitter: ").append(discovery.transmitterMac);
+        }
+        if (discovery.receiverMac != null && !discovery.receiverMac.isEmpty()) {
+            details.append("\nReceiver: ").append(discovery.receiverMac);
+        }
+        details.append("\nSeen devices: ").append(deviceTracker.seenCount());
+
+        Notification n = new NotificationCompat.Builder(this, DEVICE_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(new NotificationCompat.BigTextStyle().bigText(details.toString()))
+                .setContentIntent(openPi)
+                .setAutoCancel(true)
+                .build();
+
+        nm.notify(DEVICE_NOTIFICATION_BASE_ID + Math.abs(discovery.sourceMac.hashCode() % 50000), n);
     }
 
     private void startMqtt(String uri, String nodeId) {
@@ -492,6 +557,14 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
         packetCount++;
         if (packet.truncated) truncatedCount++;
 
+        CitsDeviceTracker.Discovery discovery = deviceTracker == null ? null : deviceTracker.notePacket(packet);
+        if (discovery != null) {
+            newDeviceCount++;
+            maybeNotifyNewDevice(discovery);
+            broadcastStatus("New C-ITS device: " + discovery.sourceMac +
+                    " rssi=" + discovery.rssiDbm + "dBm freq=" + discovery.frequencyMhz + "MHz");
+        }
+
         synchronized (pcapLock) {
             if (pcapWriter != null) {
                 try {
@@ -526,6 +599,7 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
                 " • PCAP " + (pcapWriter != null ? "recording" : "off") +
                 " • MQTT " + (mqttClient.isConnected() ? "connected" : (mqttEnabled ? "reconnecting" : "off")) +
                 " • packets " + packetCount +
+                " • devices " + (deviceTracker == null ? 0 : deviceTracker.seenCount()) +
                 (queued > 0 ? " • spool " + queued : "");
     }
 
@@ -542,6 +616,9 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
         i.putExtra("mqttCount", mqttCount);
         i.putExtra("truncatedCount", truncatedCount);
         i.putExtra("mqttDropCount", mqttDropCount);
+        i.putExtra("seenDeviceCount", deviceTracker == null ? 0 : deviceTracker.seenCount());
+        i.putExtra("newDeviceCount", newDeviceCount);
+        i.putExtra("deviceNotificationsEnabled", deviceTracker != null && deviceTracker.isNotificationsEnabled());
         i.putExtra("nodeId", currentNodeId);
         if (log != null && !log.isEmpty()) i.putExtra("log", log);
         sendBroadcast(i);
