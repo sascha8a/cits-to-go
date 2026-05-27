@@ -81,6 +81,7 @@ void app_main(void)
     esp_timer_init();
 
     config_init();
+    serial_logger_init();
     led_init();
     initialize_wifi();
 
@@ -88,6 +89,7 @@ void app_main(void)
 
     sniffer_init();
     serial_logger_print_startup_info();
+    serial_logger_start_metadata_heartbeat();
 
     register_sniffer_cmd();
     config_register_commands();

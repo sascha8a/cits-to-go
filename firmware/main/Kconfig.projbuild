@@ -47,6 +47,49 @@ menu "CITS-to-go firmware"
         help
             Longer frames are truncated before serial output.
 
+
+    config CITS_META_FAST_INTERVAL_MS
+        int "CITSMETA fast heartbeat interval in milliseconds"
+        depends on CITS_ENABLE_USB_SERIAL_LOG
+        range 100 60000
+        default 1000
+        help
+            The firmware emits CITSMETA every second during the initial fast
+            heartbeat period so Android can recover the node ID even when the
+            first boot line was missed.
+
+    config CITS_META_FAST_DURATION_MS
+        int "CITSMETA fast heartbeat duration in milliseconds"
+        depends on CITS_ENABLE_USB_SERIAL_LOG
+        range 1000 600000
+        default 120000
+        help
+            Duration of the initial fast CITSMETA heartbeat period after boot.
+
+    config CITS_META_SLOW_INTERVAL_MS
+        int "CITSMETA normal heartbeat interval in milliseconds"
+        depends on CITS_ENABLE_USB_SERIAL_LOG
+        range 1000 60000
+        default 5000
+        help
+            Normal CITSMETA heartbeat interval after the fast startup period.
+
+    config CITS_META_TASK_STACK_SIZE
+        int "Stack size of CITSMETA heartbeat task"
+        depends on CITS_ENABLE_USB_SERIAL_LOG
+        range 2048 8192
+        default 3072
+        help
+            Stack size for the metadata heartbeat task.
+
+    config CITS_META_TASK_PRIORITY
+        int "Priority of CITSMETA heartbeat task"
+        depends on CITS_ENABLE_USB_SERIAL_LOG
+        range 1 20
+        default 1
+        help
+            FreeRTOS priority for the metadata heartbeat task.
+
     config CITS_RX_LED_PULSE_MS
         int "C-ITS receive LED blink duration in milliseconds"
         range 10 1000

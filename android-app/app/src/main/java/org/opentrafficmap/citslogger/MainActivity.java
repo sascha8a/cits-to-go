@@ -7,13 +7,16 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -35,8 +38,11 @@ public class MainActivity extends Activity {
     private static final String ACTION_USB_PERMISSION = "org.opentrafficmap.citslogger.USB_PERMISSION";
     private static final int REQUEST_CREATE_PCAP = 42;
     private static final int REQUEST_NOTIFICATIONS = 43;
+    private static final String PREFS = "cits_bridge";
+    private static final String PREF_LAST_NODE_ID = "last_node_id";
 
     private UsbManager usbManager;
+    private SharedPreferences prefs;
 
     private EditText mqttUriText;
     private EditText nodeIdText;
@@ -58,6 +64,15 @@ public class MainActivity extends Activity {
     private long newDeviceCount;
     private boolean deviceNotificationsEnabled;
     private boolean updatingUi;
+    private boolean nodeIdManuallyEdited;
+    private String usbState = "disconnected";
+    private String mqttState = "disabled";
+    private String nodeIdSource = "unknown";
+    private String packetTopic = "its/unknown/packet";
+    private String lastError = "none";
+    private long lastMetaAgeMs = -1;
+    private long lastPacketAgeMs = -1;
+    private long lastMqttPublishAgeMs = -1;
 
     private final BroadcastReceiver usbPermissionReceiver = new BroadcastReceiver() {
         @Override
@@ -79,9 +94,11 @@ public class MainActivity extends Activity {
         public void onReceive(Context context, Intent intent) {
             if (!CitsBridgeService.ACTION_STATUS.equals(intent.getAction())) return;
             usbConnected = intent.getBooleanExtra("usb", usbConnected);
+            usbState = intent.getStringExtra("usbState") == null ? usbState : intent.getStringExtra("usbState");
             pcapRecording = intent.getBooleanExtra("pcap", pcapRecording);
             mqttConnected = intent.getBooleanExtra("mqtt", mqttConnected);
             mqttEnabled = intent.getBooleanExtra("mqttEnabled", mqttEnabled);
+            mqttState = intent.getStringExtra("mqttState") == null ? mqttState : intent.getStringExtra("mqttState");
             mqttQueue = intent.getIntExtra("mqttQueue", mqttQueue);
             packetCount = intent.getLongExtra("packetCount", packetCount);
             pcapCount = intent.getLongExtra("pcapCount", pcapCount);
@@ -91,15 +108,23 @@ public class MainActivity extends Activity {
             seenDeviceCount = intent.getIntExtra("seenDeviceCount", seenDeviceCount);
             newDeviceCount = intent.getLongExtra("newDeviceCount", newDeviceCount);
             deviceNotificationsEnabled = intent.getBooleanExtra("deviceNotificationsEnabled", deviceNotificationsEnabled);
+            packetTopic = intent.getStringExtra("packetTopic") == null ? packetTopic : intent.getStringExtra("packetTopic");
+            nodeIdSource = intent.getStringExtra("nodeIdSource") == null ? nodeIdSource : intent.getStringExtra("nodeIdSource");
+            lastError = intent.getStringExtra("lastError") == null ? lastError : intent.getStringExtra("lastError");
+            lastMetaAgeMs = intent.getLongExtra("lastMetaAgeMs", lastMetaAgeMs);
+            lastPacketAgeMs = intent.getLongExtra("lastPacketAgeMs", lastPacketAgeMs);
+            lastMqttPublishAgeMs = intent.getLongExtra("lastMqttPublishAgeMs", lastMqttPublishAgeMs);
+
             if (deviceNotificationsCheck != null && deviceNotificationsCheck.isChecked() != deviceNotificationsEnabled) {
                 updatingUi = true;
                 deviceNotificationsCheck.setChecked(deviceNotificationsEnabled);
                 updatingUi = false;
             }
             String nodeId = intent.getStringExtra("nodeId");
-            if (nodeId != null && !nodeId.isEmpty() && !"unknown".equals(nodeId)
-                    && nodeIdText.getText().toString().trim().isEmpty()) {
+            if (nodeId != null && !nodeId.isEmpty() && !"unknown".equals(nodeId) && !nodeIdManuallyEdited) {
+                updatingUi = true;
                 nodeIdText.setText(nodeId);
+                updatingUi = false;
             }
             String log = intent.getStringExtra("log");
             if (log != null) appendLog(log);
@@ -111,6 +136,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         usbManager = (UsbManager) getSystemService(USB_SERVICE);
+        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         buildUi();
         registerUsbReceiver();
         requestNotificationPermissionIfNeeded();
@@ -157,7 +183,7 @@ public class MainActivity extends Activity {
         root.setPadding(24, 24, 24, 24);
 
         TextView title = new TextView(this);
-        title.setText("C-ITS USB Bridge");
+        title.setText("CITS-to-go");
         title.setTextSize(22);
         title.setGravity(Gravity.CENTER_HORIZONTAL);
         root.addView(title);
@@ -173,6 +199,20 @@ public class MainActivity extends Activity {
         nodeIdText.setHint("Node ID; auto-filled from CITSMETA if available");
         nodeIdText.setSingleLine(true);
         nodeIdText.setInputType(InputType.TYPE_CLASS_TEXT);
+        String rememberedNode = prefs.getString(PREF_LAST_NODE_ID, "");
+        if (rememberedNode != null && !rememberedNode.trim().isEmpty()) {
+            updatingUi = true;
+            nodeIdText.setText(rememberedNode.trim());
+            updatingUi = false;
+            nodeIdSource = "remembered";
+        }
+        nodeIdText.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                if (!updatingUi && nodeIdText.hasFocus()) nodeIdManuallyEdited = true;
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
         root.addView(nodeIdText);
 
         LinearLayout row1 = row();
@@ -206,7 +246,7 @@ public class MainActivity extends Activity {
 
         statusText = new TextView(this);
         statusText.setTextSize(14);
-        statusText.setText("USB: disconnected | PCAP: closed | MQTT: disconnected");
+        statusText.setText("USB: disconnected | PCAP: closed | MQTT: disabled");
         root.addView(statusText);
 
         logText = new TextView(this);
@@ -240,6 +280,7 @@ public class MainActivity extends Activity {
         ArrayList<UsbDevice> devices = new ArrayList<>(usbManager.getDeviceList().values());
         if (devices.isEmpty()) {
             toast("No USB devices found. Use an OTG cable and power the XIAO ESP32-C5.");
+            startForegroundBridge(startServiceAction(CitsBridgeService.ACTION_START_USB));
             return;
         }
         UsbDevice best = devices.get(0);
@@ -298,9 +339,11 @@ public class MainActivity extends Activity {
     private void connectMqtt() {
         String uri = mqttUriText.getText().toString().trim();
         String nodeId = nodeIdText.getText().toString().trim();
+        // If the current value was auto-filled from CITSMETA/remembered state, allow future
+        // CITSMETA heartbeats to replace it. If the user edited the field, it is manual.
         startForegroundBridge(startServiceAction(CitsBridgeService.ACTION_START_MQTT)
                 .putExtra(CitsBridgeService.EXTRA_MQTT_URI, uri)
-                .putExtra(CitsBridgeService.EXTRA_NODE_ID, nodeId));
+                .putExtra(CitsBridgeService.EXTRA_NODE_ID, nodeIdManuallyEdited ? nodeId : ""));
     }
 
     private Intent startServiceAction(String action) {
@@ -317,18 +360,33 @@ public class MainActivity extends Activity {
 
     private void updateStatus() {
         if (statusText == null) return;
-        String mqttState = mqttConnected ? "connected" : (mqttEnabled ? "reconnecting" : "disconnected");
-        String s = "USB: " + (usbConnected ? "connected" : "disconnected") +
+        String s = "USB: " + usbState +
                 " | PCAP: " + (pcapRecording ? "recording" : "closed") +
-                " | MQTT: " + mqttState +
-                " | MQTT spool: " + mqttQueue +
+                "\nMQTT: " + mqttState +
+                " | spool: " + mqttQueue +
+                " | topic: " + packetTopic +
+                "\nNode ID: " + nodeIdText.getText().toString().trim() +
+                " (" + nodeIdSource + ")" +
+                " | firmware heartbeat: " + formatAge(lastMetaAgeMs) +
                 "\nPackets: " + packetCount +
-                " | PCAP: " + pcapCount + " | MQTT: " + mqttCount +
-                " | truncated: " + truncatedCount + " | MQTT dropped: " + mqttDropCount +
+                " | last packet: " + formatAge(lastPacketAgeMs) +
+                " | PCAP: " + pcapCount +
+                " | MQTT: " + mqttCount +
+                " | last MQTT publish: " + formatAge(lastMqttPublishAgeMs) +
+                "\nTruncated: " + truncatedCount +
+                " | MQTT dropped: " + mqttDropCount +
+                " | last error: " + lastError +
                 "\nSeen C-ITS devices: " + seenDeviceCount +
                 " | New this run: " + newDeviceCount +
                 " | notifications: " + (deviceNotificationsEnabled ? "on" : "off");
         statusText.setText(s);
+    }
+
+    private String formatAge(long ageMs) {
+        if (ageMs < 0) return "never";
+        if (ageMs < 1000) return ageMs + "ms ago";
+        if (ageMs < 60000) return String.format(Locale.US, "%.1fs ago", ageMs / 1000.0);
+        return String.format(Locale.US, "%.1fmin ago", ageMs / 60000.0);
     }
 
     private void appendLog(String msg) {

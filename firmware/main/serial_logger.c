@@ -6,6 +6,12 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/task.h"
+#include "esp_log.h"
+#include "esp_timer.h"
+
 #include "cmd_sniffer.h"
 #include "config.h"
 #include "serial_logger.h"
@@ -16,6 +22,10 @@
 
 #if CONFIG_CITS_ENABLE_USB_SERIAL_LOG
 
+static const char TAG[] = "SERIAL_LOGGER";
+static SemaphoreHandle_t s_stdout_mutex;
+static TaskHandle_t s_meta_task;
+
 static inline uint16_t read_le16(const uint8_t *p)
 {
     return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
@@ -24,6 +34,30 @@ static inline uint16_t read_le16(const uint8_t *p)
 static inline uint16_t read_be16(const uint8_t *p)
 {
     return ((uint16_t)p[0] << 8) | (uint16_t)p[1];
+}
+
+static void lock_stdout(void)
+{
+    if (s_stdout_mutex) {
+        xSemaphoreTake(s_stdout_mutex, portMAX_DELAY);
+    }
+}
+
+static void unlock_stdout(void)
+{
+    if (s_stdout_mutex) {
+        xSemaphoreGive(s_stdout_mutex);
+    }
+}
+
+void serial_logger_init(void)
+{
+    if (!s_stdout_mutex) {
+        s_stdout_mutex = xSemaphoreCreateMutex();
+        if (!s_stdout_mutex) {
+            ESP_LOGE(TAG, "failed to create stdout mutex");
+        }
+    }
 }
 
 static bool is_geonetworking_80211_frame(const uint8_t *frame, uint32_t length)
@@ -88,12 +122,36 @@ static uint32_t packet_caplen(const sniffer_packet_info_t *packet, bool *truncat
     return caplen;
 }
 
+static void serial_logger_write_meta_locked(void)
+{
+    char nodeid[CONFIG_NODEID_BUFFER_SIZE];
+    size_t nodeid_size = sizeof(nodeid);
+    if (config_get_str(CONFIG_INDEX_NODEID, nodeid, &nodeid_size) != ESP_OK) {
+        snprintf(nodeid, sizeof(nodeid), "unknown");
+    }
+
+    printf("CITSMETA,%s,its/%s/packet,%s,%s\n",
+           nodeid,
+           nodeid,
+           CONFIG_HW_VARIANT,
+           PROJECT_VER);
+}
+
+static void serial_logger_print_metadata(void)
+{
+    lock_stdout();
+    serial_logger_write_meta_locked();
+    fflush(stdout);
+    unlock_stdout();
+}
+
 static bool serial_logger_write_ascii_packet(const sniffer_packet_info_t *packet)
 {
     bool truncated;
     const uint32_t caplen = packet_caplen(packet, &truncated);
     const uint8_t *payload = (const uint8_t *)packet->payload;
 
+    lock_stdout();
     printf("CITS,%" PRIu32 ",%06" PRIu32 ",%" PRIu32 ",%d,%" PRIu32 ",%u,",
            packet->seconds,
            packet->microseconds,
@@ -107,24 +165,52 @@ static bool serial_logger_write_ascii_packet(const sniffer_packet_info_t *packet
     }
     printf("\n");
     fflush(stdout);
+    unlock_stdout();
     return true;
 }
 
 void serial_logger_print_startup_info(void)
 {
-    char nodeid[CONFIG_NODEID_BUFFER_SIZE];
-    size_t nodeid_size = sizeof(nodeid);
-    if (config_get_str(CONFIG_INDEX_NODEID, nodeid, &nodeid_size) != ESP_OK) {
-        snprintf(nodeid, sizeof(nodeid), "unknown");
+    lock_stdout();
+    serial_logger_write_meta_locked();
+    printf("CITSPROTO,ascii-v1,meta-fast=%dms,meta-fast-duration=%dms,meta-slow=%dms\n",
+           CONFIG_CITS_META_FAST_INTERVAL_MS,
+           CONFIG_CITS_META_FAST_DURATION_MS,
+           CONFIG_CITS_META_SLOW_INTERVAL_MS);
+    fflush(stdout);
+    unlock_stdout();
+}
+
+static void serial_logger_metadata_task(void *arg)
+{
+    (void)arg;
+    const int64_t start_us = esp_timer_get_time();
+
+    while (true) {
+        const int64_t elapsed_ms = (esp_timer_get_time() - start_us) / 1000;
+        const uint32_t interval_ms = elapsed_ms < CONFIG_CITS_META_FAST_DURATION_MS ?
+                CONFIG_CITS_META_FAST_INTERVAL_MS : CONFIG_CITS_META_SLOW_INTERVAL_MS;
+
+        vTaskDelay(pdMS_TO_TICKS(interval_ms));
+        serial_logger_print_metadata();
+    }
+}
+
+void serial_logger_start_metadata_heartbeat(void)
+{
+    if (s_meta_task) {
+        return;
     }
 
-    printf("CITSMETA,%s,its/%s/packet,%s,%s\n",
-           nodeid,
-           nodeid,
-           CONFIG_HW_VARIANT,
-           PROJECT_VER);
-    printf("CITSPROTO,ascii-v1\n");
-    fflush(stdout);
+    const BaseType_t ok = xTaskCreate(serial_logger_metadata_task,
+                                      "citsMeta",
+                                      CONFIG_CITS_META_TASK_STACK_SIZE,
+                                      NULL,
+                                      CONFIG_CITS_META_TASK_PRIORITY,
+                                      &s_meta_task);
+    if (ok != pdPASS) {
+        ESP_LOGE(TAG, "failed to start CITSMETA heartbeat task");
+    }
 }
 
 bool serial_logger_handle_packet(const sniffer_packet_info_t *packet)
@@ -144,6 +230,14 @@ bool serial_logger_handle_packet(const sniffer_packet_info_t *packet)
 }
 
 #else
+
+void serial_logger_init(void)
+{
+}
+
+void serial_logger_start_metadata_heartbeat(void)
+{
+}
 
 bool serial_logger_handle_packet(const sniffer_packet_info_t *packet)
 {

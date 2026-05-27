@@ -5,8 +5,11 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.content.pm.ServiceInfo;
 import android.hardware.usb.UsbDevice;
 import android.hardware.usb.UsbManager;
@@ -17,13 +20,16 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.ServiceCompat;
+import androidx.core.content.ContextCompat;
 
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class CitsBridgeService extends Service implements SerialLineReader.Listener {
     static final String ACTION_START_USB = "org.opentrafficmap.citslogger.action.START_USB";
@@ -35,6 +41,7 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     static final String ACTION_STOP_ALL = "org.opentrafficmap.citslogger.action.STOP_ALL";
     static final String ACTION_SET_DEVICE_NOTIFICATIONS = "org.opentrafficmap.citslogger.action.SET_DEVICE_NOTIFICATIONS";
     static final String ACTION_CLEAR_SEEN_DEVICES = "org.opentrafficmap.citslogger.action.CLEAR_SEEN_DEVICES";
+    static final String ACTION_REQUEST_STATUS = "org.opentrafficmap.citslogger.action.REQUEST_STATUS";
     static final String ACTION_STATUS = "org.opentrafficmap.citslogger.action.STATUS";
 
     static final String EXTRA_DEVICE_NAME = "deviceName";
@@ -50,6 +57,15 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     private static final int MQTT_FLUSH_INTERVAL_MS = 250;
     private static final int MQTT_MAX_PACKETS_PER_FLUSH = 100;
     private static final int MQTT_MAX_BACKOFF_MS = 60000;
+    private static final int USB_HEALTH_INTERVAL_MS = 2000;
+    private static final int USB_RECONNECT_DELAY_MS = 2000;
+    private static final long USB_META_STALE_MS = 15000L;
+
+    private static final String PREFS = "cits_bridge";
+    private static final String PREF_LAST_NODE_ID = "last_node_id";
+    private static final String PREF_LAST_PACKET_TOPIC = "last_packet_topic";
+    private static final String PREF_LAST_HARDWARE_VARIANT = "last_hardware_variant";
+    private static final String PREF_LAST_FIRMWARE_VERSION = "last_firmware_version";
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Object pcapLock = new Object();
@@ -63,6 +79,7 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     private MqttSpool mqttSpool;
     private MiniMqttClient mqttClient = new MiniMqttClient();
     private CitsDeviceTracker deviceTracker;
+    private SharedPreferences prefs;
 
     private PowerManager.WakeLock wakeLock;
     private WifiManager.WifiLock wifiLock;
@@ -70,12 +87,26 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     private String firmwareHardwareVariant = "android-bridge";
     private String firmwareVersion = "android-bridge";
     private String currentNodeId = "unknown";
+    private String currentPacketTopic = "its/unknown/packet";
+    private String nodeIdSource = "unknown";
     private String mqttUri = "";
     private String mqttNodeId = "";
+    private String mqttEffectiveNodeId = "unknown";
+    private String usbState = "disconnected";
+    private String mqttState = "disabled";
+    private String lastError = "none";
+    private String lastDeviceName;
+    private boolean usbUserWanted;
+    private boolean usbReconnectScheduled;
+    private boolean mqttNodeIdManual;
     private boolean mqttEnabled;
     private boolean mqttConnecting;
     private boolean mqttFlushRunning;
     private long mqttReconnectDelayMs = 1000;
+    private long lastMetaElapsedMs;
+    private long lastPacketElapsedMs;
+    private long lastMqttPublishElapsedMs;
+    private long lastProtocolLogElapsedMs;
 
     private long packetCount;
     private long pcapCount;
@@ -83,6 +114,28 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     private long truncatedCount;
     private long mqttDropCount;
     private long newDeviceCount;
+
+    private final BroadcastReceiver usbAttachDetachReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            if (UsbManager.ACTION_USB_DEVICE_ATTACHED.equals(action)) {
+                UsbDevice d = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                if (d != null) lastDeviceName = d.getDeviceName();
+                broadcastStatus("USB device attached" + (d == null ? "" : ": " + d.getDeviceName()));
+                if (usbUserWanted) scheduleUsbReconnect(0);
+            } else if (UsbManager.ACTION_USB_DEVICE_DETACHED.equals(action)) {
+                UsbDevice d = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
+                boolean wasCurrent = d == null || serial == null || d.getDeviceName().equals(lastDeviceName);
+                if (wasCurrent) {
+                    closeSerialInternal(false, false);
+                    usbState = "disconnected";
+                    broadcastStatus("USB device detached" + (usbUserWanted ? "; waiting for reconnect" : ""));
+                    if (usbUserWanted) scheduleUsbReconnect(USB_RECONNECT_DELAY_MS);
+                }
+            }
+        }
+    };
 
     private final Runnable mqttFlushRunnable = new Runnable() {
         @Override
@@ -98,10 +151,12 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     private final Runnable healthRunnable = new Runnable() {
         @Override
         public void run() {
+            updateUsbHealthState();
             if (mqttEnabled && !mqttClient.isConnected()) ensureMqttConnected();
             flushPcapQuietly();
+            updateNotification();
             broadcastStatus(null);
-            handler.postDelayed(this, 15000);
+            handler.postDelayed(this, USB_HEALTH_INTERVAL_MS);
         }
     };
 
@@ -109,19 +164,23 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     public void onCreate() {
         super.onCreate();
         usbManager = (UsbManager) getSystemService(USB_SERVICE);
+        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        loadRememberedMetadata();
         deviceTracker = new CitsDeviceTracker(this);
         try {
             mqttSpool = new MqttSpool(this);
         } catch (Exception e) {
             mqttSpool = null;
             mqttDropCount++;
-            broadcastStatus("MQTT spool unavailable: " + e.getMessage());
+            setLastError("MQTT spool unavailable: " + e.getMessage());
+            broadcastStatus(lastError);
         }
         createNotificationChannel();
+        registerUsbAttachDetachReceiver();
         startAsForeground();
         acquireLocks();
         handler.postDelayed(mqttFlushRunnable, MQTT_FLUSH_INTERVAL_MS);
-        handler.postDelayed(healthRunnable, 15000);
+        handler.postDelayed(healthRunnable, USB_HEALTH_INTERVAL_MS);
         broadcastStatus("Bridge service started");
     }
 
@@ -134,8 +193,10 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
 
         String action = intent.getAction();
         if (ACTION_START_USB.equals(action)) {
+            usbUserWanted = true;
             openUsbByName(intent.getStringExtra(EXTRA_DEVICE_NAME));
         } else if (ACTION_STOP_USB.equals(action)) {
+            usbUserWanted = false;
             closeSerial();
         } else if (ACTION_START_MQTT.equals(action)) {
             startMqtt(intent.getStringExtra(EXTRA_MQTT_URI), intent.getStringExtra(EXTRA_NODE_ID));
@@ -149,6 +210,8 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
             setDeviceNotifications(intent.getBooleanExtra(EXTRA_DEVICE_NOTIFICATIONS_ENABLED, false));
         } else if (ACTION_CLEAR_SEEN_DEVICES.equals(action)) {
             clearSeenDevices();
+        } else if (ACTION_REQUEST_STATUS.equals(action)) {
+            broadcastStatus(null);
         } else if (ACTION_STOP_ALL.equals(action)) {
             stopEverything();
             stopSelf();
@@ -167,10 +230,38 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     @Override
     public void onDestroy() {
         handler.removeCallbacksAndMessages(null);
+        try { unregisterReceiver(usbAttachDetachReceiver); } catch (Exception ignored) {}
         stopEverything();
         releaseLocks();
         try { if (mqttSpool != null) mqttSpool.close(); } catch (Exception ignored) {}
         super.onDestroy();
+    }
+
+    private void loadRememberedMetadata() {
+        String rememberedNode = prefs.getString(PREF_LAST_NODE_ID, "");
+        if (rememberedNode != null && !rememberedNode.trim().isEmpty()) {
+            currentNodeId = rememberedNode.trim();
+            currentPacketTopic = prefs.getString(PREF_LAST_PACKET_TOPIC, "its/" + currentNodeId + "/packet");
+            firmwareHardwareVariant = prefs.getString(PREF_LAST_HARDWARE_VARIANT, firmwareHardwareVariant);
+            firmwareVersion = prefs.getString(PREF_LAST_FIRMWARE_VERSION, firmwareVersion);
+            nodeIdSource = "remembered";
+        }
+    }
+
+    private void rememberMetadata(CitsLineParser.Meta meta) {
+        prefs.edit()
+                .putString(PREF_LAST_NODE_ID, meta.nodeId)
+                .putString(PREF_LAST_PACKET_TOPIC, meta.packetTopic)
+                .putString(PREF_LAST_HARDWARE_VARIANT, meta.hardwareVariant)
+                .putString(PREF_LAST_FIRMWARE_VERSION, meta.firmwareVersion)
+                .apply();
+    }
+
+    private void registerUsbAttachDetachReceiver() {
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED);
+        filter.addAction(UsbManager.ACTION_USB_DEVICE_DETACHED);
+        ContextCompat.registerReceiver(this, usbAttachDetachReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED);
     }
 
     private void startAsForeground() {
@@ -198,7 +289,7 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
 
         return new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-                .setContentTitle("C-ITS USB Bridge")
+                .setContentTitle("CITS-to-go")
                 .setContentText(content)
                 .setStyle(new NotificationCompat.BigTextStyle().bigText(content))
                 .setOngoing(true)
@@ -213,7 +304,7 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
         if (nm == null) return;
         NotificationChannel ch = new NotificationChannel(
                 CHANNEL_ID,
-                "C-ITS bridge",
+                "CITS-to-go bridge",
                 NotificationManager.IMPORTANCE_LOW);
         ch.setDescription("Keeps USB serial capture and MQTT forwarding active while the phone is locked.");
         nm.createNotificationChannel(ch);
@@ -254,13 +345,18 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     }
 
     private void openUsbByName(String deviceName) {
-        closeSerial();
-        UsbDevice device = findDevice(deviceName);
+        closeSerialInternal(false, false);
+        lastDeviceName = deviceName == null || deviceName.isEmpty() ? lastDeviceName : deviceName;
+        UsbDevice device = findDevice(lastDeviceName);
         if (device == null) {
-            broadcastStatus("USB device not found");
+            usbState = usbUserWanted ? "disconnected; waiting for device" : "disconnected";
+            broadcastStatus("USB device not found" + (usbUserWanted ? "; will retry" : ""));
+            if (usbUserWanted) scheduleUsbReconnect(USB_RECONNECT_DELAY_MS);
             return;
         }
+        lastDeviceName = device.getDeviceName();
         if (!usbManager.hasPermission(device)) {
+            usbState = "permission required";
             broadcastStatus("USB permission missing for " + device.getDeviceName());
             return;
         }
@@ -270,10 +366,16 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
             reader = new SerialLineReader(serial, this);
             readerThread = new Thread(reader, "serial-line-reader");
             readerThread.start();
+            lastMetaElapsedMs = 0;
+            usbState = "connected, waiting for firmware";
+            usbReconnectScheduled = false;
             broadcastStatus("USB connected: " + serial.describe());
         } catch (Exception e) {
-            closeSerial();
-            broadcastStatus("USB open failed: " + e.getMessage());
+            closeSerialInternal(false, false);
+            usbState = "error";
+            setLastError("USB open failed: " + e.getMessage());
+            broadcastStatus(lastError);
+            if (usbUserWanted) scheduleUsbReconnect(USB_RECONNECT_DELAY_MS);
         }
     }
 
@@ -296,12 +398,47 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     }
 
     private void closeSerial() {
+        closeSerialInternal(true, false);
+    }
+
+    private void closeSerialInternal(boolean log, boolean scheduleReconnect) {
         if (reader != null) reader.stop();
         reader = null;
         if (serial != null) serial.close();
         serial = null;
         readerThread = null;
-        broadcastStatus("USB disconnected");
+        if (log) {
+            usbState = "disconnected";
+            broadcastStatus("USB disconnected");
+        }
+        if (scheduleReconnect && usbUserWanted) scheduleUsbReconnect(USB_RECONNECT_DELAY_MS);
+    }
+
+    private void scheduleUsbReconnect(long delayMs) {
+        if (!usbUserWanted || usbReconnectScheduled) return;
+        usbReconnectScheduled = true;
+        handler.postDelayed(() -> {
+            usbReconnectScheduled = false;
+            if (usbUserWanted && serial == null) openUsbByName(lastDeviceName);
+        }, delayMs);
+    }
+
+    private void updateUsbHealthState() {
+        if (serial == null) {
+            if (usbUserWanted && !"permission required".equals(usbState)) {
+                usbState = "disconnected; waiting for device";
+                scheduleUsbReconnect(USB_RECONNECT_DELAY_MS);
+            }
+            return;
+        }
+        long now = SystemClock.elapsedRealtime();
+        if (lastMetaElapsedMs == 0) {
+            usbState = "connected, waiting for firmware";
+        } else if (now - lastMetaElapsedMs > USB_META_STALE_MS) {
+            usbState = "stale; last firmware heartbeat " + formatAge(now - lastMetaElapsedMs) + " ago";
+        } else {
+            usbState = "firmware alive";
+        }
     }
 
     private void startPcap(String uriString) {
@@ -319,7 +456,8 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
                 broadcastStatus("PCAP recording started: " + uri);
             } catch (Exception e) {
                 pcapWriter = null;
-                broadcastStatus("PCAP open failed: " + e.getMessage());
+                setLastError("PCAP open failed: " + e.getMessage());
+                broadcastStatus(lastError);
             }
         }
     }
@@ -394,15 +532,27 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
 
     private void startMqtt(String uri, String nodeId) {
         mqttUri = uri == null ? "" : uri.trim();
-        mqttNodeId = nodeId == null || nodeId.trim().isEmpty() ? currentNodeId : nodeId.trim();
+        mqttNodeIdManual = nodeId != null && !nodeId.trim().isEmpty();
+        mqttNodeId = mqttNodeIdManual ? nodeId.trim() : bestAutomaticNodeId();
         mqttEnabled = true;
         mqttReconnectDelayMs = 1000;
+        mqttState = "connecting";
         broadcastStatus("MQTT forwarding enabled; packets are spooled and published every " + MQTT_FLUSH_INTERVAL_MS + " ms");
         ensureMqttConnected();
     }
 
+    private String bestAutomaticNodeId() {
+        if (currentNodeId != null && !currentNodeId.trim().isEmpty() && !"unknown".equals(currentNodeId)) {
+            return currentNodeId.trim();
+        }
+        String remembered = prefs == null ? "" : prefs.getString(PREF_LAST_NODE_ID, "");
+        if (remembered != null && !remembered.trim().isEmpty()) return remembered.trim();
+        return "unknown";
+    }
+
     private void stopMqtt(boolean clearSpool) {
         mqttEnabled = false;
+        mqttState = "disabled";
         synchronized (mqttLock) {
             mqttConnecting = false;
             mqttFlushRunning = false;
@@ -416,15 +566,21 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
         synchronized (mqttLock) {
             if (!mqttEnabled || mqttConnecting || mqttClient.isConnected()) return;
             mqttConnecting = true;
+            mqttState = "connecting";
         }
         new Thread(() -> {
             try {
-                String nid = mqttNodeId == null || mqttNodeId.trim().isEmpty() ? currentNodeId : mqttNodeId.trim();
+                String nid = mqttNodeId == null || mqttNodeId.trim().isEmpty() ? bestAutomaticNodeId() : mqttNodeId.trim();
                 mqttClient.connect(mqttUri, nid, firmwareHardwareVariant, firmwareVersion);
+                mqttEffectiveNodeId = nid;
                 mqttReconnectDelayMs = 1000;
+                mqttState = "connected";
+                setLastError("none");
                 broadcastStatus("MQTT connected; packet topic: its/" + nid + "/packet");
             } catch (Exception e) {
-                broadcastStatus("MQTT connect failed: " + e.getMessage());
+                mqttState = "reconnecting";
+                setLastError("MQTT connect failed: " + e.getMessage());
+                broadcastStatus(lastError);
                 scheduleMqttReconnect();
             } finally {
                 synchronized (mqttLock) { mqttConnecting = false; }
@@ -436,9 +592,20 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
 
     private void scheduleMqttReconnect() {
         if (!mqttEnabled) return;
+        mqttState = mqttSpool != null && mqttSpool.pendingCount() > 0 ? "offline, spooling" : "reconnecting";
         long delay = mqttReconnectDelayMs;
         mqttReconnectDelayMs = Math.min(mqttReconnectDelayMs * 2, MQTT_MAX_BACKOFF_MS);
         handler.postDelayed(this::ensureMqttConnected, delay);
+    }
+
+    private void reconnectMqttForNewNode(String newNodeId) {
+        if (!mqttEnabled || mqttNodeIdManual || newNodeId == null || newNodeId.isEmpty()) return;
+        if (newNodeId.equals(mqttEffectiveNodeId) && mqttClient.isConnected()) return;
+        mqttNodeId = newNodeId;
+        try { mqttClient.close(); } catch (Exception ignored) {}
+        mqttState = "reconnecting with detected node ID";
+        mqttReconnectDelayMs = 1000;
+        ensureMqttConnected();
     }
 
     private void spoolMqtt(byte[] payload) {
@@ -449,9 +616,11 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
         }
         try {
             mqttSpool.append(payload);
+            if (!mqttClient.isConnected()) mqttState = "offline, spooling";
         } catch (Exception e) {
             mqttDropCount++;
-            broadcastStatus("MQTT spool append failed: " + e.getMessage());
+            setLastError("MQTT spool append failed: " + e.getMessage());
+            broadcastStatus(lastError);
         }
     }
 
@@ -480,24 +649,28 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
                         sent.add(record);
                     }
                     if (!sent.isEmpty()) {
-                        // Flush once per interval/burst instead of once per packet.
                         mqttClient.flush();
                         MqttSpool.Record last = sent.get(sent.size() - 1);
                         mqttSpool.ackBatch(last.nextOffset, sent.size());
                         mqttCount += sent.size();
+                        lastMqttPublishElapsedMs = SystemClock.elapsedRealtime();
+                        mqttState = "connected";
                     }
                 } catch (Exception e) {
                     try { mqttClient.close(); } catch (Exception ignored) {}
-                    broadcastStatus("MQTT publish failed: " + e.getMessage() + "; keeping packet in spool and reconnecting");
+                    mqttState = "offline, spooling";
+                    setLastError("MQTT publish failed: " + e.getMessage());
+                    broadcastStatus(lastError + "; keeping packet in spool and reconnecting");
                     scheduleMqttReconnect();
                     return;
                 }
                 if (!sent.isEmpty() && mqttSpool.pendingCount() > 0) {
-                    // More data remains; the interval timer will send the next burst.
                     broadcastStatus(null);
                 }
             } catch (Exception e) {
-                broadcastStatus("MQTT spool read failed: " + e.getMessage());
+                mqttState = "offline, spooling";
+                setLastError("MQTT spool read failed: " + e.getMessage());
+                broadcastStatus(lastError);
                 scheduleMqttReconnect();
             } finally {
                 synchronized (mqttLock) { mqttFlushRunning = false; }
@@ -518,27 +691,65 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
 
     @Override
     public void onSerialError(Exception e) {
-        broadcastStatus("Serial error: " + e.getMessage());
+        setLastError("Serial error: " + e.getMessage());
+        usbState = "error";
+        broadcastStatus(lastError + "; reconnecting USB");
+        closeSerialInternal(false, true);
     }
 
     private void handleSerialLine(String line) {
         CitsLineParser.Meta meta = CitsLineParser.parseMeta(line);
         if (meta != null) {
-            firmwareHardwareVariant = meta.hardwareVariant;
-            firmwareVersion = meta.firmwareVersion;
-            currentNodeId = meta.nodeId;
-            if (mqttNodeId == null || mqttNodeId.isEmpty() || "unknown".equals(mqttNodeId)) {
-                mqttNodeId = meta.nodeId;
-            }
-            broadcastStatus("Metadata: nodeId=" + meta.nodeId + " packetTopic=" + meta.packetTopic);
+            handleMeta(meta);
             return;
         }
         if (line.startsWith("CITSPROTO,")) {
-            broadcastStatus("USB protocol: " + line.substring("CITSPROTO,".length()));
+            long now = SystemClock.elapsedRealtime();
+            if (now - lastProtocolLogElapsedMs > 60000L) {
+                lastProtocolLogElapsedMs = now;
+                broadcastStatus("USB protocol: " + line.substring("CITSPROTO,".length()));
+            } else {
+                broadcastStatus(null);
+            }
             return;
         }
         if (line.startsWith("I (") || line.contains(") ")) return;
         broadcastStatus(line.length() > 120 ? line.substring(0, 120) + "…" : line);
+    }
+
+    private void handleMeta(CitsLineParser.Meta meta) {
+        long now = SystemClock.elapsedRealtime();
+        boolean firstMeta = lastMetaElapsedMs == 0;
+        boolean nodeChanged = meta.nodeId != null && !meta.nodeId.equals(currentNodeId);
+        boolean topicChanged = meta.packetTopic != null && !meta.packetTopic.equals(currentPacketTopic);
+
+        lastMetaElapsedMs = now;
+        usbState = "firmware alive";
+        firmwareHardwareVariant = meta.hardwareVariant;
+        firmwareVersion = meta.firmwareVersion;
+        if (meta.nodeId != null && !meta.nodeId.trim().isEmpty()) {
+            currentNodeId = meta.nodeId.trim();
+            nodeIdSource = "detected from firmware";
+        }
+        if (meta.packetTopic != null && !meta.packetTopic.trim().isEmpty()) {
+            currentPacketTopic = meta.packetTopic.trim();
+        } else {
+            currentPacketTopic = "its/" + currentNodeId + "/packet";
+        }
+        rememberMetadata(meta);
+
+        if (!mqttNodeIdManual && currentNodeId != null && !currentNodeId.isEmpty() && !"unknown".equals(currentNodeId)) {
+            boolean mqttWasUnknown = mqttNodeId == null || mqttNodeId.isEmpty() || "unknown".equals(mqttNodeId);
+            mqttNodeId = currentNodeId;
+            if (mqttEnabled && (mqttWasUnknown || !currentNodeId.equals(mqttEffectiveNodeId))) {
+                reconnectMqttForNewNode(currentNodeId);
+            }
+        }
+
+        String log = (firstMeta || nodeChanged || topicChanged) ?
+                "Firmware heartbeat: nodeId=" + currentNodeId + " topic=" + currentPacketTopic : null;
+        broadcastStatus(log);
+        updateNotification();
     }
 
     private void handlePacketLine(String line) {
@@ -546,7 +757,8 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
         try {
             packet = CitsLineParser.parsePacket(line);
         } catch (Exception e) {
-            broadcastStatus("Bad CITS line: " + e.getMessage());
+            setLastError("Bad CITS line: " + e.getMessage());
+            broadcastStatus(lastError);
             return;
         }
         if (packet == null) return;
@@ -555,6 +767,7 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
 
     private void handlePacket(CitsPacket packet) {
         packetCount++;
+        lastPacketElapsedMs = SystemClock.elapsedRealtime();
         if (packet.truncated) truncatedCount++;
 
         CitsDeviceTracker.Discovery discovery = deviceTracker == null ? null : deviceTracker.notePacket(packet);
@@ -572,7 +785,8 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
                     pcapCount++;
                 } catch (Exception e) {
                     closePcapLocked(false);
-                    broadcastStatus("PCAP write failed: " + e.getMessage());
+                    setLastError("PCAP write failed: " + e.getMessage());
+                    broadcastStatus(lastError);
                 }
             }
         }
@@ -588,6 +802,7 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     }
 
     private void stopEverything() {
+        usbUserWanted = false;
         closeSerial();
         closePcap();
         stopMqtt(false);
@@ -595,9 +810,9 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
 
     private String summaryText() {
         long queued = mqttSpool == null ? 0 : mqttSpool.pendingCount();
-        return "USB " + (serial != null ? "connected" : "off") +
-                " • PCAP " + (pcapWriter != null ? "recording" : "off") +
-                " • MQTT " + (mqttClient.isConnected() ? "connected" : (mqttEnabled ? "reconnecting" : "off")) +
+        return "USB " + usbState +
+                " • Node " + currentNodeId +
+                " • MQTT " + mqttState +
                 " • packets " + packetCount +
                 " • devices " + (deviceTracker == null ? 0 : deviceTracker.seenCount()) +
                 (queued > 0 ? " • spool " + queued : "");
@@ -606,9 +821,12 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
     private void broadcastStatus(String log) {
         Intent i = new Intent(ACTION_STATUS).setPackage(getPackageName());
         i.putExtra("usb", serial != null);
+        i.putExtra("usbState", usbState);
         i.putExtra("pcap", pcapWriter != null);
         i.putExtra("mqtt", mqttClient.isConnected());
         i.putExtra("mqttEnabled", mqttEnabled);
+        i.putExtra("mqttState", mqttState);
+        i.putExtra("mqttEffectiveNodeId", mqttEffectiveNodeId);
         long queued = mqttSpool == null ? 0 : mqttSpool.pendingCount();
         i.putExtra("mqttQueue", queued > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) queued);
         i.putExtra("packetCount", packetCount);
@@ -620,7 +838,29 @@ public class CitsBridgeService extends Service implements SerialLineReader.Liste
         i.putExtra("newDeviceCount", newDeviceCount);
         i.putExtra("deviceNotificationsEnabled", deviceTracker != null && deviceTracker.isNotificationsEnabled());
         i.putExtra("nodeId", currentNodeId);
+        i.putExtra("packetTopic", currentPacketTopic);
+        i.putExtra("nodeIdSource", nodeIdSource);
+        i.putExtra("lastError", lastError);
+        i.putExtra("lastMetaAgeMs", ageOrMinusOne(lastMetaElapsedMs));
+        i.putExtra("lastPacketAgeMs", ageOrMinusOne(lastPacketElapsedMs));
+        i.putExtra("lastMqttPublishAgeMs", ageOrMinusOne(lastMqttPublishElapsedMs));
         if (log != null && !log.isEmpty()) i.putExtra("log", log);
         sendBroadcast(i);
+    }
+
+    private long ageOrMinusOne(long timestampElapsedMs) {
+        if (timestampElapsedMs <= 0) return -1L;
+        return Math.max(0L, SystemClock.elapsedRealtime() - timestampElapsedMs);
+    }
+
+    private void setLastError(String error) {
+        lastError = error == null || error.isEmpty() ? "none" : error;
+    }
+
+    private static String formatAge(long ageMs) {
+        if (ageMs < 0) return "never";
+        if (ageMs < 1000) return ageMs + "ms";
+        if (ageMs < 60000) return String.format(Locale.US, "%.1fs", ageMs / 1000.0);
+        return String.format(Locale.US, "%.1fmin", ageMs / 60000.0);
     }
 }
