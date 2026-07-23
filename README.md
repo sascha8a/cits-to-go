@@ -1,6 +1,6 @@
 # CITS-to-go
 
-**CITS-to-go** is a portable C-ITS / ITS-G5 capture bridge built around a Seeed Studio XIAO ESP32-C5 and an Android phone.
+**CITS-to-go** is a portable C-ITS capture bridge built around a Seeed Studio XIAO ESP32-C5 and an Android phone.
 
 The ESP32-C5 firmware listens for C-ITS packets, forwards them over USB serial, and the Android app can save the captured data as PCAP and forward the packets to an MQTT broker using the same packet-topic style as the original OpenTrafficMap receiver firmware.
 
@@ -13,7 +13,7 @@ The ESP32-C5 firmware listens for C-ITS packets, forwards them over USB serial, 
 
 CITS-to-go is heavily inspired by and derived from the work of the **OpenTrafficMap** project.
 
-OpenTrafficMap has done the important groundwork of exploring low-cost C-ITS / ITS-G5 reception, ESP32-C5 receiver firmware, packet forwarding, and public traffic-map tooling.
+OpenTrafficMap has done the important groundwork of exploring low-cost C-ITS reception, ESP32-C5 receiver firmware, packet forwarding, and public traffic-map tooling.
 
 Huge thanks and praise to the OpenTrafficMap contributors for making their work available and for pushing open, accessible traffic infrastructure research forward.
 
@@ -33,7 +33,7 @@ This project is experimental.
 
 Currently implemented goals:
 
-- Capture C-ITS / ITS-G5 packets with a Seeed Studio XIAO ESP32-C5.
+- Capture C-ITS packets with a Seeed Studio XIAO ESP32-C5.
 - Blink the onboard USER LED when messages are received.
 - Stream captured packets to an Android phone over USB-C.
 - Save captures as PCAP files on Android.
@@ -49,7 +49,7 @@ To build and use CITS-to-go, you need:
 - **Android phone** with USB host / OTG support
 - **Seeed Studio XIAO ESP32-C5**
 - **USB-C to USB-C cable**
-- Suitable antenna / RF setup for the intended C-ITS / ITS-G5 reception band (Already shipped with the XIAO ESP32-C5, but performance may be improved with a better antenna or external RF front-end)
+- Suitable antenna / RF setup for the intended C-ITS reception band (Already shipped with the XIAO ESP32-C5, but performance may be improved with a better antenna or external RF front-end)
 - Optional: MQTT broker reachable from the Android phone
 
 Notes:
@@ -70,11 +70,10 @@ The firmware runs on the Seeed Studio XIAO ESP32-C5.
 
 Responsibilities:
 
-- Configure the ESP32-C5 receiver path for C-ITS / ITS-G5 packet capture.
+- Configure the ESP32-C5 receiver path for C-ITS packet capture.
 - Receive C-ITS packets.
 - Blink the XIAO onboard USER LED on received/logged packets.
 - Send captured packets to the Android app over USB serial.
-- Provide metadata such as node ID and MQTT topic information.
 
 ### Android app
 
@@ -84,10 +83,9 @@ Responsibilities:
 
 - Read the USB serial stream from the ESP32-C5.
 - Decode C-ITS packet frames.
+- Decode the firmware's USB serial packet frames.
 - Save captures to PCAP.
 - Forward packets to MQTT.
-- Continue capture/publishing in a foreground service while the phone is locked.
-- Queue/spool packets so MQTT reconnects do not immediately drop data.
 
 ---
 
@@ -104,13 +102,6 @@ QoS:     0 by default
 Retain:  false
 ```
 
-Status and metadata topics may also be used:
-
-```text
-its/<nodeid>/status
-its/<nodeid>/info
-its/<nodeid>/stats
-```
 
 ---
 
@@ -139,7 +130,7 @@ Check:
 - The phone has USB permission.
 - The foreground service is active.
 - The XIAO USER LED blinks when packets are received.
-- There is C-ITS / ITS-G5 traffic nearby.
+- There is C-ITS traffic nearby.
 
 ### MQTT says `broken pipe`
 
@@ -159,23 +150,9 @@ If it still happens repeatedly:
 
 ---
 
-## Development notes
-
-Because this repository is mostly AI-generated, contributors should be especially careful about:
-
-- Reviewing protocol parsing code
-- Testing packet counts against known-good captures
-- Verifying PCAP output in Wireshark
-- Checking Android lifecycle behavior
-- Checking MQTT reconnect behavior
-- Auditing all firmware changes against the original OpenTrafficMap firmware
-- Avoiding accidental changes to packet format compatibility
-
----
-
 ## Safety, privacy, and legal notes
 
-C-ITS / ITS-G5 messages may contain sensitive operational or location-related data.
+C-ITS messages may contain sensitive operational or location-related data.
 
 Before capturing, storing, forwarding, or publishing packets:
 

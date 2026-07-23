@@ -10,9 +10,59 @@ This firmware is intended for the **Seeed Studio XIAO ESP32-C5**. It captures C-
 
 ## What this firmware does
 
-- Captures C-ITS frames.
-- Pulses the Seeed Studio XIAO ESP32-C5 onboard USER LED on received packets.
-- Streams packets over USB serial to the Android app.
+- Enables ESP32-C5 802.11p receive mode and captures ITS-G5 frames on the configured C-ITS channel.
+- Uses the Wi-Fi promiscuous callback only to copy packets into a fixed buffer pool and queue work.
+- Streams accepted packets as compact COBS-delimited binary records over USB Serial/JTAG.
+- Pulses the Seeed Studio XIAO ESP32-C5 onboard USER LED on accepted packets.
+
+The default channel is **5900 MHz** (G5CC). By default, only 802.11 broadcast destination frames are accepted.
+
+## Serial communication format
+
+The firmware writes one COBS record per captured packet to USB Serial/JTAG. Each encoded record is terminated by a single `0x00` delimiter.
+
+Receiver steps:
+
+1. Read bytes until `0x00`.
+2. COBS-decode the preceding bytes.
+3. Verify the decoded frame starts with magic `43 54 47 31` (`CTG1`).
+4. Verify the CRC-32/IEEE trailer.
+5. Use `captured_len` bytes after the fixed header as the captured 802.11 frame.
+
+All multi-byte integers are little-endian. The CRC covers the decoded header and packet payload, excluding the final CRC field itself.
+
+Decoded packet frame:
+
+| Offset | Size | Field | Description |
+| --- | ---: | --- | --- |
+| 0 | 4 | `magic` | ASCII `CTG1` |
+| 4 | 1 | `version` | Protocol version, currently `1` |
+| 5 | 1 | `type` | `1` = captured packet |
+| 6 | 2 | `header_len` | Fixed packet header length, currently `32` |
+| 8 | 2 | `flags` | Bit 0 = broadcast destination, bit 1 = truncated |
+| 10 | 4 | `sequence` | Incrementing packet sequence number |
+| 14 | 8 | `timestamp_us` | ESP Wi-Fi receive timestamp in microseconds |
+| 22 | 2 | `frequency_mhz` | C-ITS receive frequency, default `5900` |
+| 24 | 2 | `original_len` | Original 802.11 frame length without FCS |
+| 26 | 2 | `captured_len` | Number of payload bytes included after the header |
+| 28 | 1 | `rssi` | Signed RSSI byte from the Wi-Fi metadata |
+| 29 | 1 | `wifi_type` | ESP-IDF `wifi_promiscuous_pkt_type_t` value |
+| 30 | 1 | `rx_state` | ESP Wi-Fi receive state, accepted packets use `0` |
+| 31 | 1 | `reserved` | Reserved, currently `0` |
+| 32 | `captured_len` | `payload` | Captured 802.11 frame bytes, FCS excluded |
+| 32 + `captured_len` | 4 | `crc32` | CRC-32/IEEE over header + payload |
+
+COBS framing means raw `0x00` bytes never appear inside an encoded record, so serial readers can resynchronize by scanning for the delimiter.
+
+## Firmware configuration
+
+The defaults are defined in `main/Kconfig.projbuild` and can be changed with `idf.py menuconfig`:
+
+- `CONFIG_CITS_RX_FREQUENCY_MHZ`: ITS-G5 channel center frequency.
+- `CONFIG_CITS_BROADCAST_ONLY`: drop non-broadcast 802.11 destination frames.
+- `CONFIG_CITS_PACKET_POOL_SIZE`: fixed packet buffer pool depth.
+- `CONFIG_CITS_MAX_PACKET_BYTES`: maximum captured 802.11 frame size.
+- `CONFIG_CITS_LED_GPIO`: USER LED GPIO. The XIAO ESP32-C5 USER LED is GPIO27 and active-low.
 
 ---
 
