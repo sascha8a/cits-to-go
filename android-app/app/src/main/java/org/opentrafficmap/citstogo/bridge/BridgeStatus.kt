@@ -11,6 +11,7 @@ data class BridgeStatus(
     val mqttQueued: Long = 0,
     val pcapRecording: Boolean = false,
     val pcapPackets: Long = 0,
+    val discoveredDevices: Long = 0,
     val truncated: Long = 0,
     val protocolErrors: Long = 0,
     val lastPacketSummary: String = "",

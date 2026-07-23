@@ -54,15 +54,20 @@ class CitsBridgeService : Service() {
     private var packets = 0L
     private var mqttPublished = 0L
     private var pcapPackets = 0L
+    private var discoveredDevices = 0L
     private var truncated = 0L
     private var protocolErrors = 0L
+    private val discoveredDeviceNames = mutableSetOf<String>()
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
                     val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
-                    if (device != null) selectedDeviceName = device.deviceName
+                    if (device != null) {
+                        handleDiscoveredDevice(device)
+                        selectedDeviceName = device.deviceName
+                    }
                     if (usbWanted && serial == null) scheduleUsbReconnect(0)
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
@@ -95,12 +100,14 @@ class CitsBridgeService : Service() {
         usbManager = getSystemService(USB_SERVICE) as UsbManager
         spool = MqttSpool(this)
         nodeId = loadOrCreateNodeId()
+        discoveredDevices = loadDiscoveredDevices()
         createNotificationChannel()
         registerReceiverCompat(usbReceiver, IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
         })
         startInForeground("Starting")
+        scanKnownUsbDevices()
         handler.post(maintenance)
         publishStatus("Bridge service started")
     }
@@ -404,6 +411,29 @@ class CitsBridgeService : Service() {
         return devices.firstOrNull { it.vendorId == ESPRESSIF_VENDOR_ID } ?: devices.first()
     }
 
+    private fun scanKnownUsbDevices() {
+        usbManager.deviceList.values.forEach { handleDiscoveredDevice(it) }
+    }
+
+    private fun handleDiscoveredDevice(device: UsbDevice) {
+        if (!device.isCitsDevice() || !discoveredDeviceNames.add(device.deviceName)) return
+        discoveredDevices += 1
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putLong(PREF_DISCOVERED_DEVICES, discoveredDevices)
+            .apply()
+        val message = "C-ITS device discovered: ${device.discoveryLabel()}"
+        status = status.copy(discoveredDevices = discoveredDevices)
+        sendDiscoveryNotification(device, message)
+        publishStatus(message)
+    }
+
+    private fun UsbDevice.isCitsDevice(): Boolean = vendorId == ESPRESSIF_VENDOR_ID
+
+    private fun UsbDevice.discoveryLabel(): String {
+        val product = listOfNotNull(manufacturerName, productName).joinToString(" ").ifBlank { deviceName }
+        return "$product (vid=%04x pid=%04x)".format(vendorId, productId)
+    }
+
     private fun publishStatus(log: String?) {
         status = status.copy(
             running = usbWanted,
@@ -414,6 +444,7 @@ class CitsBridgeService : Service() {
             mqttPublished = mqttPublished,
             pcapRecording = pcapWriter != null,
             pcapPackets = pcapPackets,
+            discoveredDevices = discoveredDevices,
             truncated = truncated,
             protocolErrors = protocolErrors,
             mqttState = when {
@@ -434,6 +465,7 @@ class CitsBridgeService : Service() {
         intent.putExtra(EXTRA_MQTT_QUEUED, status.mqttQueued)
         intent.putExtra(EXTRA_PCAP_RECORDING, status.pcapRecording)
         intent.putExtra(EXTRA_PCAP_PACKETS, status.pcapPackets)
+        intent.putExtra(EXTRA_DISCOVERED_DEVICES, status.discoveredDevices)
         intent.putExtra(EXTRA_TRUNCATED, status.truncated)
         intent.putExtra(EXTRA_PROTOCOL_ERRORS, status.protocolErrors)
         intent.putExtra(EXTRA_LAST_PACKET, status.lastPacketSummary)
@@ -445,6 +477,14 @@ class CitsBridgeService : Service() {
     private fun updateNotification() {
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(NOTIFICATION_ID, buildNotification(status.summary()))
+    }
+
+    private fun sendDiscoveryNotification(device: UsbDevice, message: String) {
+        val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(
+            DISCOVERY_NOTIFICATION_ID_BASE + device.deviceName.hashCode().mod(1_000),
+            buildDiscoveryNotification(message),
+        )
     }
 
     private fun startInForeground(content: String) {
@@ -492,6 +532,24 @@ class CitsBridgeService : Service() {
             .build()
     }
 
+    private fun buildDiscoveryNotification(content: String): Notification {
+        val openIntent = Intent(this, MainActivity::class.java)
+        val openPi = PendingIntent.getActivity(
+            this,
+            2,
+            openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        return Notification.Builder(this, DISCOVERY_CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setContentTitle("C-ITS device discovered")
+            .setContentText(content)
+            .setStyle(Notification.BigTextStyle().bigText(content))
+            .setAutoCancel(true)
+            .setContentIntent(openPi)
+            .build()
+    }
+
     private fun createNotificationChannel() {
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         val channel = NotificationChannel(
@@ -501,6 +559,13 @@ class CitsBridgeService : Service() {
         )
         channel.description = "Keeps USB serial capture and MQTT forwarding active while the phone is locked."
         manager.createNotificationChannel(channel)
+        val discoveryChannel = NotificationChannel(
+            DISCOVERY_CHANNEL_ID,
+            "C-ITS device discovery",
+            NotificationManager.IMPORTANCE_DEFAULT,
+        )
+        discoveryChannel.description = "Alerts when a C-ITS USB device is discovered."
+        manager.createNotificationChannel(discoveryChannel)
     }
 
     private fun acquireWakeLock() {
@@ -526,6 +591,9 @@ class CitsBridgeService : Service() {
         prefs.edit().putString(PREF_NODE_ID, generated).apply()
         return generated
     }
+
+    private fun loadDiscoveredDevices(): Long =
+        getSharedPreferences(PREFS, MODE_PRIVATE).getLong(PREF_DISCOVERED_DEVICES, 0L)
 
     private fun registerReceiverCompat(receiver: BroadcastReceiver, filter: IntentFilter) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -558,6 +626,7 @@ class CitsBridgeService : Service() {
         const val EXTRA_MQTT_QUEUED = "mqttQueued"
         const val EXTRA_PCAP_RECORDING = "pcapRecording"
         const val EXTRA_PCAP_PACKETS = "pcapPackets"
+        const val EXTRA_DISCOVERED_DEVICES = "discoveredDevices"
         const val EXTRA_TRUNCATED = "truncated"
         const val EXTRA_PROTOCOL_ERRORS = "protocolErrors"
         const val EXTRA_LAST_PACKET = "lastPacket"
@@ -567,9 +636,13 @@ class CitsBridgeService : Service() {
         const val PREFS = "cits_to_go"
         const val PREF_NODE_ID = "node_id"
         const val PREF_MQTT_URI = "mqtt_uri"
+        const val PREF_DISCOVERED_DEVICES = "discovered_devices"
+        const val DEFAULT_MQTT_URI = "mqtts://cits1.opentrafficmap.org"
 
         private const val CHANNEL_ID = "cits_bridge"
+        private const val DISCOVERY_CHANNEL_ID = "cits_device_discovery"
         private const val NOTIFICATION_ID = 2301
+        private const val DISCOVERY_NOTIFICATION_ID_BASE = 2400
         private const val USB_READ_TIMEOUT_MS = 5_000
         private const val MAINTENANCE_INTERVAL_MS = 2_000L
         private const val MQTT_MAX_BATCH = 100

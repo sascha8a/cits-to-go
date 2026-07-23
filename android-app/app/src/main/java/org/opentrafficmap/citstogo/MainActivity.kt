@@ -18,10 +18,13 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -90,6 +93,7 @@ class MainActivity : ComponentActivity() {
                 mqttQueued = intent.getLongExtra(CitsBridgeService.EXTRA_MQTT_QUEUED, 0),
                 pcapRecording = intent.getBooleanExtra(CitsBridgeService.EXTRA_PCAP_RECORDING, false),
                 pcapPackets = intent.getLongExtra(CitsBridgeService.EXTRA_PCAP_PACKETS, 0),
+                discoveredDevices = intent.getLongExtra(CitsBridgeService.EXTRA_DISCOVERED_DEVICES, 0),
                 truncated = intent.getLongExtra(CitsBridgeService.EXTRA_TRUNCATED, 0),
                 protocolErrors = intent.getLongExtra(CitsBridgeService.EXTRA_PROTOCOL_ERRORS, 0),
                 lastPacketSummary = intent.getStringExtra(CitsBridgeService.EXTRA_LAST_PACKET).orEmpty(),
@@ -103,8 +107,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         usbManager = getSystemService(USB_SERVICE) as UsbManager
         val prefs = getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE)
-        mqttUri = prefs.getString(CitsBridgeService.PREF_MQTT_URI, "").orEmpty()
+        mqttUri = prefs.getString(CitsBridgeService.PREF_MQTT_URI, CitsBridgeService.DEFAULT_MQTT_URI).orEmpty()
         nodeId = prefs.getString(CitsBridgeService.PREF_NODE_ID, null) ?: createAndStoreNodeId()
+        status = status.copy(discoveredDevices = prefs.getLong(CitsBridgeService.PREF_DISCOVERED_DEVICES, 0L))
         registerReceiverCompat(usbPermissionReceiver, IntentFilter(CitsBridgeService.ACTION_USB_PERMISSION))
         registerReceiverCompat(statusReceiver, IntentFilter(CitsBridgeService.ACTION_STATUS))
         requestNotificationPermission()
@@ -301,6 +306,7 @@ private fun CitsApp(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing)
                 .verticalScroll(rememberScrollState())
                 .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -446,7 +452,10 @@ private fun Metrics(status: BridgeStatus) {
             MetricCard("PCAP", status.pcapPackets.toString(), Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            MetricCard("Discovered", status.discoveredDevices.toString(), Modifier.weight(1f))
             MetricCard("Truncated", status.truncated.toString(), Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             MetricCard("Errors", status.protocolErrors.toString(), Modifier.weight(1f))
         }
         if (status.lastPacketSummary.isNotBlank()) {

@@ -19,7 +19,7 @@ class UsbCdcSerial(
 
     fun description(): String = "${device.deviceName} vid=%04x pid=%04x".format(device.vendorId, device.productId)
 
-    fun open(baudRate: Int = 115_200) {
+    fun open(baudRate: Int = 921_600) {
         val conn = usbManager.openDevice(device) ?: throw IOException("Unable to open USB device")
         connection = conn
         var controlInterface: UsbInterface? = null
