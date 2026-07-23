@@ -49,6 +49,8 @@ class CitsBridgeService : Service() {
     private var selectedDeviceName: String? = null
     private var mqttUri = ""
     private var nodeId = ""
+    private var maxQueueSize = DEFAULT_MAX_QUEUE_SIZE
+    private var queueIntervalMs = DEFAULT_QUEUE_INTERVAL_MS
     private var startElapsedMs = 0L
     private var lastStatsElapsedMs = 0L
 
@@ -86,7 +88,6 @@ class CitsBridgeService : Service() {
         override fun run() {
             if (mqttEnabled) {
                 if (!mqttClient.isConnected()) ensureMqttConnected()
-                flushMqttSpool()
             }
             flushPcapQuietly()
             publishStatsIfDue()
@@ -96,10 +97,20 @@ class CitsBridgeService : Service() {
         }
     }
 
+    private val mqttQueueDrain = object : Runnable {
+        override fun run() {
+            flushMqttSpool()
+            handler.postDelayed(this, queueIntervalMs)
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         usbManager = getSystemService(USB_SERVICE) as UsbManager
         spool = MqttSpool(this)
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        maxQueueSize = prefs.getInt(PREF_MAX_QUEUE_SIZE, DEFAULT_MAX_QUEUE_SIZE).coerceAtLeast(1)
+        queueIntervalMs = prefs.getLong(PREF_QUEUE_INTERVAL_MS, DEFAULT_QUEUE_INTERVAL_MS).coerceAtLeast(100L)
         nodeId = loadOrCreateNodeId()
         discoveredMacAddressSet.addAll(loadDiscoveredMacAddresses())
         discoveredMacAddresses = discoveredMacAddressSet.size.toLong()
@@ -110,6 +121,7 @@ class CitsBridgeService : Service() {
         })
         startInForeground("Starting")
         handler.post(maintenance)
+        handler.post(mqttQueueDrain)
         publishStatus("Bridge service started")
     }
 
@@ -119,6 +131,8 @@ class CitsBridgeService : Service() {
                 intent.getStringExtra(EXTRA_DEVICE_NAME),
                 intent.getStringExtra(EXTRA_MQTT_URI).orEmpty(),
                 intent.getStringExtra(EXTRA_NODE_ID).orEmpty(),
+                intent.getIntExtra(EXTRA_MAX_QUEUE_SIZE, maxQueueSize),
+                intent.getLongExtra(EXTRA_QUEUE_INTERVAL_MS, queueIntervalMs),
             )
             ACTION_STOP -> {
                 stopBridge()
@@ -142,14 +156,28 @@ class CitsBridgeService : Service() {
         super.onDestroy()
     }
 
-    private fun startBridge(deviceName: String?, requestedMqttUri: String, requestedNodeId: String) {
+    private fun startBridge(
+        deviceName: String?,
+        requestedMqttUri: String,
+        requestedNodeId: String,
+        requestedMaxQueueSize: Int,
+        requestedQueueIntervalMs: Long,
+    ) {
         startElapsedMs = SystemClock.elapsedRealtime()
         selectedDeviceName = deviceName?.takeIf { it.isNotBlank() } ?: selectedDeviceName
         if (requestedNodeId.isNotBlank()) {
             nodeId = requestedNodeId.trim()
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(PREF_NODE_ID, nodeId).apply()
         }
+        maxQueueSize = requestedMaxQueueSize.coerceAtLeast(1)
+        queueIntervalMs = requestedQueueIntervalMs.coerceAtLeast(100L)
         mqttUri = requestedMqttUri.trim()
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString(PREF_MQTT_URI, mqttUri)
+            .putString(PREF_NODE_ID, nodeId)
+            .putInt(PREF_MAX_QUEUE_SIZE, maxQueueSize)
+            .putLong(PREF_QUEUE_INTERVAL_MS, queueIntervalMs)
+            .apply()
         mqttEnabled = mqttUri.isNotEmpty()
         mqttReconnectDelayMs = 1_000
         usbWanted = true
@@ -233,6 +261,7 @@ class CitsBridgeService : Service() {
         if (mqttEnabled) {
             runCatching {
                 spool.append(packet.payload)
+                if (spool.pendingCount() >= maxQueueSize) flushMqttSpool()
             }.onFailure {
                 status = status.copy(lastError = "MQTT spool failed: ${it.message}")
             }
@@ -351,7 +380,7 @@ class CitsBridgeService : Service() {
         if (!mqttEnabled || !mqttClient.isConnected() || !mqttFlushing.compareAndSet(false, true)) return
         Thread({
             try {
-                val batch = spool.readBatch(MQTT_MAX_BATCH)
+                val batch = spool.readBatch(maxQueueSize)
                 if (batch.isEmpty()) return@Thread
                 var sent = 0
                 var nextOffset = 0L
@@ -617,6 +646,8 @@ class CitsBridgeService : Service() {
         const val EXTRA_DEVICE_NAME = "deviceName"
         const val EXTRA_MQTT_URI = "mqttUri"
         const val EXTRA_NODE_ID = "nodeId"
+        const val EXTRA_MAX_QUEUE_SIZE = "maxQueueSize"
+        const val EXTRA_QUEUE_INTERVAL_MS = "queueIntervalMs"
         const val EXTRA_PCAP_URI = "pcapUri"
         const val EXTRA_RUNNING = "running"
         const val EXTRA_USB_STATE = "usbState"
@@ -638,8 +669,13 @@ class CitsBridgeService : Service() {
         const val PREFS = "cits_to_go"
         const val PREF_NODE_ID = "node_id"
         const val PREF_MQTT_URI = "mqtt_uri"
+        const val PREF_MAX_QUEUE_SIZE = "max_queue_size"
+        const val PREF_QUEUE_INTERVAL_MS = "queue_interval_ms"
         const val PREF_DISCOVERED_MAC_ADDRESSES = "discovered_mac_addresses"
         const val DEFAULT_MQTT_URI = "mqtts://cits1.opentrafficmap.org"
+        const val DEFAULT_MAX_QUEUE_SIZE = 100
+        const val DEFAULT_QUEUE_INTERVAL_SECONDS = 0.5
+        const val DEFAULT_QUEUE_INTERVAL_MS = 500L
 
         private const val CHANNEL_ID = "cits_bridge"
         private const val DISCOVERY_CHANNEL_ID = "cits_device_discovery"
@@ -647,7 +683,6 @@ class CitsBridgeService : Service() {
         private const val DISCOVERY_NOTIFICATION_ID_BASE = 2400
         private const val USB_READ_TIMEOUT_MS = 5_000
         private const val MAINTENANCE_INTERVAL_MS = 2_000L
-        private const val MQTT_MAX_BATCH = 100
         private const val ESPRESSIF_VENDOR_ID = 0x303A
     }
 }
