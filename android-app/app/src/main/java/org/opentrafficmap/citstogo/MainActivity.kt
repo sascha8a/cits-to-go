@@ -16,14 +16,17 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -32,22 +35,32 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import org.opentrafficmap.citstogo.bridge.BridgeStatus
 import org.opentrafficmap.citstogo.bridge.CitsBridgeService
 import java.security.SecureRandom
@@ -62,6 +75,7 @@ class MainActivity : ComponentActivity() {
     private var mqttUri by mutableStateOf("")
     private var nodeId by mutableStateOf("")
     private var logLine by mutableStateOf("")
+    private val packetLogLines = mutableStateListOf<String>()
 
     private val usbPermissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -100,6 +114,7 @@ class MainActivity : ComponentActivity() {
                 lastError = intent.getStringExtra(CitsBridgeService.EXTRA_LAST_ERROR).orEmpty(),
             )
             intent.getStringExtra(CitsBridgeService.EXTRA_LOG)?.let { logLine = it }
+            intent.getStringExtra(CitsBridgeService.EXTRA_DECODED_PACKET_LOG)?.let { appendPacketLog(it) }
         }
     }
 
@@ -109,7 +124,9 @@ class MainActivity : ComponentActivity() {
         val prefs = getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE)
         mqttUri = prefs.getString(CitsBridgeService.PREF_MQTT_URI, CitsBridgeService.DEFAULT_MQTT_URI).orEmpty()
         nodeId = prefs.getString(CitsBridgeService.PREF_NODE_ID, null) ?: createAndStoreNodeId()
-        status = status.copy(discoveredDevices = prefs.getLong(CitsBridgeService.PREF_DISCOVERED_DEVICES, 0L))
+        status = status.copy(
+            discoveredDevices = prefs.getStringSet(CitsBridgeService.PREF_DISCOVERED_MAC_ADDRESSES, emptySet()).orEmpty().size.toLong(),
+        )
         registerReceiverCompat(usbPermissionReceiver, IntentFilter(CitsBridgeService.ACTION_USB_PERMISSION))
         registerReceiverCompat(statusReceiver, IntentFilter(CitsBridgeService.ACTION_STATUS))
         requestNotificationPermission()
@@ -127,6 +144,7 @@ class MainActivity : ComponentActivity() {
                     onNodeIdChange = { nodeId = it },
                     status = status,
                     logLine = logLine,
+                    packetLogLines = packetLogLines.toList(),
                     onRefresh = ::refreshDevices,
                     onStart = ::requestUsbThenStart,
                     onStop = ::stopBridge,
@@ -249,6 +267,13 @@ class MainActivity : ComponentActivity() {
         return generated
     }
 
+    private fun appendPacketLog(line: String) {
+        packetLogLines.add(0, line)
+        while (packetLogLines.size > MAX_PACKET_LOG_LINES) {
+            packetLogLines.removeAt(packetLogLines.lastIndex)
+        }
+    }
+
     private fun requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -268,6 +293,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val REQUEST_CREATE_PCAP = 1001
+        private const val MAX_PACKET_LOG_LINES = 250
     }
 }
 
@@ -296,41 +322,186 @@ private fun CitsApp(
     onNodeIdChange: (String) -> Unit,
     status: BridgeStatus,
     logLine: String,
+    packetLogLines: List<String>,
     onRefresh: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onStartPcap: () -> Unit,
     onStopPcap: () -> Unit,
 ) {
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.safeDrawing)
-                .verticalScroll(rememberScrollState())
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            Text("C-ITS to go", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
-            StatusBand(status)
-            ConfigPanel(
-                devices,
-                selectedDeviceName,
-                onSelectDevice,
-                mqttUri,
-                onMqttUriChange,
-                nodeId,
-                onNodeIdChange,
-                onRefresh,
-            )
-            ActionRow(status.running, onStart, onStop)
-            RecordingRow(status, onStartPcap, onStopPcap)
-            Metrics(status)
-            if (logLine.isNotBlank() || status.lastError.isNotBlank()) {
-                EventLog(logLine, status.lastError)
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
+    var screen by remember { mutableStateOf(AppScreen.Capture) }
+
+    ModalNavigationDrawer(
+        drawerState = drawerState,
+        drawerContent = {
+            ModalDrawerSheet(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .width(280.dp),
+            ) {
+                Text(
+                    "C-ITS to go",
+                    modifier = Modifier.padding(20.dp),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                HorizontalDivider()
+                NavigationDrawerItem(
+                    label = { Text("Capture") },
+                    selected = screen == AppScreen.Capture,
+                    onClick = {
+                        screen = AppScreen.Capture
+                        scope.launch { drawerState.close() }
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+                NavigationDrawerItem(
+                    label = { Text("Packet log") },
+                    selected = screen == AppScreen.PacketLog,
+                    onClick = {
+                        screen = AppScreen.PacketLog
+                        scope.launch { drawerState.close() }
+                    },
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+        },
+    ) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                AppHeader(
+                    title = if (screen == AppScreen.Capture) "C-ITS to go" else "Packet log",
+                    onOpenDrawer = { scope.launch { drawerState.open() } },
+                )
+                when (screen) {
+                    AppScreen.Capture -> CaptureScreen(
+                        devices = devices,
+                        selectedDeviceName = selectedDeviceName,
+                        onSelectDevice = onSelectDevice,
+                        mqttUri = mqttUri,
+                        onMqttUriChange = onMqttUriChange,
+                        nodeId = nodeId,
+                        onNodeIdChange = onNodeIdChange,
+                        status = status,
+                        logLine = logLine,
+                        onRefresh = onRefresh,
+                        onStart = onStart,
+                        onStop = onStop,
+                        onStartPcap = onStartPcap,
+                        onStopPcap = onStopPcap,
+                    )
+                    AppScreen.PacketLog -> PacketLogScreen(packetLogLines)
+                }
             }
         }
     }
+}
+
+@Composable
+private fun AppHeader(title: String, onOpenDrawer: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = onOpenDrawer) {
+            Text("☰", style = MaterialTheme.typography.headlineSmall)
+        }
+        Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun CaptureScreen(
+    devices: List<UsbDevice>,
+    selectedDeviceName: String?,
+    onSelectDevice: (String) -> Unit,
+    mqttUri: String,
+    onMqttUriChange: (String) -> Unit,
+    nodeId: String,
+    onNodeIdChange: (String) -> Unit,
+    status: BridgeStatus,
+    logLine: String,
+    onRefresh: () -> Unit,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onStartPcap: () -> Unit,
+    onStopPcap: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        StatusBand(status)
+        ConfigPanel(
+            devices,
+            selectedDeviceName,
+            onSelectDevice,
+            mqttUri,
+            onMqttUriChange,
+            nodeId,
+            onNodeIdChange,
+            onRefresh,
+        )
+        ActionRow(status.running, onStart, onStop)
+        RecordingRow(status, onStartPcap, onStopPcap)
+        Metrics(status)
+        if (logLine.isNotBlank() || status.lastError.isNotBlank()) {
+            EventLog(logLine, status.lastError)
+        }
+    }
+}
+
+@Composable
+private fun PacketLogScreen(packetLogLines: List<String>) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (packetLogLines.isEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.White, RoundedCornerShape(8.dp))
+                    .padding(16.dp),
+            ) {
+                Text("No decoded packets yet", color = MaterialTheme.colorScheme.secondary)
+            }
+        } else {
+            packetLogLines.forEach { line ->
+                PacketLogLine(line)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PacketLogLine(line: String) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Color.White, RoundedCornerShape(8.dp))
+            .padding(12.dp),
+    ) {
+        Text(line, style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+private enum class AppScreen {
+    Capture,
+    PacketLog,
 }
 
 @Composable
@@ -452,7 +623,7 @@ private fun Metrics(status: BridgeStatus) {
             MetricCard("PCAP", status.pcapPackets.toString(), Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            MetricCard("Discovered", status.discoveredDevices.toString(), Modifier.weight(1f))
+            MetricCard("MACs", status.discoveredDevices.toString(), Modifier.weight(1f))
             MetricCard("Truncated", status.truncated.toString(), Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
