@@ -1,6 +1,6 @@
 # CITS-to-go Firmware
 
-Firmware for the **CITS-to-go** portable C-ITS / ITS-G5 receiver.
+Firmware for the **CITS-to-go** portable C-ITS receiver.
 
 This firmware is intended for the **Seeed Studio XIAO ESP32-C5**. It captures C-ITS packets, pulses the onboard USER LED when packets are accepted, and streams the captured packets to an Android phone over USB serial.
 
@@ -10,18 +10,9 @@ This firmware is intended for the **Seeed Studio XIAO ESP32-C5**. It captures C-
 
 ## What this firmware does
 
-- Configures the ESP32-C5 receiver path used by the OpenTrafficMap ITS-G5 firmware.
-- Captures C-ITS / ITS-G5 frames.
-- Filters/logs accepted C-ITS packets.
-- Pulses the Seeed Studio XIAO ESP32-C5 onboard USER LED on received/logged packets.
+- Captures C-ITS frames.
+- Pulses the Seeed Studio XIAO ESP32-C5 onboard USER LED on received packets.
 - Streams packets over USB serial to the Android app.
-- Emits metadata so the Android app can use the same MQTT topic layout as the original OpenTrafficMap firmware.
-
-The Android app is responsible for:
-
-- Reading the USB serial stream.
-- Writing PCAP files.
-- Forwarding raw packet bytes to MQTT.
 
 ---
 
@@ -58,33 +49,6 @@ docker run --rm -it \
   idf.py -p /dev/ttyACM0 -b 921600 flash
 ```
 
-This is the short form suggested for day-to-day flashing:
-
-```bash
-docker run --rm -it --device /dev/ttyACM0 -v "$PWD":/project -w /project -u "$UID" -e HOME=/tmp espressif/idf idf.py -p /dev/ttyACM0 -b 921600 flash
-```
-
-### Monitor
-
-```bash
-docker run --rm -it \
-  --device /dev/ttyACM0 \
-  -v "$PWD":/project \
-  -w /project \
-  -u "$UID" \
-  -e HOME=/tmp \
-  espressif/idf \
-  idf.py -p /dev/ttyACM0 monitor
-```
-
-If flashing fails because of permissions, try one of these:
-
-- Add your user to the host `dialout` group and log in again.
-- Run Docker with a device-group mapping matching `/dev/ttyACM0`.
-- As a quick test only, run the Docker command without `-u "$UID"`.
-
----
-
 ## Build and flash with a local ESP-IDF checkout
 
 If you have ESP-IDF installed locally, run from the `firmware/` directory:
@@ -96,148 +60,8 @@ idf.py build
 idf.py -p /dev/ttyACM0 -b 921600 flash monitor
 ```
 
-If your ESP-IDF checkout is outside this repository, source that checkout instead:
-
-```bash
-. /path/to/esp-idf/export.sh
-idf.py set-target esp32c5
-idf.py build
-idf.py -p /dev/ttyACM0 -b 921600 flash monitor
-```
-
----
-
-## Quick sanity check after flashing
-
-After flashing, connect the XIAO ESP32-C5 to the Android phone or run `idf.py monitor`.
-
-You should see startup messages and metadata lines similar to:
-
-```text
-CITSMETA,<nodeid>,its/<nodeid>/packet,<hardware_variant>,<firmware_version>
-CITSPROTO,binary-v1,header=28,crc32=1,stdout_line_endings=lf-required
-```
-
-When valid packets are received:
-
-- The XIAO USER LED should blink.
-- The Android app should increment packet counters.
-- PCAP output should grow.
-- MQTT publishing should use `its/<nodeid>/packet`.
-
----
-
-## USER LED
-
-For the Seeed Studio XIAO ESP32-C5, this build uses the onboard **L / USER LED** directly.
-
-Default configuration:
-
-```text
-CONFIG_CITS_USE_XIAO_USER_LED=y
-CONFIG_CITS_USER_LED_GPIO=27
-CONFIG_CITS_USER_LED_ACTIVE_LOW=y
-CONFIG_CITS_RX_LED_PULSE_MS=60
-```
-
-GPIO27 is active-low in this configuration:
-
-```text
-GPIO27 low  -> LED on
-GPIO27 high -> LED off
-```
-
-The LED pulses once for each accepted/logged C-ITS packet.
-
----
-
-## USB serial protocol
-
-The firmware streams packet records over USB serial to the Android app.
-
-Current CITS-to-go builds may support both:
-
-1. **Binary framing**, preferred for real captures.
-2. **Legacy ASCII lines**, useful for debugging and compatibility.
-
-The Android app accepts both.
-
-### Metadata lines
-
-Metadata is sent as readable text, for example:
-
-```text
-CITSMETA,<nodeid>,its/<nodeid>/packet,<hardware_variant>,<firmware_version>
-CITSPROTO,binary-v1,header=28,crc32=1,stdout_line_endings=lf-required
-```
-
-### MQTT topic compatibility
-
-The firmware provides the node ID and packet topic information used by the Android app.
-
-Packet forwarding uses the OpenTrafficMap-style topic format:
-
-```text
-Topic:   its/<nodeid>/packet
-Payload: raw binary packet bytes
-QoS:     0 by default
-Retain:  false
-```
-
----
-
-## Configuration
-
-Use menuconfig if you need to change firmware options:
-
-```bash
-idf.py menuconfig
-```
-
-Useful CITS-to-go options include:
-
-```text
-CONFIG_CITS_USB_SERIAL_BINARY_FRAMING
-CONFIG_CITS_STRICT_GEONET_FILTER
-CONFIG_CITS_MAX_FRAME_LEN
-CONFIG_CITS_USE_XIAO_USER_LED
-CONFIG_CITS_USER_LED_GPIO
-CONFIG_CITS_USER_LED_ACTIVE_LOW
-CONFIG_CITS_RX_LED_PULSE_MS
-```
-
-For the XIAO ESP32-C5, the defaults should normally be kept.
-
 ---
 
 ## Troubleshooting
 
-### No packets appear
-
-Check:
-
-- The antenna and RF path.
-- Whether there is C-ITS / ITS-G5 traffic nearby.
-- Firmware channel/frequency configuration.
-- Whether strict GeoNetworking filtering is enabled.
-- Whether the Android app has USB permission.
-- Whether the phone is using a data-capable USB-C cable.
-
-### LED does not blink
-
-Check:
-
-- You are using a Seeed Studio XIAO ESP32-C5.
-- `CONFIG_CITS_USE_XIAO_USER_LED=y`.
-- `CONFIG_CITS_USER_LED_GPIO=27`.
-- The app/firmware is actually receiving accepted packets.
-
-### Docker cannot access `/dev/ttyACM0`
-
-Check:
-
-```bash
-ls -l /dev/ttyACM0
-```
-
-Then try reconnecting the board, using a different USB cable, or running the flash command with appropriate device permissions.
+TODO
