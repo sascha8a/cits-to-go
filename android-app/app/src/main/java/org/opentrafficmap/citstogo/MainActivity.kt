@@ -32,6 +32,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -42,6 +43,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,6 +53,8 @@ import androidx.compose.ui.unit.dp
 import org.opentrafficmap.citstogo.bridge.BridgeStatus
 import org.opentrafficmap.citstogo.bridge.CitsBridgeService
 import java.security.SecureRandom
+import java.util.Locale
+import kotlin.math.roundToLong
 
 class MainActivity : ComponentActivity() {
     private lateinit var usbManager: UsbManager
@@ -61,6 +65,8 @@ class MainActivity : ComponentActivity() {
     private var status by mutableStateOf(BridgeStatus())
     private var mqttUri by mutableStateOf("")
     private var nodeId by mutableStateOf("")
+    private var maxQueueLength by mutableStateOf("")
+    private var maxQueueAgeSeconds by mutableStateOf("")
     private var logLine by mutableStateOf("")
 
     private val usbPermissionReceiver = object : BroadcastReceiver() {
@@ -109,6 +115,16 @@ class MainActivity : ComponentActivity() {
         val prefs = getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE)
         mqttUri = prefs.getString(CitsBridgeService.PREF_MQTT_URI, CitsBridgeService.DEFAULT_MQTT_URI).orEmpty()
         nodeId = prefs.getString(CitsBridgeService.PREF_NODE_ID, null) ?: createAndStoreNodeId()
+        maxQueueLength = prefs.getInt(
+            CitsBridgeService.PREF_MQTT_MAX_QUEUE_LENGTH,
+            CitsBridgeService.DEFAULT_MQTT_MAX_QUEUE_LENGTH,
+        ).toString()
+        maxQueueAgeSeconds = formatQueueAgeSeconds(
+            prefs.getLong(
+                CitsBridgeService.PREF_MQTT_MAX_QUEUE_AGE_MS,
+                CitsBridgeService.DEFAULT_MQTT_MAX_QUEUE_AGE_MS,
+            ),
+        )
         status = status.copy(discoveredDevices = prefs.getLong(CitsBridgeService.PREF_DISCOVERED_DEVICES, 0L))
         registerReceiverCompat(usbPermissionReceiver, IntentFilter(CitsBridgeService.ACTION_USB_PERMISSION))
         registerReceiverCompat(statusReceiver, IntentFilter(CitsBridgeService.ACTION_STATUS))
@@ -125,6 +141,10 @@ class MainActivity : ComponentActivity() {
                     onMqttUriChange = { mqttUri = it },
                     nodeId = nodeId,
                     onNodeIdChange = { nodeId = it },
+                    maxQueueLength = maxQueueLength,
+                    onMaxQueueLengthChange = { maxQueueLength = it },
+                    maxQueueAgeSeconds = maxQueueAgeSeconds,
+                    onMaxQueueAgeSecondsChange = { maxQueueAgeSeconds = it },
                     status = status,
                     logLine = logLine,
                     onRefresh = ::refreshDevices,
@@ -132,6 +152,18 @@ class MainActivity : ComponentActivity() {
                     onStop = ::stopBridge,
                     onStartPcap = ::choosePcapFile,
                     onStopPcap = ::stopPcap,
+                    onSaveSettings = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds ->
+                        mqttUri = updatedMqttUri
+                        nodeId = updatedNodeId
+                        maxQueueLength = updatedMaxQueueLength
+                        maxQueueAgeSeconds = updatedMaxQueueAgeSeconds
+                        saveSettings(
+                            updatedMqttUri,
+                            updatedNodeId,
+                            updatedMaxQueueLength,
+                            updatedMaxQueueAgeSeconds,
+                        )
+                    },
                 )
             }
         }
@@ -187,6 +219,8 @@ class MainActivity : ComponentActivity() {
             .putExtra(CitsBridgeService.EXTRA_DEVICE_NAME, selectedDeviceName.orEmpty())
             .putExtra(CitsBridgeService.EXTRA_MQTT_URI, mqttUri)
             .putExtra(CitsBridgeService.EXTRA_NODE_ID, nodeId)
+            .putExtra(CitsBridgeService.EXTRA_MQTT_MAX_QUEUE_LENGTH, parseMaxQueueLength(maxQueueLength))
+            .putExtra(CitsBridgeService.EXTRA_MQTT_MAX_QUEUE_AGE_MS, parseMaxQueueAgeMs(maxQueueAgeSeconds))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
     }
 
@@ -232,11 +266,38 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun saveSettings() {
+    private fun saveSettings(
+        mqttUriValue: String = mqttUri,
+        nodeIdValue: String = nodeId,
+        maxQueueLengthValue: String = maxQueueLength,
+        maxQueueAgeSecondsValue: String = maxQueueAgeSeconds,
+    ) {
+        val parsedMaxQueueLength = parseMaxQueueLength(maxQueueLengthValue)
+        val parsedMaxQueueAgeMs = parseMaxQueueAgeMs(maxQueueAgeSecondsValue)
+        mqttUri = mqttUriValue.trim()
+        nodeId = nodeIdValue.trim()
+        maxQueueLength = parsedMaxQueueLength.toString()
+        maxQueueAgeSeconds = formatQueueAgeSeconds(parsedMaxQueueAgeMs)
         getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
-            .putString(CitsBridgeService.PREF_MQTT_URI, mqttUri.trim())
-            .putString(CitsBridgeService.PREF_NODE_ID, nodeId.trim())
+            .putString(CitsBridgeService.PREF_MQTT_URI, mqttUri)
+            .putString(CitsBridgeService.PREF_NODE_ID, nodeId)
+            .putInt(CitsBridgeService.PREF_MQTT_MAX_QUEUE_LENGTH, parsedMaxQueueLength)
+            .putLong(CitsBridgeService.PREF_MQTT_MAX_QUEUE_AGE_MS, parsedMaxQueueAgeMs)
             .apply()
+    }
+
+    private fun parseMaxQueueLength(value: String): Int =
+        value.trim().toIntOrNull()?.coerceAtLeast(1) ?: CitsBridgeService.DEFAULT_MQTT_MAX_QUEUE_LENGTH
+
+    private fun parseMaxQueueAgeMs(value: String): Long =
+        value.trim().toDoubleOrNull()
+            ?.takeIf { it.isFinite() }
+            ?.let { (it * 1_000.0).roundToLong().coerceAtLeast(0L) }
+            ?: CitsBridgeService.DEFAULT_MQTT_MAX_QUEUE_AGE_MS
+
+    private fun formatQueueAgeSeconds(ageMs: Long): String {
+        if (ageMs % 1_000L == 0L) return (ageMs / 1_000L).toString()
+        return String.format(Locale.US, "%.3f", ageMs / 1_000.0).trimEnd('0').trimEnd('.')
     }
 
     private fun createAndStoreNodeId(): String {
@@ -294,6 +355,10 @@ private fun CitsApp(
     onMqttUriChange: (String) -> Unit,
     nodeId: String,
     onNodeIdChange: (String) -> Unit,
+    maxQueueLength: String,
+    onMaxQueueLengthChange: (String) -> Unit,
+    maxQueueAgeSeconds: String,
+    onMaxQueueAgeSecondsChange: (String) -> Unit,
     status: BridgeStatus,
     logLine: String,
     onRefresh: () -> Unit,
@@ -301,7 +366,10 @@ private fun CitsApp(
     onStop: () -> Unit,
     onStartPcap: () -> Unit,
     onStopPcap: () -> Unit,
+    onSaveSettings: (String, String, String, String) -> Unit,
 ) {
+    var settingsOpen by rememberSaveable { mutableStateOf(false) }
+
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
             modifier = Modifier
@@ -311,16 +379,12 @@ private fun CitsApp(
                 .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Text("C-ITS to go", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.SemiBold)
+            AppHeader(onOpenSettings = { settingsOpen = true })
             StatusBand(status)
             ConfigPanel(
                 devices,
                 selectedDeviceName,
                 onSelectDevice,
-                mqttUri,
-                onMqttUriChange,
-                nodeId,
-                onNodeIdChange,
                 onRefresh,
             )
             ActionRow(status.running, onStart, onStop)
@@ -329,6 +393,42 @@ private fun CitsApp(
             if (logLine.isNotBlank() || status.lastError.isNotBlank()) {
                 EventLog(logLine, status.lastError)
             }
+        }
+    }
+
+    if (settingsOpen) {
+        SettingsDialog(
+            mqttUri = mqttUri,
+            nodeId = nodeId,
+            maxQueueLength = maxQueueLength,
+            maxQueueAgeSeconds = maxQueueAgeSeconds,
+            onDismiss = { settingsOpen = false },
+            onDone = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds ->
+                onMqttUriChange(updatedMqttUri)
+                onNodeIdChange(updatedNodeId)
+                onMaxQueueLengthChange(updatedMaxQueueLength)
+                onMaxQueueAgeSecondsChange(updatedMaxQueueAgeSeconds)
+                onSaveSettings(updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds)
+                settingsOpen = false
+            },
+        )
+    }
+}
+
+@Composable
+private fun AppHeader(onOpenSettings: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "C-ITS to go",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.weight(1f),
+        )
+        TextButton(onClick = onOpenSettings) {
+            Text("Settings")
         }
     }
 }
@@ -357,10 +457,6 @@ private fun ConfigPanel(
     devices: List<UsbDevice>,
     selectedDeviceName: String?,
     onSelectDevice: (String) -> Unit,
-    mqttUri: String,
-    onMqttUriChange: (String) -> Unit,
-    nodeId: String,
-    onNodeIdChange: (String) -> Unit,
     onRefresh: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -383,22 +479,86 @@ private fun ConfigPanel(
                 }
             }
         }
-        OutlinedTextField(
-            value = mqttUri,
-            onValueChange = onMqttUriChange,
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("MQTT URI") },
-            placeholder = { Text("mqtt://broker.example:1883") },
-        )
-        OutlinedTextField(
-            value = nodeId,
-            onValueChange = onNodeIdChange,
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("Node ID") },
-        )
     }
+}
+
+@Composable
+private fun SettingsDialog(
+    mqttUri: String,
+    nodeId: String,
+    maxQueueLength: String,
+    maxQueueAgeSeconds: String,
+    onDismiss: () -> Unit,
+    onDone: (String, String, String, String) -> Unit,
+) {
+    var draftMqttUri by rememberSaveable(mqttUri) { mutableStateOf(mqttUri) }
+    var draftNodeId by rememberSaveable(nodeId) { mutableStateOf(nodeId) }
+    var draftMaxQueueLength by rememberSaveable(maxQueueLength) { mutableStateOf(maxQueueLength) }
+    var draftMaxQueueAgeSeconds by rememberSaveable(maxQueueAgeSeconds) { mutableStateOf(maxQueueAgeSeconds) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(8.dp),
+        title = {
+            Text("Settings", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = draftMqttUri,
+                    onValueChange = { draftMqttUri = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("MQTT broker") },
+                    placeholder = { Text("mqtt://broker.example:1883") },
+                )
+                OutlinedTextField(
+                    value = draftNodeId,
+                    onValueChange = { draftNodeId = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Node ID") },
+                )
+                OutlinedTextField(
+                    value = draftMaxQueueLength,
+                    onValueChange = { draftMaxQueueLength = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Max queue length") },
+                    placeholder = { Text("100") },
+                )
+                OutlinedTextField(
+                    value = draftMaxQueueAgeSeconds,
+                    onValueChange = { draftMaxQueueAgeSeconds = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Max queue age") },
+                    placeholder = { Text("0.2") },
+                    suffix = { Text("s") },
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    onDone(
+                        draftMqttUri,
+                        draftNodeId,
+                        draftMaxQueueLength,
+                        draftMaxQueueAgeSeconds,
+                    )
+                },
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Text("Done")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        },
+    )
 }
 
 @Composable

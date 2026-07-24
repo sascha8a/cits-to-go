@@ -47,6 +47,10 @@ class CitsBridgeService : Service() {
     private var selectedDeviceName: String? = null
     private var mqttUri = ""
     private var nodeId = ""
+    private var mqttMaxQueueLength = DEFAULT_MQTT_MAX_QUEUE_LENGTH
+    private var mqttMaxQueueAgeMs = DEFAULT_MQTT_MAX_QUEUE_AGE_MS
+    private var mqttQueueFirstElapsedMs = 0L
+    private var mqttQueueAgeFlushScheduled = false
     private var startElapsedMs = 0L
     private var lastStatsElapsedMs = 0L
 
@@ -100,6 +104,7 @@ class CitsBridgeService : Service() {
         usbManager = getSystemService(USB_SERVICE) as UsbManager
         spool = MqttSpool(this)
         nodeId = loadOrCreateNodeId()
+        loadMqttQueueSettings()
         discoveredDevices = loadDiscoveredDevices()
         createNotificationChannel()
         registerReceiverCompat(usbReceiver, IntentFilter().apply {
@@ -118,6 +123,8 @@ class CitsBridgeService : Service() {
                 intent.getStringExtra(EXTRA_DEVICE_NAME),
                 intent.getStringExtra(EXTRA_MQTT_URI).orEmpty(),
                 intent.getStringExtra(EXTRA_NODE_ID).orEmpty(),
+                intent.getIntExtra(EXTRA_MQTT_MAX_QUEUE_LENGTH, mqttMaxQueueLength),
+                intent.getLongExtra(EXTRA_MQTT_MAX_QUEUE_AGE_MS, mqttMaxQueueAgeMs),
             )
             ACTION_STOP -> {
                 stopBridge()
@@ -141,13 +148,20 @@ class CitsBridgeService : Service() {
         super.onDestroy()
     }
 
-    private fun startBridge(deviceName: String?, requestedMqttUri: String, requestedNodeId: String) {
+    private fun startBridge(
+        deviceName: String?,
+        requestedMqttUri: String,
+        requestedNodeId: String,
+        requestedMaxQueueLength: Int,
+        requestedMaxQueueAgeMs: Long,
+    ) {
         startElapsedMs = SystemClock.elapsedRealtime()
         selectedDeviceName = deviceName?.takeIf { it.isNotBlank() } ?: selectedDeviceName
         if (requestedNodeId.isNotBlank()) {
             nodeId = requestedNodeId.trim()
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(PREF_NODE_ID, nodeId).apply()
         }
+        updateMqttQueueSettings(requestedMaxQueueLength, requestedMaxQueueAgeMs)
         mqttUri = requestedMqttUri.trim()
         mqttEnabled = mqttUri.isNotEmpty()
         mqttReconnectDelayMs = 1_000
@@ -230,6 +244,7 @@ class CitsBridgeService : Service() {
         if (mqttEnabled) {
             runCatching {
                 spool.append(packet.payload)
+                updateQueueDrainSchedule()
             }.onFailure {
                 status = status.copy(lastError = "MQTT spool failed: ${it.message}")
             }
@@ -346,6 +361,7 @@ class CitsBridgeService : Service() {
     private fun flushMqttSpool() {
         if (!mqttEnabled || !mqttClient.isConnected() || !mqttFlushing.compareAndSet(false, true)) return
         Thread({
+            var shouldContinueDraining = false
             try {
                 val batch = spool.readBatch(MQTT_MAX_BATCH)
                 if (batch.isEmpty()) return@Thread
@@ -359,6 +375,14 @@ class CitsBridgeService : Service() {
                 mqttClient.flush()
                 spool.ack(nextOffset, sent)
                 mqttPublished += sent
+                val pendingAfter = spool.pendingCount()
+                if (pendingAfter == 0L) {
+                    resetQueueDrainSchedule()
+                } else {
+                    mqttQueueFirstElapsedMs = SystemClock.elapsedRealtime()
+                    shouldContinueDraining = pendingAfter > mqttMaxQueueLength
+                    if (!shouldContinueDraining) scheduleQueueAgeFlush()
+                }
                 status = status.copy(
                     mqttState = "Connected",
                     mqttPublished = mqttPublished,
@@ -371,8 +395,48 @@ class CitsBridgeService : Service() {
                 scheduleMqttReconnect()
             } finally {
                 mqttFlushing.set(false)
+                if (shouldContinueDraining) flushMqttSpool()
             }
         }, "mqtt-flush").start()
+    }
+
+    private fun updateQueueDrainSchedule() {
+        val pending = spool.pendingCount()
+        if (pending <= 0L) {
+            resetQueueDrainSchedule()
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (mqttQueueFirstElapsedMs == 0L) mqttQueueFirstElapsedMs = now
+        if (pending > mqttMaxQueueLength) {
+            flushMqttSpool()
+            return
+        }
+        scheduleQueueAgeFlush()
+    }
+
+    private fun scheduleQueueAgeFlush() {
+        if (mqttMaxQueueAgeMs <= 0L) {
+            flushMqttSpool()
+            return
+        }
+        if (mqttQueueAgeFlushScheduled || mqttQueueFirstElapsedMs == 0L) return
+        val delayMs = (mqttQueueFirstElapsedMs + mqttMaxQueueAgeMs - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+        mqttQueueAgeFlushScheduled = true
+        handler.postDelayed({
+            mqttQueueAgeFlushScheduled = false
+            val firstQueuedAt = mqttQueueFirstElapsedMs
+            if (firstQueuedAt != 0L && SystemClock.elapsedRealtime() - firstQueuedAt >= mqttMaxQueueAgeMs) {
+                flushMqttSpool()
+            } else {
+                scheduleQueueAgeFlush()
+            }
+        }, delayMs)
+    }
+
+    private fun resetQueueDrainSchedule() {
+        mqttQueueFirstElapsedMs = 0L
+        mqttQueueAgeFlushScheduled = false
     }
 
     private fun publishStatsIfDue() {
@@ -595,6 +659,22 @@ class CitsBridgeService : Service() {
     private fun loadDiscoveredDevices(): Long =
         getSharedPreferences(PREFS, MODE_PRIVATE).getLong(PREF_DISCOVERED_DEVICES, 0L)
 
+    private fun loadMqttQueueSettings() {
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        mqttMaxQueueLength = prefs.getInt(PREF_MQTT_MAX_QUEUE_LENGTH, DEFAULT_MQTT_MAX_QUEUE_LENGTH).coerceAtLeast(1)
+        mqttMaxQueueAgeMs = prefs.getLong(PREF_MQTT_MAX_QUEUE_AGE_MS, DEFAULT_MQTT_MAX_QUEUE_AGE_MS).coerceAtLeast(0L)
+    }
+
+    private fun updateMqttQueueSettings(maxQueueLength: Int, maxQueueAgeMs: Long) {
+        mqttMaxQueueLength = maxQueueLength.coerceAtLeast(1)
+        mqttMaxQueueAgeMs = maxQueueAgeMs.coerceAtLeast(0L)
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putInt(PREF_MQTT_MAX_QUEUE_LENGTH, mqttMaxQueueLength)
+            .putLong(PREF_MQTT_MAX_QUEUE_AGE_MS, mqttMaxQueueAgeMs)
+            .apply()
+        if (spool.pendingCount() > 0L) updateQueueDrainSchedule()
+    }
+
     private fun registerReceiverCompat(receiver: BroadcastReceiver, filter: IntentFilter) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(receiver, filter, RECEIVER_NOT_EXPORTED)
@@ -616,6 +696,8 @@ class CitsBridgeService : Service() {
         const val EXTRA_DEVICE_NAME = "deviceName"
         const val EXTRA_MQTT_URI = "mqttUri"
         const val EXTRA_NODE_ID = "nodeId"
+        const val EXTRA_MQTT_MAX_QUEUE_LENGTH = "mqttMaxQueueLength"
+        const val EXTRA_MQTT_MAX_QUEUE_AGE_MS = "mqttMaxQueueAgeMs"
         const val EXTRA_PCAP_URI = "pcapUri"
         const val EXTRA_RUNNING = "running"
         const val EXTRA_USB_STATE = "usbState"
@@ -636,8 +718,12 @@ class CitsBridgeService : Service() {
         const val PREFS = "cits_to_go"
         const val PREF_NODE_ID = "node_id"
         const val PREF_MQTT_URI = "mqtt_uri"
+        const val PREF_MQTT_MAX_QUEUE_LENGTH = "mqtt_max_queue_length"
+        const val PREF_MQTT_MAX_QUEUE_AGE_MS = "mqtt_max_queue_age_ms"
         const val PREF_DISCOVERED_DEVICES = "discovered_devices"
         const val DEFAULT_MQTT_URI = "mqtts://cits1.opentrafficmap.org"
+        const val DEFAULT_MQTT_MAX_QUEUE_LENGTH = 100
+        const val DEFAULT_MQTT_MAX_QUEUE_AGE_MS = 200L
 
         private const val CHANNEL_ID = "cits_bridge"
         private const val DISCOVERY_CHANNEL_ID = "cits_device_discovery"
