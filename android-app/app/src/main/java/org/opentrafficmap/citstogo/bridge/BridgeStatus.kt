@@ -18,8 +18,7 @@ data class BridgeStatus(
     val lastError: String = "",
 ) {
     fun summary(): String {
-        val topic = packetTopic.ifBlank { "its/<nodeid>/packet" }
         val pcap = if (pcapRecording) " | PCAP recording" else ""
-        return "$usbState | MQTT $mqttState$pcap | packets $packets | topic $topic"
+        return "$usbState | MQTT $mqttState$pcap"
     }
 }
