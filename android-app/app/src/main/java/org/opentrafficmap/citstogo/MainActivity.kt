@@ -74,8 +74,6 @@ class MainActivity : ComponentActivity() {
     private var status by mutableStateOf(BridgeStatus())
     private var mqttUri by mutableStateOf("")
     private var nodeId by mutableStateOf("")
-    private var maxQueueSize by mutableStateOf("")
-    private var queueIntervalSeconds by mutableStateOf("")
     private var logLine by mutableStateOf("")
     private val packetLogLines = mutableStateListOf<String>()
 
@@ -126,10 +124,6 @@ class MainActivity : ComponentActivity() {
         val prefs = getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE)
         mqttUri = prefs.getString(CitsBridgeService.PREF_MQTT_URI, CitsBridgeService.DEFAULT_MQTT_URI).orEmpty()
         nodeId = prefs.getString(CitsBridgeService.PREF_NODE_ID, null) ?: createAndStoreNodeId()
-        maxQueueSize = prefs.getInt(CitsBridgeService.PREF_MAX_QUEUE_SIZE, CitsBridgeService.DEFAULT_MAX_QUEUE_SIZE).toString()
-        queueIntervalSeconds = formatSeconds(
-            prefs.getLong(CitsBridgeService.PREF_QUEUE_INTERVAL_MS, CitsBridgeService.DEFAULT_QUEUE_INTERVAL_MS),
-        )
         status = status.copy(
             discoveredDevices = prefs.getStringSet(CitsBridgeService.PREF_DISCOVERED_MAC_ADDRESSES, emptySet()).orEmpty().size.toLong(),
         )
@@ -148,10 +142,6 @@ class MainActivity : ComponentActivity() {
                     onMqttUriChange = { mqttUri = it },
                     nodeId = nodeId,
                     onNodeIdChange = { nodeId = it },
-                    maxQueueSize = maxQueueSize,
-                    onMaxQueueSizeChange = { maxQueueSize = it },
-                    queueIntervalSeconds = queueIntervalSeconds,
-                    onQueueIntervalSecondsChange = { queueIntervalSeconds = it },
                     status = status,
                     logLine = logLine,
                     packetLogLines = packetLogLines.toList(),
@@ -168,11 +158,6 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshDevices()
-    }
-
-    override fun onPause() {
-        saveSettings()
-        super.onPause()
     }
 
     override fun onDestroy() {
@@ -220,8 +205,6 @@ class MainActivity : ComponentActivity() {
             .putExtra(CitsBridgeService.EXTRA_DEVICE_NAME, selectedDeviceName.orEmpty())
             .putExtra(CitsBridgeService.EXTRA_MQTT_URI, mqttUri)
             .putExtra(CitsBridgeService.EXTRA_NODE_ID, nodeId)
-            .putExtra(CitsBridgeService.EXTRA_MAX_QUEUE_SIZE, sanitizedMaxQueueSize())
-            .putExtra(CitsBridgeService.EXTRA_QUEUE_INTERVAL_MS, sanitizedQueueIntervalMs())
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
     }
 
@@ -271,22 +254,7 @@ class MainActivity : ComponentActivity() {
         getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
             .putString(CitsBridgeService.PREF_MQTT_URI, mqttUri.trim())
             .putString(CitsBridgeService.PREF_NODE_ID, nodeId.trim())
-            .putInt(CitsBridgeService.PREF_MAX_QUEUE_SIZE, sanitizedMaxQueueSize())
-            .putLong(CitsBridgeService.PREF_QUEUE_INTERVAL_MS, sanitizedQueueIntervalMs())
             .apply()
-    }
-
-    private fun sanitizedMaxQueueSize(): Int =
-        maxQueueSize.toIntOrNull()?.coerceAtLeast(1) ?: CitsBridgeService.DEFAULT_MAX_QUEUE_SIZE
-
-    private fun sanitizedQueueIntervalMs(): Long =
-        ((queueIntervalSeconds.toDoubleOrNull() ?: CitsBridgeService.DEFAULT_QUEUE_INTERVAL_SECONDS) * 1_000)
-            .toLong()
-            .coerceAtLeast(100L)
-
-    private fun formatSeconds(ms: Long): String {
-        val seconds = ms / 1_000.0
-        return if (seconds % 1.0 == 0.0) seconds.toInt().toString() else seconds.toString().trimEnd('0')
     }
 
     private fun createAndStoreNodeId(): String {
@@ -352,10 +320,6 @@ private fun CitsApp(
     onMqttUriChange: (String) -> Unit,
     nodeId: String,
     onNodeIdChange: (String) -> Unit,
-    maxQueueSize: String,
-    onMaxQueueSizeChange: (String) -> Unit,
-    queueIntervalSeconds: String,
-    onQueueIntervalSecondsChange: (String) -> Unit,
     status: BridgeStatus,
     logLine: String,
     packetLogLines: List<String>,
@@ -402,15 +366,6 @@ private fun CitsApp(
                     },
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
                 )
-                NavigationDrawerItem(
-                    label = { Text("Settings") },
-                    selected = screen == AppScreen.Settings,
-                    onClick = {
-                        screen = AppScreen.Settings
-                        scope.launch { drawerState.close() }
-                    },
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                )
             }
         },
     ) {
@@ -423,11 +378,7 @@ private fun CitsApp(
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 AppHeader(
-                    title = when (screen) {
-                        AppScreen.Capture -> "C-ITS to go"
-                        AppScreen.PacketLog -> "Packet log"
-                        AppScreen.Settings -> "Settings"
-                    },
+                    title = if (screen == AppScreen.Capture) "C-ITS to go" else "Packet log",
                     onOpenDrawer = { scope.launch { drawerState.open() } },
                 )
                 when (screen) {
@@ -435,6 +386,10 @@ private fun CitsApp(
                         devices = devices,
                         selectedDeviceName = selectedDeviceName,
                         onSelectDevice = onSelectDevice,
+                        mqttUri = mqttUri,
+                        onMqttUriChange = onMqttUriChange,
+                        nodeId = nodeId,
+                        onNodeIdChange = onNodeIdChange,
                         status = status,
                         logLine = logLine,
                         onRefresh = onRefresh,
@@ -444,16 +399,6 @@ private fun CitsApp(
                         onStopPcap = onStopPcap,
                     )
                     AppScreen.PacketLog -> PacketLogScreen(packetLogLines)
-                    AppScreen.Settings -> SettingsScreen(
-                        mqttUri = mqttUri,
-                        onMqttUriChange = onMqttUriChange,
-                        nodeId = nodeId,
-                        onNodeIdChange = onNodeIdChange,
-                        maxQueueSize = maxQueueSize,
-                        onMaxQueueSizeChange = onMaxQueueSizeChange,
-                        queueIntervalSeconds = queueIntervalSeconds,
-                        onQueueIntervalSecondsChange = onQueueIntervalSecondsChange,
-                    )
                 }
             }
         }
@@ -479,6 +424,10 @@ private fun CaptureScreen(
     devices: List<UsbDevice>,
     selectedDeviceName: String?,
     onSelectDevice: (String) -> Unit,
+    mqttUri: String,
+    onMqttUriChange: (String) -> Unit,
+    nodeId: String,
+    onNodeIdChange: (String) -> Unit,
     status: BridgeStatus,
     logLine: String,
     onRefresh: () -> Unit,
@@ -498,6 +447,10 @@ private fun CaptureScreen(
             devices,
             selectedDeviceName,
             onSelectDevice,
+            mqttUri,
+            onMqttUriChange,
+            nodeId,
+            onNodeIdChange,
             onRefresh,
         )
         ActionRow(status.running, onStart, onStop)
@@ -549,7 +502,6 @@ private fun PacketLogLine(line: String) {
 private enum class AppScreen {
     Capture,
     PacketLog,
-    Settings,
 }
 
 @Composable
@@ -576,6 +528,10 @@ private fun ConfigPanel(
     devices: List<UsbDevice>,
     selectedDeviceName: String?,
     onSelectDevice: (String) -> Unit,
+    mqttUri: String,
+    onMqttUriChange: (String) -> Unit,
+    nodeId: String,
+    onNodeIdChange: (String) -> Unit,
     onRefresh: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -598,26 +554,6 @@ private fun ConfigPanel(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun SettingsScreen(
-    mqttUri: String,
-    onMqttUriChange: (String) -> Unit,
-    nodeId: String,
-    onNodeIdChange: (String) -> Unit,
-    maxQueueSize: String,
-    onMaxQueueSizeChange: (String) -> Unit,
-    queueIntervalSeconds: String,
-    onQueueIntervalSecondsChange: (String) -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
         OutlinedTextField(
             value = mqttUri,
             onValueChange = onMqttUriChange,
@@ -632,23 +568,6 @@ private fun SettingsScreen(
             modifier = Modifier.fillMaxWidth(),
             singleLine = true,
             label = { Text("Node ID") },
-        )
-        OutlinedTextField(
-            value = maxQueueSize,
-            onValueChange = { value -> onMaxQueueSizeChange(value.filter(Char::isDigit)) },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("Max Queue Size") },
-            placeholder = { Text(CitsBridgeService.DEFAULT_MAX_QUEUE_SIZE.toString()) },
-        )
-        OutlinedTextField(
-            value = queueIntervalSeconds,
-            onValueChange = { value -> onQueueIntervalSecondsChange(value.filter { it.isDigit() || it == '.' }) },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            label = { Text("Queue Interval") },
-            placeholder = { Text(CitsBridgeService.DEFAULT_QUEUE_INTERVAL_SECONDS.toString()) },
-            suffix = { Text("s") },
         )
     }
 }
