@@ -2,6 +2,7 @@
 
 require 'fileutils'
 require 'shellwords'
+require 'dotenv'
 
 # Always resolve paths from android-app/, regardless of where fastlane was
 # started from. This avoids missing app/build/outputs/apk/... when Fastlane's
@@ -10,6 +11,7 @@ APP_ROOT = File.expand_path('..', __dir__)
 DEFAULT_OUTPUT_DIR = File.join(APP_ROOT, 'dist')
 
 Dir.chdir(APP_ROOT)
+Dotenv.overload(File.join(APP_ROOT, '.env.release'))
 
 def gradle_value(name)
   gradle_file = File.read(File.join(APP_ROOT, 'app', 'build.gradle'))

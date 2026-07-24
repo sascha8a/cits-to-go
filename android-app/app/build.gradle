@@ -8,17 +8,46 @@ android {
     namespace 'org.opentrafficmap.citstogo'
     compileSdk 35
 
+    def releaseStoreFile = System.getenv('CITS_RELEASE_STORE_FILE')
+    def releaseStorePassword = System.getenv('CITS_RELEASE_STORE_PASSWORD')
+    def releaseKeyAlias = System.getenv('CITS_RELEASE_KEY_ALIAS')
+    def releaseKeyPassword = System.getenv('CITS_RELEASE_KEY_PASSWORD')
+    def hasReleaseSigning = releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+
     defaultConfig {
         applicationId 'org.opentrafficmap.citstogo'
         minSdk 26
         targetSdk 35
         versionCode 1
-        versionName '0.1.0'
+        versionName '2.0.0'
+    }
+
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+        }
     }
 
     buildFeatures {
         compose true
         buildConfig true
+    }
+
+    lint {
+        disable 'NullSafeMutableLiveData'
     }
 
     kotlin {
