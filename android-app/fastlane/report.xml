@@ -5,17 +5,17 @@
     
     
       
-      <testcase classname="fastlane.lanes" name="0: clean" time="0.779155419">
+      <testcase classname="fastlane.lanes" name="0: clean" time="5.573269463">
         
       </testcase>
     
       
-      <testcase classname="fastlane.lanes" name="1: assembleRelease" time="12.472010126">
+      <testcase classname="fastlane.lanes" name="1: assembleRelease" time="23.638600387">
         
       </testcase>
     
       
-      <testcase classname="fastlane.lanes" name="2: shasum -a 256 /home/sascha/workspace/cits-to-go/android-app/dist/CITS-to-go-v2.0.0-1.apk &gt; /home/sascha/workspace/cits-to-go/android-app/dist/CITS-to-go-v2.0.0-1.apk.sha256" time="0.038229218">
+      <testcase classname="fastlane.lanes" name="2: shasum -a 256 /home/sascha/workspace/cits-to-go/android-app/dist/CITS-to-go-v2.0.0-1.apk &gt; /home/sascha/workspace/cits-to-go/android-app/dist/CITS-to-go-v2.0.0-1.apk.sha256" time="0.062301728">
         
       </testcase>
     

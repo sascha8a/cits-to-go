@@ -54,6 +54,8 @@ class CitsBridgeService : Service() {
     private var mqttQueueAgeFlushScheduled = false
     private var startElapsedMs = 0L
     private var lastStatsElapsedMs = 0L
+    private var lastPacketStatusElapsedMs = 0L
+    private var lastPacketStatusPackets = 0L
 
     private var status = BridgeStatus()
     private var packets = 0L
@@ -269,7 +271,23 @@ class CitsBridgeService : Service() {
             lastPacketSummary = summary,
             packetTopic = "its/$nodeId/packet",
         )
-        if (packets % 25L == 1L) publishStatus("Packet $summary")
+        if (shouldPublishPacketStatus()) publishStatus("Packet $summary")
+    }
+
+    private fun shouldPublishPacketStatus(): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        val elapsedSinceLastUpdate = now - lastPacketStatusElapsedMs
+        val packetsSinceLastUpdate = packets - lastPacketStatusPackets
+        if (
+            lastPacketStatusElapsedMs != 0L &&
+            elapsedSinceLastUpdate < PACKET_STATUS_INTERVAL_MS &&
+            packetsSinceLastUpdate < PACKET_STATUS_PACKET_INTERVAL
+        ) {
+            return false
+        }
+        lastPacketStatusElapsedMs = now
+        lastPacketStatusPackets = packets
+        return true
     }
 
     private fun startPcap(uriString: String) {
@@ -743,6 +761,8 @@ class CitsBridgeService : Service() {
         private const val DISCOVERY_NOTIFICATION_ID_BASE = 2400
         private const val USB_READ_TIMEOUT_MS = 5_000
         private const val MAINTENANCE_INTERVAL_MS = 2_000L
+        private const val PACKET_STATUS_INTERVAL_MS = 100L
+        private const val PACKET_STATUS_PACKET_INTERVAL = 10L
         private const val MQTT_MAX_BATCH = 100
         private const val ESPRESSIF_VENDOR_ID = 0x303A
     }
