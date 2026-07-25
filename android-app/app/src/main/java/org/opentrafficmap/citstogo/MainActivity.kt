@@ -125,7 +125,12 @@ class MainActivity : ComponentActivity() {
                 CitsBridgeService.DEFAULT_MQTT_MAX_QUEUE_AGE_MS,
             ),
         )
-        status = status.copy(discoveredDevices = prefs.getLong(CitsBridgeService.PREF_DISCOVERED_DEVICES, 0L))
+        status = status.copy(
+            discoveredDevices = prefs.getStringSet(CitsBridgeService.PREF_DISCOVERED_MAC_ADDRESSES, emptySet())
+                ?.size
+                ?.toLong()
+                ?: 0L,
+        )
         registerReceiverCompat(usbPermissionReceiver, IntentFilter(CitsBridgeService.ACTION_USB_PERMISSION))
         registerReceiverCompat(statusReceiver, IntentFilter(CitsBridgeService.ACTION_STATUS))
         requestNotificationPermission()

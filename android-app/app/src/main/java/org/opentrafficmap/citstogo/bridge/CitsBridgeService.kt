@@ -22,6 +22,7 @@ import android.net.Uri
 import org.opentrafficmap.citstogo.BuildConfig
 import org.opentrafficmap.citstogo.MainActivity
 import org.opentrafficmap.citstogo.protocol.CitsPacket
+import org.opentrafficmap.citstogo.protocol.Ieee80211Mac
 import org.opentrafficmap.citstogo.protocol.SerialPacketReader
 import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicBoolean
@@ -61,7 +62,7 @@ class CitsBridgeService : Service() {
     private var discoveredDevices = 0L
     private var truncated = 0L
     private var protocolErrors = 0L
-    private val discoveredDeviceNames = mutableSetOf<String>()
+    private val discoveredMacAddresses = mutableSetOf<String>()
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -105,7 +106,8 @@ class CitsBridgeService : Service() {
         spool = MqttSpool(this)
         nodeId = loadOrCreateNodeId()
         loadMqttQueueSettings()
-        discoveredDevices = loadDiscoveredDevices()
+        discoveredMacAddresses.addAll(loadDiscoveredMacAddresses())
+        discoveredDevices = discoveredMacAddresses.size.toLong()
         createNotificationChannel()
         registerReceiverCompat(usbReceiver, IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
@@ -240,6 +242,11 @@ class CitsBridgeService : Service() {
     private fun handlePacket(packet: CitsPacket) {
         packets += 1
         if (packet.truncated) truncated += 1
+        val discoveredMacAddress = Ieee80211Mac.sourceAddress(packet.payload)
+        if (discoveredMacAddress != null && discoveredMacAddresses.add(discoveredMacAddress)) {
+            discoveredDevices = discoveredMacAddresses.size.toLong()
+            storeDiscoveredMacAddresses()
+        }
         val summary = "#${packet.sequence} ${packet.payload.size}B ${packet.frequencyMhz}MHz ${packet.rssiDbm}dBm"
         if (mqttEnabled) {
             runCatching {
@@ -258,6 +265,7 @@ class CitsBridgeService : Service() {
             pcapRecording = pcapWriter != null,
             pcapPackets = pcapPackets,
             mqttQueued = spool.pendingCount(),
+            discoveredDevices = discoveredDevices,
             lastPacketSummary = summary,
             packetTopic = "its/$nodeId/packet",
         )
@@ -480,13 +488,8 @@ class CitsBridgeService : Service() {
     }
 
     private fun handleDiscoveredDevice(device: UsbDevice) {
-        if (!device.isCitsDevice() || !discoveredDeviceNames.add(device.deviceName)) return
-        discoveredDevices += 1
-        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
-            .putLong(PREF_DISCOVERED_DEVICES, discoveredDevices)
-            .apply()
+        if (!device.isCitsDevice()) return
         val message = "C-ITS device discovered: ${device.discoveryLabel()}"
-        status = status.copy(discoveredDevices = discoveredDevices)
         sendDiscoveryNotification(device, message)
         publishStatus(message)
     }
@@ -656,8 +659,17 @@ class CitsBridgeService : Service() {
         return generated
     }
 
-    private fun loadDiscoveredDevices(): Long =
-        getSharedPreferences(PREFS, MODE_PRIVATE).getLong(PREF_DISCOVERED_DEVICES, 0L)
+    private fun loadDiscoveredMacAddresses(): Set<String> =
+        getSharedPreferences(PREFS, MODE_PRIVATE)
+            .getStringSet(PREF_DISCOVERED_MAC_ADDRESSES, emptySet())
+            ?.filterTo(mutableSetOf()) { it.isNotBlank() }
+            ?: emptySet()
+
+    private fun storeDiscoveredMacAddresses() {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putStringSet(PREF_DISCOVERED_MAC_ADDRESSES, discoveredMacAddresses.toSet())
+            .apply()
+    }
 
     private fun loadMqttQueueSettings() {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
@@ -720,7 +732,7 @@ class CitsBridgeService : Service() {
         const val PREF_MQTT_URI = "mqtt_uri"
         const val PREF_MQTT_MAX_QUEUE_LENGTH = "mqtt_max_queue_length"
         const val PREF_MQTT_MAX_QUEUE_AGE_MS = "mqtt_max_queue_age_ms"
-        const val PREF_DISCOVERED_DEVICES = "discovered_devices"
+        const val PREF_DISCOVERED_MAC_ADDRESSES = "discovered_mac_addresses"
         const val DEFAULT_MQTT_URI = "mqtts://cits1.opentrafficmap.org"
         const val DEFAULT_MQTT_MAX_QUEUE_LENGTH = 100
         const val DEFAULT_MQTT_MAX_QUEUE_AGE_MS = 200L
