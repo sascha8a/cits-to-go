@@ -22,31 +22,41 @@ menu "CITS-to-go Wi-Fi uplink Configuration"
             Leave empty to derive a 12-hex-digit node ID from the uplink
             board's Wi-Fi station MAC address.
 
-    config CITS_UPLINK_UART_PORT_NUM
-        int "Serial UART port number"
-        range 0 1
-        default 1
-
-    config CITS_UPLINK_UART_BAUD_RATE
-        int "Serial UART baud rate"
-        range 1200 3000000
-        default 921600
-
-    config CITS_UPLINK_UART_RX_GPIO
-        int "Serial UART RX GPIO"
+    config CITS_UPLINK_SPI_CS_GPIO
+        int "SPI CS GPIO"
         range 0 31
         default 0
         help
-            XIAO ESP32-C5 D1 is GPIO0. With D1-to-D1 wiring, this receives
-            the capture board's default D1/GPIO0 TX output.
+            XIAO ESP32-C5 D1 is GPIO0.
 
-    config CITS_UPLINK_UART_TX_GPIO
-        int "Serial UART TX GPIO"
-        range -1 31
+    config CITS_UPLINK_SPI_READY_GPIO
+        int "SPI ready GPIO"
+        range 0 31
         default 25
         help
-            XIAO ESP32-C5 D2 is GPIO25. Set to -1 if the uplink firmware
-            should not assign a TX pin.
+            XIAO ESP32-C5 D2 is GPIO25. This firmware drives it high when
+            an SPI slave receive transaction is ready.
+
+    config CITS_UPLINK_SPI_MOSI_GPIO
+        int "SPI MOSI GPIO"
+        range 0 31
+        default 7
+        help
+            XIAO ESP32-C5 D3 is GPIO7.
+
+    config CITS_UPLINK_SPI_MISO_GPIO
+        int "SPI MISO GPIO"
+        range -1 31
+        default 23
+        help
+            XIAO ESP32-C5 D4 is GPIO23. Set to -1 if MISO is not wired.
+
+    config CITS_UPLINK_SPI_CLK_GPIO
+        int "SPI clock GPIO"
+        range 0 31
+        default 24
+        help
+            XIAO ESP32-C5 D5 is GPIO24.
 
     config CITS_UPLINK_STATUS_INTERVAL_MS
         int "MQTT stats publish interval in milliseconds"

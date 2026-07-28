@@ -6,7 +6,7 @@
 #include <string.h>
 
 #include "driver/gpio.h"
-#include "driver/uart.h"
+#include "driver/spi_master.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_check.h"
 #include "esp_err.h"
@@ -55,6 +55,9 @@ static uint32_t sequence;
 static volatile uint32_t dropped_no_buffer;
 static volatile uint32_t dropped_too_large;
 static esp_timer_handle_t led_timer;
+#if CONFIG_CITS_SERIAL_OUTPUT_SPI || CONFIG_CITS_SERIAL_OUTPUT_USB_AND_SPI
+static spi_device_handle_t spi_uplink;
+#endif
 
 void phy_change_channel(int channel, int arg1, int arg2, int ht_mode);
 void phy_11p_set(int enable, int arg);
@@ -166,7 +169,7 @@ static esp_err_t init_led(void)
 
 static esp_err_t init_serial(void)
 {
-#if CONFIG_CITS_SERIAL_OUTPUT_USB || CONFIG_CITS_SERIAL_OUTPUT_USB_AND_UART
+#if CONFIG_CITS_SERIAL_OUTPUT_USB || CONFIG_CITS_SERIAL_OUTPUT_USB_AND_SPI
     usb_serial_jtag_driver_config_t cfg = {
         .rx_buffer_size = 256,
         .tx_buffer_size = CITS_ENCODED_MAX_LEN,
@@ -174,24 +177,35 @@ static esp_err_t init_serial(void)
     ESP_RETURN_ON_ERROR(usb_serial_jtag_driver_install(&cfg), TAG, "usb_serial_jtag_driver_install");
 #endif
 
-#if CONFIG_CITS_SERIAL_OUTPUT_UART || CONFIG_CITS_SERIAL_OUTPUT_USB_AND_UART
-    const uart_port_t uart_port = (uart_port_t)CONFIG_CITS_UART_PORT_NUM;
-    const uart_config_t uart_cfg = {
-        .baud_rate = CONFIG_CITS_UART_BAUD_RATE,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_DEFAULT,
+#if CONFIG_CITS_SERIAL_OUTPUT_SPI || CONFIG_CITS_SERIAL_OUTPUT_USB_AND_SPI
+    const int miso_gpio = CONFIG_CITS_SPI_MISO_GPIO >= 0 ? CONFIG_CITS_SPI_MISO_GPIO : -1;
+    const spi_bus_config_t buscfg = {
+        .mosi_io_num = CONFIG_CITS_SPI_MOSI_GPIO,
+        .miso_io_num = miso_gpio,
+        .sclk_io_num = CONFIG_CITS_SPI_CLK_GPIO,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = CITS_ENCODED_MAX_LEN,
     };
-    const int rx_gpio = CONFIG_CITS_UART_RX_GPIO >= 0 ? CONFIG_CITS_UART_RX_GPIO : UART_PIN_NO_CHANGE;
+    const spi_device_interface_config_t devcfg = {
+        .clock_speed_hz = CONFIG_CITS_SPI_CLOCK_HZ,
+        .mode = 0,
+        .spics_io_num = CONFIG_CITS_SPI_CS_GPIO,
+        .queue_size = 1,
+    };
+    gpio_config_t ready_cfg = {
+        .pin_bit_mask = 1ULL << CONFIG_CITS_SPI_READY_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
 
-    ESP_RETURN_ON_ERROR(uart_driver_install(uart_port, 256, CITS_ENCODED_MAX_LEN, 0, NULL, 0),
-                        TAG, "uart_driver_install");
-    ESP_RETURN_ON_ERROR(uart_param_config(uart_port, &uart_cfg), TAG, "uart_param_config");
-    ESP_RETURN_ON_ERROR(uart_set_pin(uart_port, CONFIG_CITS_UART_TX_GPIO, rx_gpio,
-                                     UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE),
-                        TAG, "uart_set_pin");
+    ESP_RETURN_ON_ERROR(gpio_config(&ready_cfg), TAG, "spi ready gpio_config");
+    ESP_RETURN_ON_ERROR(spi_bus_initialize(SPI2_HOST, &buscfg, SPI_DMA_CH_AUTO),
+                        TAG, "spi_bus_initialize");
+    ESP_RETURN_ON_ERROR(spi_bus_add_device(SPI2_HOST, &devcfg, &spi_uplink),
+                        TAG, "spi_bus_add_device");
 #endif
 
     return ESP_OK;
@@ -199,7 +213,7 @@ static esp_err_t init_serial(void)
 
 static void serial_write_all(const uint8_t *data, size_t len)
 {
-#if CONFIG_CITS_SERIAL_OUTPUT_USB || CONFIG_CITS_SERIAL_OUTPUT_USB_AND_UART
+#if CONFIG_CITS_SERIAL_OUTPUT_USB || CONFIG_CITS_SERIAL_OUTPUT_USB_AND_SPI
     if (usb_serial_jtag_is_connected()) {
         const uint8_t *usb_data = data;
         size_t usb_len = len;
@@ -219,22 +233,21 @@ static void serial_write_all(const uint8_t *data, size_t len)
     }
 #endif
 
-#if CONFIG_CITS_SERIAL_OUTPUT_UART || CONFIG_CITS_SERIAL_OUTPUT_USB_AND_UART
-    const uint8_t *uart_data = data;
-    size_t uart_len = len;
-    const int64_t uart_deadline_us = esp_timer_get_time() +
-        (int64_t)CONFIG_CITS_SERIAL_WRITE_TIMEOUT_MS * 1000;
-
-    while (uart_len > 0 && esp_timer_get_time() < uart_deadline_us) {
-        int written = uart_tx_chars((uart_port_t)CONFIG_CITS_UART_PORT_NUM,
-                                    (const char *)uart_data, uart_len);
-        if (written <= 0) {
-            vTaskDelay(1);
-            continue;
+#if CONFIG_CITS_SERIAL_OUTPUT_SPI || CONFIG_CITS_SERIAL_OUTPUT_USB_AND_SPI
+    const int64_t spi_deadline_us = esp_timer_get_time() +
+        (int64_t)CONFIG_CITS_SPI_READY_TIMEOUT_MS * 1000;
+    while (gpio_get_level(CONFIG_CITS_SPI_READY_GPIO) == 0) {
+        if (esp_timer_get_time() >= spi_deadline_us) {
+            return;
         }
-        uart_data += written;
-        uart_len -= (size_t)written;
+        vTaskDelay(1);
     }
+
+    spi_transaction_t trans = {
+        .length = len * 8,
+        .tx_buffer = data,
+    };
+    (void)spi_device_transmit(spi_uplink, &trans);
 #endif
 }
 

@@ -8,13 +8,14 @@
 #include <string.h>
 
 #include "driver/gpio.h"
-#include "driver/uart.h"
+#include "driver/spi_slave.h"
 #include "esp_check.h"
 #include "esp_crt_bundle.h"
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_heap_caps.h"
 #include "esp_netif.h"
 #include "esp_system.h"
 #include "esp_timer.h"
@@ -74,7 +75,7 @@ static TickType_t wifi_disconnected_since_tick;
 static esp_tls_t *mqtt_tls;
 static int mqtt_sock = -1;
 static bool mqtt_connected;
-static uint8_t serial_rx_buf[512];
+static uint8_t *spi_rx_buf;
 static uint8_t serial_encoded[CITS_ENCODED_MAX_LEN];
 static uint8_t serial_decoded[CITS_DECODED_MAX_LEN];
 
@@ -101,6 +102,11 @@ static esp_err_t init_led(void)
     ESP_RETURN_ON_ERROR(gpio_config(&io_conf), TAG, "gpio_config");
     set_led(false);
     return ESP_OK;
+}
+
+static void set_spi_ready(bool ready)
+{
+    gpio_set_level(CONFIG_CITS_UPLINK_SPI_READY_GPIO, ready ? 1 : 0);
 }
 
 static uint16_t get_u16(const uint8_t *buf)
@@ -510,25 +516,36 @@ static esp_err_t init_wifi(void)
     return esp_wifi_start();
 }
 
-static esp_err_t init_uart(void)
+static esp_err_t init_spi(void)
 {
-    const uart_port_t uart_port = (uart_port_t)CONFIG_CITS_UPLINK_UART_PORT_NUM;
-    const uart_config_t uart_cfg = {
-        .baud_rate = CONFIG_CITS_UPLINK_UART_BAUD_RATE,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_DEFAULT,
+    const int miso_gpio = CONFIG_CITS_UPLINK_SPI_MISO_GPIO >= 0 ?
+        CONFIG_CITS_UPLINK_SPI_MISO_GPIO : -1;
+    const spi_bus_config_t buscfg = {
+        .mosi_io_num = CONFIG_CITS_UPLINK_SPI_MOSI_GPIO,
+        .miso_io_num = miso_gpio,
+        .sclk_io_num = CONFIG_CITS_UPLINK_SPI_CLK_GPIO,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = CITS_ENCODED_MAX_LEN,
     };
-    const int tx_gpio = CONFIG_CITS_UPLINK_UART_TX_GPIO >= 0 ?
-        CONFIG_CITS_UPLINK_UART_TX_GPIO : UART_PIN_NO_CHANGE;
+    const spi_slave_interface_config_t slvcfg = {
+        .mode = 0,
+        .spics_io_num = CONFIG_CITS_UPLINK_SPI_CS_GPIO,
+        .queue_size = 1,
+    };
+    gpio_config_t ready_cfg = {
+        .pin_bit_mask = 1ULL << CONFIG_CITS_UPLINK_SPI_READY_GPIO,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
 
-    ESP_RETURN_ON_ERROR(uart_driver_install(uart_port, 16 * 1024, 0, 0, NULL, 0),
-                        TAG, "uart_driver_install");
-    ESP_RETURN_ON_ERROR(uart_param_config(uart_port, &uart_cfg), TAG, "uart_param_config");
-    return uart_set_pin(uart_port, tx_gpio, CONFIG_CITS_UPLINK_UART_RX_GPIO,
-                        UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    spi_rx_buf = heap_caps_malloc(CITS_ENCODED_MAX_LEN, MALLOC_CAP_DMA);
+    ESP_RETURN_ON_FALSE(spi_rx_buf != NULL, ESP_ERR_NO_MEM, TAG, "spi rx buffer");
+    ESP_RETURN_ON_ERROR(gpio_config(&ready_cfg), TAG, "spi ready gpio_config");
+    set_spi_ready(false);
+    return spi_slave_initialize(SPI2_HOST, &buscfg, &slvcfg, SPI_DMA_CH_AUTO);
 }
 
 static void ensure_mqtt_connected(void)
@@ -584,7 +601,7 @@ static void health_task(void *arg)
 
         if (last_uplink_loop_tick != 0 &&
             elapsed_ms(now, last_uplink_loop_tick) >= CONFIG_CITS_UPLINK_TASK_STALL_RESTART_MS) {
-            ESP_LOGE(TAG, "serial uplink task stalled for %u ms; restarting",
+            ESP_LOGE(TAG, "SPI uplink task stalled for %u ms; restarting",
                      elapsed_ms(now, last_uplink_loop_tick));
             esp_restart();
         }
@@ -614,10 +631,9 @@ static void health_task(void *arg)
     }
 }
 
-static void serial_uplink_task(void *arg)
+static void spi_uplink_task(void *arg)
 {
     (void)arg;
-    const uart_port_t uart_port = (uart_port_t)CONFIG_CITS_UPLINK_UART_PORT_NUM;
     size_t encoded_len = 0;
     int64_t last_stats_us = esp_timer_get_time();
     int64_t last_ping_us = esp_timer_get_time();
@@ -626,12 +642,21 @@ static void serial_uplink_task(void *arg)
         last_uplink_loop_tick = xTaskGetTickCount();
         ensure_mqtt_connected();
 
-        const int count = uart_read_bytes(uart_port, serial_rx_buf, sizeof(serial_rx_buf), pdMS_TO_TICKS(100));
-        if (count > 0) {
+        size_t count = 0;
+        spi_slave_transaction_t trans = {
+            .length = CITS_ENCODED_MAX_LEN * 8,
+            .rx_buffer = spi_rx_buf,
+        };
+        set_spi_ready(true);
+        esp_err_t spi_err = spi_slave_transmit(SPI2_HOST, &trans, pdMS_TO_TICKS(100));
+        set_spi_ready(false);
+        if (spi_err == ESP_OK) {
+            count = (trans.trans_len + 7) / 8;
             serial_bytes_seen += (uint64_t)count;
         }
-        for (int i = 0; i < count; ++i) {
-            const uint8_t b = serial_rx_buf[i];
+
+        for (size_t i = 0; i < count; ++i) {
+            const uint8_t b = spi_rx_buf[i];
             if (b == 0) {
                 if (encoded_len > 0) {
                     cits_packet_t packet;
@@ -698,9 +723,9 @@ void app_main(void)
     ESP_LOGI(TAG, "node_id=%s packet_topic=%s", node_id, topic_packet);
 
     ESP_ERROR_CHECK(init_led());
-    ESP_ERROR_CHECK(init_uart());
+    ESP_ERROR_CHECK(init_spi());
     ESP_ERROR_CHECK(init_wifi());
-    ESP_ERROR_CHECK(xTaskCreate(serial_uplink_task, "serial_uplink", 16384, NULL, 5, NULL) == pdPASS ?
+    ESP_ERROR_CHECK(xTaskCreate(spi_uplink_task, "spi_uplink", 16384, NULL, 5, NULL) == pdPASS ?
                     ESP_OK : ESP_ERR_NO_MEM);
     ESP_ERROR_CHECK(xTaskCreate(health_task, "health", 4096, NULL, 4, NULL) == pdPASS ?
                     ESP_OK : ESP_ERR_NO_MEM);

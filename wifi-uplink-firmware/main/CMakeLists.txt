@@ -3,7 +3,7 @@ idf_component_register(
         "main.c"
     PRIV_REQUIRES
         esp_driver_gpio
-        esp_driver_uart
+        esp_driver_spi
         esp_event
         esp_netif
         esp-tls

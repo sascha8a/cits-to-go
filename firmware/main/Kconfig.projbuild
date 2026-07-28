@@ -31,8 +31,8 @@ menu "CITS-to-go Configuration"
             Packets larger than this are dropped and counted in the drop stats.
 
     choice CITS_SERIAL_OUTPUT
-        prompt "Serial packet output"
-        default CITS_SERIAL_OUTPUT_USB_AND_UART
+        prompt "Packet output"
+        default CITS_SERIAL_OUTPUT_USB_AND_SPI
         help
             Select where accepted packet records are written. All outputs use
             the same CTG1 COBS-delimited binary framing.
@@ -40,11 +40,11 @@ menu "CITS-to-go Configuration"
         config CITS_SERIAL_OUTPUT_USB
             bool "USB Serial/JTAG only"
 
-        config CITS_SERIAL_OUTPUT_UART
-            bool "GPIO UART only"
+        config CITS_SERIAL_OUTPUT_SPI
+            bool "GPIO SPI only"
 
-        config CITS_SERIAL_OUTPUT_USB_AND_UART
-            bool "USB Serial/JTAG and GPIO UART"
+        config CITS_SERIAL_OUTPUT_USB_AND_SPI
+            bool "USB Serial/JTAG and GPIO SPI"
     endchoice
 
     config CITS_SERIAL_WRITE_TIMEOUT_MS
@@ -52,36 +52,58 @@ menu "CITS-to-go Configuration"
         range 1 1000
         default 100
 
-    config CITS_UART_PORT_NUM
-        int "GPIO UART port number"
-        range 0 1
-        default 1
-        depends on CITS_SERIAL_OUTPUT_UART || CITS_SERIAL_OUTPUT_USB_AND_UART
-        help
-            ESP-IDF UART peripheral used for GPIO serial output.
+    config CITS_SPI_CLOCK_HZ
+        int "GPIO SPI clock in Hz"
+        range 100000 20000000
+        default 4000000
+        depends on CITS_SERIAL_OUTPUT_SPI || CITS_SERIAL_OUTPUT_USB_AND_SPI
 
-    config CITS_UART_BAUD_RATE
-        int "GPIO UART baud rate"
-        range 1200 3000000
-        default 921600
-        depends on CITS_SERIAL_OUTPUT_UART || CITS_SERIAL_OUTPUT_USB_AND_UART
-
-    config CITS_UART_TX_GPIO
-        int "GPIO UART TX GPIO"
+    config CITS_SPI_CS_GPIO
+        int "GPIO SPI CS GPIO"
         range 0 31
         default 0
-        depends on CITS_SERIAL_OUTPUT_UART || CITS_SERIAL_OUTPUT_USB_AND_UART
+        depends on CITS_SERIAL_OUTPUT_SPI || CITS_SERIAL_OUTPUT_USB_AND_SPI
         help
             XIAO ESP32-C5 D1 is GPIO0.
 
-    config CITS_UART_RX_GPIO
-        int "GPIO UART RX GPIO"
-        range -1 31
+    config CITS_SPI_READY_GPIO
+        int "GPIO SPI ready GPIO"
+        range 0 31
         default 25
-        depends on CITS_SERIAL_OUTPUT_UART || CITS_SERIAL_OUTPUT_USB_AND_UART
+        depends on CITS_SERIAL_OUTPUT_SPI || CITS_SERIAL_OUTPUT_USB_AND_SPI
         help
-            XIAO ESP32-C5 D2 is GPIO25. Set to -1 if this firmware only
-            transmits and no RX pin should be assigned.
+            XIAO ESP32-C5 D2 is GPIO25. The uplink board drives this high
+            when its SPI slave transaction buffer is ready.
+
+    config CITS_SPI_MOSI_GPIO
+        int "GPIO SPI MOSI GPIO"
+        range 0 31
+        default 7
+        depends on CITS_SERIAL_OUTPUT_SPI || CITS_SERIAL_OUTPUT_USB_AND_SPI
+        help
+            XIAO ESP32-C5 D3 is GPIO7.
+
+    config CITS_SPI_MISO_GPIO
+        int "GPIO SPI MISO GPIO"
+        range -1 31
+        default 23
+        depends on CITS_SERIAL_OUTPUT_SPI || CITS_SERIAL_OUTPUT_USB_AND_SPI
+        help
+            XIAO ESP32-C5 D4 is GPIO23. Set to -1 if MISO is not wired.
+
+    config CITS_SPI_CLK_GPIO
+        int "GPIO SPI clock GPIO"
+        range 0 31
+        default 24
+        depends on CITS_SERIAL_OUTPUT_SPI || CITS_SERIAL_OUTPUT_USB_AND_SPI
+        help
+            XIAO ESP32-C5 D5 is GPIO24.
+
+    config CITS_SPI_READY_TIMEOUT_MS
+        int "SPI ready timeout in milliseconds"
+        range 1 1000
+        default 100
+        depends on CITS_SERIAL_OUTPUT_SPI || CITS_SERIAL_OUTPUT_USB_AND_SPI
 
     config CITS_LED_GPIO
         int "USER LED GPIO"
