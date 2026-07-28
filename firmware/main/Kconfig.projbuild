@@ -30,10 +30,58 @@ menu "CITS-to-go Configuration"
         help
             Packets larger than this are dropped and counted in the drop stats.
 
+    choice CITS_SERIAL_OUTPUT
+        prompt "Serial packet output"
+        default CITS_SERIAL_OUTPUT_USB_AND_UART
+        help
+            Select where accepted packet records are written. All outputs use
+            the same CTG1 COBS-delimited binary framing.
+
+        config CITS_SERIAL_OUTPUT_USB
+            bool "USB Serial/JTAG only"
+
+        config CITS_SERIAL_OUTPUT_UART
+            bool "GPIO UART only"
+
+        config CITS_SERIAL_OUTPUT_USB_AND_UART
+            bool "USB Serial/JTAG and GPIO UART"
+    endchoice
+
     config CITS_SERIAL_WRITE_TIMEOUT_MS
-        int "USB serial write timeout in milliseconds"
+        int "Serial write timeout in milliseconds"
         range 1 1000
         default 100
+
+    config CITS_UART_PORT_NUM
+        int "GPIO UART port number"
+        range 0 1
+        default 1
+        depends on CITS_SERIAL_OUTPUT_UART || CITS_SERIAL_OUTPUT_USB_AND_UART
+        help
+            ESP-IDF UART peripheral used for GPIO serial output.
+
+    config CITS_UART_BAUD_RATE
+        int "GPIO UART baud rate"
+        range 1200 3000000
+        default 921600
+        depends on CITS_SERIAL_OUTPUT_UART || CITS_SERIAL_OUTPUT_USB_AND_UART
+
+    config CITS_UART_TX_GPIO
+        int "GPIO UART TX GPIO"
+        range 0 31
+        default 0
+        depends on CITS_SERIAL_OUTPUT_UART || CITS_SERIAL_OUTPUT_USB_AND_UART
+        help
+            XIAO ESP32-C5 D1 is GPIO0.
+
+    config CITS_UART_RX_GPIO
+        int "GPIO UART RX GPIO"
+        range -1 31
+        default 25
+        depends on CITS_SERIAL_OUTPUT_UART || CITS_SERIAL_OUTPUT_USB_AND_UART
+        help
+            XIAO ESP32-C5 D2 is GPIO25. Set to -1 if this firmware only
+            transmits and no RX pin should be assigned.
 
     config CITS_LED_GPIO
         int "USER LED GPIO"

@@ -1,0 +1,91 @@
+menu "CITS-to-go Wi-Fi uplink Configuration"
+
+    config CITS_UPLINK_WIFI_SSID
+        string "Wi-Fi SSID"
+        default "WillkommenimVOR-1"
+
+    config CITS_UPLINK_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default "DerVORverbindet!"
+
+    config CITS_UPLINK_MQTT_URI
+        string "MQTT broker URI"
+        default "mqtts://cits1.opentrafficmap.org"
+        help
+            MQTT URI compatible with the Android bridge. Use mqtt:// for
+            plaintext port 1883 or mqtts:// for TLS port 8883.
+
+    config CITS_UPLINK_NODE_ID
+        string "MQTT node ID"
+        default ""
+        help
+            Leave empty to derive a 12-hex-digit node ID from the uplink
+            board's Wi-Fi station MAC address.
+
+    config CITS_UPLINK_UART_PORT_NUM
+        int "Serial UART port number"
+        range 0 1
+        default 1
+
+    config CITS_UPLINK_UART_BAUD_RATE
+        int "Serial UART baud rate"
+        range 1200 3000000
+        default 921600
+
+    config CITS_UPLINK_UART_RX_GPIO
+        int "Serial UART RX GPIO"
+        range 0 31
+        default 0
+        help
+            XIAO ESP32-C5 D1 is GPIO0. With D1-to-D1 wiring, this receives
+            the capture board's default D1/GPIO0 TX output.
+
+    config CITS_UPLINK_UART_TX_GPIO
+        int "Serial UART TX GPIO"
+        range -1 31
+        default 25
+        help
+            XIAO ESP32-C5 D2 is GPIO25. Set to -1 if the uplink firmware
+            should not assign a TX pin.
+
+    config CITS_UPLINK_STATUS_INTERVAL_MS
+        int "MQTT stats publish interval in milliseconds"
+        range 1000 600000
+        default 60000
+
+    config CITS_UPLINK_LED_GPIO
+        int "Wi-Fi connected LED GPIO"
+        default 27
+        help
+            Seeed Studio XIAO ESP32-C5 USER LED is connected to GPIO27.
+
+    config CITS_UPLINK_LED_ACTIVE_LOW
+        bool "Wi-Fi connected LED is active low"
+        default y
+
+    config CITS_UPLINK_HEALTH_CHECK_INTERVAL_MS
+        int "Health check interval in milliseconds"
+        range 1000 60000
+        default 5000
+
+    config CITS_UPLINK_WIFI_RECOVERY_INTERVAL_MS
+        int "Wi-Fi reconnect retry interval in milliseconds"
+        range 1000 300000
+        default 15000
+
+    config CITS_UPLINK_WIFI_RESTART_AFTER_MS
+        int "Restart after Wi-Fi is down for this many milliseconds"
+        range 30000 3600000
+        default 300000
+
+    config CITS_UPLINK_MQTT_RECOVERY_MS
+        int "Cycle Wi-Fi after MQTT is disconnected for this many milliseconds"
+        range 30000 3600000
+        default 120000
+
+    config CITS_UPLINK_TASK_STALL_RESTART_MS
+        int "Restart after serial uplink task stalls for this many milliseconds"
+        range 30000 3600000
+        default 60000
+
+endmenu

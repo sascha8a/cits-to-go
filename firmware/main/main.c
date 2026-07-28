@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "driver/gpio.h"
+#include "driver/uart.h"
 #include "driver/usb_serial_jtag.h"
 #include "esp_check.h"
 #include "esp_err.h"
@@ -165,24 +166,76 @@ static esp_err_t init_led(void)
 
 static esp_err_t init_serial(void)
 {
+#if CONFIG_CITS_SERIAL_OUTPUT_USB || CONFIG_CITS_SERIAL_OUTPUT_USB_AND_UART
     usb_serial_jtag_driver_config_t cfg = {
         .rx_buffer_size = 256,
         .tx_buffer_size = CITS_ENCODED_MAX_LEN,
     };
-    return usb_serial_jtag_driver_install(&cfg);
+    ESP_RETURN_ON_ERROR(usb_serial_jtag_driver_install(&cfg), TAG, "usb_serial_jtag_driver_install");
+#endif
+
+#if CONFIG_CITS_SERIAL_OUTPUT_UART || CONFIG_CITS_SERIAL_OUTPUT_USB_AND_UART
+    const uart_port_t uart_port = (uart_port_t)CONFIG_CITS_UART_PORT_NUM;
+    const uart_config_t uart_cfg = {
+        .baud_rate = CONFIG_CITS_UART_BAUD_RATE,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    const int rx_gpio = CONFIG_CITS_UART_RX_GPIO >= 0 ? CONFIG_CITS_UART_RX_GPIO : UART_PIN_NO_CHANGE;
+
+    ESP_RETURN_ON_ERROR(uart_driver_install(uart_port, 256, CITS_ENCODED_MAX_LEN, 0, NULL, 0),
+                        TAG, "uart_driver_install");
+    ESP_RETURN_ON_ERROR(uart_param_config(uart_port, &uart_cfg), TAG, "uart_param_config");
+    ESP_RETURN_ON_ERROR(uart_set_pin(uart_port, CONFIG_CITS_UART_TX_GPIO, rx_gpio,
+                                     UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE),
+                        TAG, "uart_set_pin");
+#endif
+
+    return ESP_OK;
 }
 
 static void serial_write_all(const uint8_t *data, size_t len)
 {
-    while (len > 0) {
-        int written = usb_serial_jtag_write_bytes(data, len, pdMS_TO_TICKS(CONFIG_CITS_SERIAL_WRITE_TIMEOUT_MS));
+#if CONFIG_CITS_SERIAL_OUTPUT_USB || CONFIG_CITS_SERIAL_OUTPUT_USB_AND_UART
+    if (usb_serial_jtag_is_connected()) {
+        const uint8_t *usb_data = data;
+        size_t usb_len = len;
+        const int64_t usb_deadline_us = esp_timer_get_time() +
+            (int64_t)CONFIG_CITS_SERIAL_WRITE_TIMEOUT_MS * 1000;
+
+        while (usb_len > 0 && esp_timer_get_time() < usb_deadline_us) {
+            int written = usb_serial_jtag_write_bytes(usb_data, usb_len,
+                                                      pdMS_TO_TICKS(1));
+            if (written <= 0) {
+                vTaskDelay(1);
+                continue;
+            }
+            usb_data += written;
+            usb_len -= (size_t)written;
+        }
+    }
+#endif
+
+#if CONFIG_CITS_SERIAL_OUTPUT_UART || CONFIG_CITS_SERIAL_OUTPUT_USB_AND_UART
+    const uint8_t *uart_data = data;
+    size_t uart_len = len;
+    const int64_t uart_deadline_us = esp_timer_get_time() +
+        (int64_t)CONFIG_CITS_SERIAL_WRITE_TIMEOUT_MS * 1000;
+
+    while (uart_len > 0 && esp_timer_get_time() < uart_deadline_us) {
+        int written = uart_tx_chars((uart_port_t)CONFIG_CITS_UART_PORT_NUM,
+                                    (const char *)uart_data, uart_len);
         if (written <= 0) {
-            taskYIELD();
+            vTaskDelay(1);
             continue;
         }
-        data += written;
-        len -= (size_t)written;
+        uart_data += written;
+        uart_len -= (size_t)written;
     }
+#endif
 }
 
 static void write_packet_record(const packet_slot_t *slot)
