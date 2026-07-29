@@ -46,6 +46,7 @@
 #define WIFI_CONNECTED_BIT BIT0
 #define MQTT_KEEPALIVE_SECONDS 60
 #define MQTT_TX_MAX_LEN (CITS_MAX_PACKET_BYTES + 256)
+#define NODE_ID_MAX_LEN 32
 
 typedef struct {
     uint16_t captured_len;
@@ -59,11 +60,11 @@ typedef struct {
 } mqtt_uri_t;
 
 static EventGroupHandle_t connection_events;
-static char node_id[13];
-static char topic_packet[64];
-static char topic_status[64];
-static char topic_info[64];
-static char topic_stats[64];
+static char node_id[NODE_ID_MAX_LEN + 1];
+static char topic_packet[NODE_ID_MAX_LEN + 16];
+static char topic_status[NODE_ID_MAX_LEN + 16];
+static char topic_info[NODE_ID_MAX_LEN + 14];
+static char topic_stats[NODE_ID_MAX_LEN + 15];
 static uint64_t packets_seen;
 static uint64_t packets_published;
 static uint64_t protocol_errors;
@@ -416,6 +417,7 @@ static esp_err_t mqtt_connect(void)
 static void derive_node_id(void)
 {
     if (strlen(CONFIG_CITS_UPLINK_NODE_ID) > 0) {
+        ESP_ERROR_CHECK(strlen(CONFIG_CITS_UPLINK_NODE_ID) <= NODE_ID_MAX_LEN ? ESP_OK : ESP_ERR_INVALID_SIZE);
         strlcpy(node_id, CONFIG_CITS_UPLINK_NODE_ID, sizeof(node_id));
         return;
     }
