@@ -12,8 +12,10 @@ import android.hardware.usb.UsbManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import java.io.Serializable
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -54,13 +56,24 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import org.opentrafficmap.citstogo.bridge.BridgeStatus
 import org.opentrafficmap.citstogo.bridge.CitsBridgeService
 import org.opentrafficmap.citstogo.cam.StationType
+import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
+import org.opentrafficmap.citstogo.intersection.LaneType
+import org.opentrafficmap.citstogo.intersection.MapIntersection
+import org.opentrafficmap.citstogo.intersection.MovementPhaseState
+import org.opentrafficmap.citstogo.intersection.SelectionSource
+import org.opentrafficmap.citstogo.intersection.SignalEvent
 import java.security.SecureRandom
 import java.util.Locale
 import kotlin.math.roundToLong
@@ -77,6 +90,7 @@ class MainActivity : ComponentActivity() {
     private var maxQueueLength by mutableStateOf("")
     private var maxQueueAgeSeconds by mutableStateOf("")
     private var logLine by mutableStateOf("")
+    private var intersectionSnapshot by mutableStateOf<IntersectionSnapshot?>(null)
     private var camStationType by mutableStateOf(StationType.PEDESTRIAN)
     private var camIntervalMs by mutableStateOf(CitsBridgeService.DEFAULT_CAM_INTERVAL_MS.toString())
     private var enableCamAfterPermission = false
@@ -124,6 +138,9 @@ class MainActivity : ComponentActivity() {
                 lastError = intent.getStringExtra(CitsBridgeService.EXTRA_LAST_ERROR).orEmpty(),
             )
             intent.getStringExtra(CitsBridgeService.EXTRA_LOG)?.let { logLine = it }
+            serializableExtra<IntersectionSnapshot>(intent, CitsBridgeService.EXTRA_INTERSECTION_SNAPSHOT)?.let {
+                intersectionSnapshot = it
+            }
         }
     }
 
@@ -176,6 +193,7 @@ class MainActivity : ComponentActivity() {
                     onMaxQueueAgeSecondsChange = { maxQueueAgeSeconds = it },
                     status = status,
                     logLine = logLine,
+                    intersectionSnapshot = intersectionSnapshot,
                     onRefresh = ::refreshDevices,
                     onStart = ::requestUsbThenStart,
                     onStop = ::stopBridge,
@@ -409,6 +427,15 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private inline fun <reified T : Serializable> serializableExtra(intent: Intent, key: String): T? {
+    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        intent.getSerializableExtra(key, T::class.java)
+    } else {
+        @Suppress("DEPRECATION")
+        intent.getSerializableExtra(key) as? T
+    }
+}
+
 @Composable
 private fun CitsTheme(content: @Composable () -> Unit) {
     MaterialTheme(
@@ -438,6 +465,7 @@ private fun CitsApp(
     onMaxQueueAgeSecondsChange: (String) -> Unit,
     status: BridgeStatus,
     logLine: String,
+    intersectionSnapshot: IntersectionSnapshot?,
     onRefresh: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -523,6 +551,10 @@ private fun CitsApp(
                         onIntervalChange = onCamIntervalChange,
                         onConfigure = onConfigureCam,
                     )
+                    AppPage.IntersectionView -> IntersectionViewPage(
+                        snapshot = intersectionSnapshot,
+                        status = status,
+                    )
                     AppPage.Settings -> SettingsPage(
                         mqttUri = mqttUri,
                         nodeId = nodeId,
@@ -550,6 +582,7 @@ private fun CitsApp(
 private enum class AppPage(val title: String) {
     Home("Home"),
     CamBroadcast("CAM Broadcast"),
+    IntersectionView("Intersection View"),
     Settings("Settings"),
 }
 
@@ -663,6 +696,201 @@ private fun CamPanel(
             Text(if (status.camEnabled) "Stop CAM broadcast" else "Start CAM broadcast")
         }
     }
+}
+
+@Composable
+private fun IntersectionViewPage(
+    snapshot: IntersectionSnapshot?,
+    status: BridgeStatus,
+) {
+    val map = snapshot?.map
+    val spat = snapshot?.spat
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Color.White, RoundedCornerShape(8.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        if (snapshot?.available != true) {
+            Text("Waiting for MAPEM/SPATEM", style = MaterialTheme.typography.titleMedium)
+            Text(
+                if (status.running) "No intersection message has been decoded yet." else "Start capture to receive intersection messages.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+            return@Column
+        }
+        val title = map?.name?.takeIf { it.isNotBlank() } ?: "Intersection ${snapshot.map?.key ?: snapshot.spat?.key}"
+        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            listOfNotNull(
+                map?.key?.let { "id $it" },
+                map?.revision?.let { "MAP rev $it" },
+                spat?.revision?.let { "SPAT rev $it" },
+                if (snapshot.source == SelectionSource.DeviceLocation) "nearest to device" else "latest observed",
+            ).joinToString(" • "),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        if (map == null) {
+            Text("SPATEM received; waiting for matching MAPEM geometry.", color = MaterialTheme.colorScheme.secondary)
+        } else {
+            IntersectionRenderer(map, spat)
+            Text(
+                "${map.lanes.size} lanes • ${map.lanes.count { it.connections.isNotEmpty() }} signalized lane links",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+        }
+    }
+    SignalTimingPanel(snapshot)
+}
+
+@Composable
+private fun IntersectionRenderer(
+    map: MapIntersection,
+    spat: org.opentrafficmap.citstogo.intersection.SpatIntersection?,
+) {
+    val signalGroups = spat?.movementsBySignalGroup.orEmpty()
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(420.dp)
+            .background(Color(0xFFF8FAFC), RoundedCornerShape(8.dp)),
+    ) {
+        val allNodes = map.lanes.flatMap { it.nodes }
+        if (allNodes.isEmpty()) return@Canvas
+        val minX = allNodes.minOf { it.xCm }.toFloat()
+        val maxX = allNodes.maxOf { it.xCm }.toFloat()
+        val minY = allNodes.minOf { it.yCm }.toFloat()
+        val maxY = allNodes.maxOf { it.yCm }.toFloat()
+        val padding = 28.dp.toPx()
+        val width = (maxX - minX).coerceAtLeast(1f)
+        val height = (maxY - minY).coerceAtLeast(1f)
+        val scale = minOf((size.width - padding * 2) / width, (size.height - padding * 2) / height)
+
+        fun point(x: Int, y: Int): Offset = Offset(
+            x = padding + (x - minX) * scale,
+            y = size.height - padding - (y - minY) * scale,
+        )
+
+        map.lanes.sortedBy { if (it.laneType == LaneType.Crosswalk) 1 else 0 }.forEach { lane ->
+            if (lane.nodes.size < 2) return@forEach
+            val phase = lane.connections.firstNotNullOfOrNull { connection ->
+                connection.signalGroup?.let { signalGroups[it]?.currentEvent?.state }
+            }
+            val color = phase?.phaseColor() ?: lane.laneType.baseColor()
+            val path = Path().apply {
+                val first = lane.nodes.first()
+                moveTo(point(first.xCm, first.yCm).x, point(first.xCm, first.yCm).y)
+                lane.nodes.drop(1).forEach { node ->
+                    val p = point(node.xCm, node.yCm)
+                    lineTo(p.x, p.y)
+                }
+            }
+            drawPath(
+                path = path,
+                color = color.copy(alpha = if (phase == null) 0.72f else 0.92f),
+                style = Stroke(
+                    width = when (lane.laneType) {
+                        LaneType.Crosswalk -> 6.dp.toPx()
+                        LaneType.Bike, LaneType.Sidewalk -> 4.dp.toPx()
+                        else -> 5.dp.toPx()
+                    },
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round,
+                ),
+            )
+            lane.nodes.filter { it.stopLine }.forEach { node ->
+                drawCircle(Color.White, radius = 5.dp.toPx(), center = point(node.xCm, node.yCm))
+                drawCircle(Color(0xFF111827), radius = 3.dp.toPx(), center = point(node.xCm, node.yCm))
+            }
+            val signalGroup = lane.connections.firstNotNullOfOrNull { it.signalGroup }
+            if (signalGroup != null && phase != null) {
+                val anchor = point(lane.nodes.first().xCm, lane.nodes.first().yCm)
+                drawCircle(Color.White, radius = 8.dp.toPx(), center = anchor)
+                drawCircle(phase.phaseColor(), radius = 5.dp.toPx(), center = anchor)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SignalTimingPanel(snapshot: IntersectionSnapshot?) {
+    val movements = snapshot?.spat?.movements.orEmpty()
+    if (movements.isEmpty()) return
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Color.White, RoundedCornerShape(8.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text("Signal phases", style = MaterialTheme.typography.titleMedium)
+        movements.sortedBy { it.signalGroup }.take(16).forEach { movement ->
+            val event = movement.currentEvent
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Canvas(Modifier.height(18.dp).weight(0.12f)) {
+                    drawCircle(event?.state?.phaseColor() ?: Color(0xFF94A3B8), radius = 6.dp.toPx())
+                }
+                Text("SG ${movement.signalGroup}", modifier = Modifier.weight(0.35f), fontWeight = FontWeight.SemiBold)
+                Text(event?.state?.label.orEmpty(), modifier = Modifier.weight(0.65f))
+                Text(event?.timingLabel().orEmpty(), modifier = Modifier.weight(0.8f), color = MaterialTheme.colorScheme.secondary)
+            }
+        }
+    }
+}
+
+private fun SignalEvent.timingLabel(): String {
+    val likely = likelyTime?.let(::formatTimeMark)
+    val min = minEndTime?.let(::formatTimeMark)
+    val max = maxEndTime?.let(::formatTimeMark)
+    return when {
+        likely != null -> "likely $likely"
+        min != null && max != null -> "$min-$max"
+        min != null -> "min $min"
+        else -> ""
+    }
+}
+
+private fun formatTimeMark(value: Int): String {
+    if (value >= 36001) return "unknown"
+    val totalTenths = value.coerceAtLeast(0)
+    val minutes = totalTenths / 600
+    val seconds = (totalTenths / 10) % 60
+    val tenths = totalTenths % 10
+    return "%02d:%02d.%d".format(minutes, seconds, tenths)
+}
+
+private fun MovementPhaseState.phaseColor(): Color = when (this) {
+    MovementPhaseState.StopAndRemain,
+    MovementPhaseState.StopThenProceed -> Color(0xFFDC2626)
+    MovementPhaseState.PreMovement,
+    MovementPhaseState.PermissiveClearance,
+    MovementPhaseState.ProtectedClearance,
+    MovementPhaseState.CautionConflictingTraffic -> Color(0xFFD97706)
+    MovementPhaseState.PermissiveAllowed,
+    MovementPhaseState.ProtectedAllowed -> Color(0xFF16A34A)
+    MovementPhaseState.Dark,
+    MovementPhaseState.Unavailable,
+    MovementPhaseState.Unknown -> Color(0xFF64748B)
+}
+
+private fun LaneType.baseColor(): Color = when (this) {
+    LaneType.Vehicle -> Color(0xFF334155)
+    LaneType.Crosswalk -> Color(0xFF7C3AED)
+    LaneType.Bike -> Color(0xFF0891B2)
+    LaneType.Sidewalk -> Color(0xFF64748B)
+    LaneType.TrackedVehicle -> Color(0xFFA16207)
+    LaneType.Parking -> Color(0xFF475569)
+    LaneType.Median,
+    LaneType.Striping,
+    LaneType.Other -> Color(0xFF94A3B8)
 }
 
 @Composable

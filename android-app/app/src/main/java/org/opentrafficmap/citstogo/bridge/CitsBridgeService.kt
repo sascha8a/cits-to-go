@@ -29,6 +29,8 @@ import org.opentrafficmap.citstogo.cam.CamIdentity
 import org.opentrafficmap.citstogo.cam.CamPosition
 import org.opentrafficmap.citstogo.cam.ItsG5FrameBuilder
 import org.opentrafficmap.citstogo.cam.StationType
+import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
+import org.opentrafficmap.citstogo.intersection.IntersectionStateStore
 import org.opentrafficmap.citstogo.protocol.CitsPacket
 import org.opentrafficmap.citstogo.protocol.CtgFrameEncoder
 import org.opentrafficmap.citstogo.protocol.CtgInboundFrame
@@ -81,6 +83,8 @@ class CitsBridgeService : Service() {
     private var camIntervalMs = DEFAULT_CAM_INTERVAL_MS
     private var lastCamGeneratedElapsedMs = 0L
     private var lastCamLocation: Location? = null
+    private val intersectionStore = IntersectionStateStore()
+    private var intersectionSnapshot: IntersectionSnapshot? = null
 
     private var status = BridgeStatus()
     private var packets = 0L
@@ -370,6 +374,7 @@ class CitsBridgeService : Service() {
         val summary = "#${packet.sequence} ${packet.payload.size}B ${packet.frequencyMhz}MHz ${packet.rssiDbm}dBm"
         queueMqttPacket(packet.payload)
         writePcap(packet)
+        updateIntersection(packet.payload)
         status = status.copy(
             running = true,
             packets = packets,
@@ -383,6 +388,16 @@ class CitsBridgeService : Service() {
             packetTopic = "its/$nodeId/packet",
         )
         if (shouldPublishPacketStatus()) publishStatus("Packet $summary")
+    }
+
+    private fun updateIntersection(packet: ByteArray) {
+        try {
+            intersectionStore.accept(packet)?.let {
+                intersectionSnapshot = intersectionStore.closest(lastLocation) ?: it
+            }
+        } catch (_: Exception) {
+            // MAPEM/SPATEM decoding is best-effort; malformed or unsupported messages should not affect capture.
+        }
     }
 
     private fun queueTransmit(packet: ByteArray, isCam: Boolean): Boolean {
@@ -753,6 +768,7 @@ class CitsBridgeService : Service() {
     }
 
     private fun publishStatus(log: String?) {
+        intersectionSnapshot = intersectionStore.closest(lastLocation) ?: intersectionSnapshot
         status = status.copy(
             running = usbWanted,
             nodeId = nodeId,
@@ -799,6 +815,7 @@ class CitsBridgeService : Service() {
         intent.putExtra(EXTRA_LAST_TX, status.lastTxSummary)
         intent.putExtra(EXTRA_LAST_PACKET, status.lastPacketSummary)
         intent.putExtra(EXTRA_LAST_ERROR, status.lastError)
+        intersectionSnapshot?.let { intent.putExtra(EXTRA_INTERSECTION_SNAPSHOT, it) }
         if (!log.isNullOrBlank()) intent.putExtra(EXTRA_LOG, log)
         sendBroadcast(intent)
     }
@@ -1043,6 +1060,7 @@ class CitsBridgeService : Service() {
         const val EXTRA_CAM_SENT = "camSent"
         const val EXTRA_CAM_STATION_TYPE = "camStationType"
         const val EXTRA_CAM_INTERVAL_MS = "camIntervalMs"
+        const val EXTRA_INTERSECTION_SNAPSHOT = "intersectionSnapshot"
 
         const val PREFS = "cits_to_go"
         const val PREF_NODE_ID = "node_id"
