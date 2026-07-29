@@ -15,6 +15,7 @@ class UsbCdcSerial(
 ) : Closeable {
     private var connection: UsbDeviceConnection? = null
     private var inEndpoint: UsbEndpoint? = null
+    private var outEndpoint: UsbEndpoint? = null
     private val claimedInterfaces = mutableListOf<UsbInterface>()
 
     fun description(): String = "${device.deviceName} vid=%04x pid=%04x".format(device.vendorId, device.productId)
@@ -42,13 +43,18 @@ class UsbCdcSerial(
                     inEndpoint == null
                 ) {
                     inEndpoint = endpoint
+                } else if (endpoint.type == UsbConstants.USB_ENDPOINT_XFER_BULK &&
+                    endpoint.direction == UsbConstants.USB_DIR_OUT &&
+                    outEndpoint == null
+                ) {
+                    outEndpoint = endpoint
                 }
             }
         }
 
-        if (inEndpoint == null) {
+        if (inEndpoint == null || outEndpoint == null) {
             close()
-            throw IOException("No USB bulk IN endpoint found")
+            throw IOException("USB serial requires bulk IN and OUT endpoints")
         }
         controlInterface?.let { configureCdcAcm(conn, it.id, baudRate) }
     }
@@ -57,6 +63,19 @@ class UsbCdcSerial(
         val conn = connection ?: throw IOException("USB serial is not open")
         val endpoint = inEndpoint ?: throw IOException("USB serial has no input endpoint")
         return conn.bulkTransfer(endpoint, buffer, buffer.size, timeoutMs).coerceAtLeast(0)
+    }
+
+    @Synchronized
+    fun writeAll(buffer: ByteArray, timeoutMs: Int) {
+        val conn = connection ?: throw IOException("USB serial is not open")
+        val endpoint = outEndpoint ?: throw IOException("USB serial has no output endpoint")
+        var offset = 0
+        while (offset < buffer.size) {
+            val length = minOf(buffer.size - offset, endpoint.maxPacketSize.coerceAtLeast(1) * 16)
+            val written = conn.bulkTransfer(endpoint, buffer, offset, length, timeoutMs)
+            if (written <= 0) throw IOException("USB serial write timed out at $offset/${buffer.size}")
+            offset += written
+        }
     }
 
     private fun configureCdcAcm(conn: UsbDeviceConnection, interfaceId: Int, baudRate: Int) {
@@ -82,5 +101,6 @@ class UsbCdcSerial(
         claimedInterfaces.clear()
         connection = null
         inEndpoint = null
+        outEndpoint = null
     }
 }

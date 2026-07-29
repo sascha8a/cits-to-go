@@ -2,10 +2,22 @@ package org.opentrafficmap.citstogo.protocol
 
 import java.util.zip.CRC32
 
+sealed interface CtgInboundFrame {
+    data class Capture(val packet: CitsPacket) : CtgInboundFrame
+    data class TxResult(
+        val requestId: Long,
+        val status: Long,
+        val packetLength: Int,
+        val packet: ByteArray? = null,
+    ) : CtgInboundFrame {
+        val successful: Boolean get() = status == 0L
+    }
+}
+
 class CtgFrameDecoder {
-    fun decode(encoded: ByteArray, length: Int = encoded.size): CitsPacket {
+    fun decode(encoded: ByteArray, length: Int = encoded.size): CtgInboundFrame {
         val decoded = Cobs.decode(encoded, length)
-        if (decoded.size < HEADER_LEN + CRC_LEN) throw ProtocolException("Frame too short")
+        if (decoded.size < MIN_HEADER_LEN + CRC_LEN) throw ProtocolException("Frame too short")
         if (decoded[0] != 'C'.code.toByte() ||
             decoded[1] != 'T'.code.toByte() ||
             decoded[2] != 'G'.code.toByte() ||
@@ -17,25 +29,34 @@ class CtgFrameDecoder {
         val type = decoded[5].toInt() and 0xff
         val headerLen = u16(decoded, 6)
         if (version != 1) throw ProtocolException("Unsupported CTG version $version")
-        if (type != 1) throw ProtocolException("Unsupported CTG frame type $type")
-        if (headerLen != HEADER_LEN) throw ProtocolException("Unexpected header length $headerLen")
-
-        val capturedLen = u16(decoded, 26)
-        val totalLen = headerLen + capturedLen + CRC_LEN
-        if (decoded.size != totalLen) {
-            throw ProtocolException("Frame length ${decoded.size} does not match captured length $capturedLen")
+        if (headerLen < MIN_HEADER_LEN || decoded.size < headerLen + CRC_LEN) {
+            throw ProtocolException("Invalid CTG header length $headerLen")
         }
 
-        val expectedCrc = u32(decoded, totalLen - CRC_LEN)
+        val expectedCrc = u32(decoded, decoded.size - CRC_LEN)
         val crc = CRC32()
-        crc.update(decoded, 0, totalLen - CRC_LEN)
+        crc.update(decoded, 0, decoded.size - CRC_LEN)
         val actualCrc = crc.value
         if (actualCrc != expectedCrc) {
             throw ProtocolException("CRC mismatch")
         }
 
+        return when (type) {
+            TYPE_CAPTURE -> decodeCapture(decoded, headerLen)
+            TYPE_TX_RESULT -> decodeTxResult(decoded, headerLen)
+            else -> throw ProtocolException("Unsupported CTG frame type $type")
+        }
+    }
+
+    private fun decodeCapture(decoded: ByteArray, headerLen: Int): CtgInboundFrame.Capture {
+        if (headerLen != CAPTURE_HEADER_LEN) throw ProtocolException("Unexpected capture header length $headerLen")
+        val capturedLen = u16(decoded, 26)
+        val totalLen = headerLen + capturedLen + CRC_LEN
+        if (decoded.size != totalLen) {
+            throw ProtocolException("Frame length ${decoded.size} does not match captured length $capturedLen")
+        }
         val payload = decoded.copyOfRange(headerLen, headerLen + capturedLen)
-        return CitsPacket(
+        return CtgInboundFrame.Capture(CitsPacket(
             sequence = u32(decoded, 10),
             timestampUs = u64(decoded, 14),
             frequencyMhz = u16(decoded, 22),
@@ -46,6 +67,23 @@ class CtgFrameDecoder {
             originalLength = u16(decoded, 24),
             capturedLength = capturedLen,
             payload = payload,
+        ))
+    }
+
+    private fun decodeTxResult(decoded: ByteArray, headerLen: Int): CtgInboundFrame.TxResult {
+        if (headerLen != TX_RESULT_HEADER_LEN || decoded.size < headerLen + CRC_LEN) {
+            throw ProtocolException("Malformed TX result")
+        }
+        val packetLength = u16(decoded, 16)
+        val payloadLength = decoded.size - headerLen - CRC_LEN
+        if (payloadLength != 0 && payloadLength != packetLength) {
+            throw ProtocolException("TX result payload length $payloadLength does not match packet length $packetLength")
+        }
+        return CtgInboundFrame.TxResult(
+            requestId = u32(decoded, 8),
+            status = u32(decoded, 12),
+            packetLength = packetLength,
+            packet = if (payloadLength > 0) decoded.copyOfRange(headerLen, headerLen + payloadLength) else null,
         )
     }
 
@@ -62,7 +100,13 @@ class CtgFrameDecoder {
     }
 
     companion object {
-        const val HEADER_LEN = 32
+        const val TYPE_CAPTURE = 1
+        const val TYPE_TX_REQUEST = 2
+        const val TYPE_TX_RESULT = 3
+        const val CAPTURE_HEADER_LEN = 32
+        const val TX_REQUEST_HEADER_LEN = 16
+        const val TX_RESULT_HEADER_LEN = 20
+        const val MIN_HEADER_LEN = 8
         const val CRC_LEN = 4
     }
 }

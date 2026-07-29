@@ -17,14 +17,19 @@ class PcapWriter(output: OutputStream) : Closeable {
 
     @Synchronized
     fun writePacket(packet: CitsPacket) {
+        writeRawPacket(packet.payload, packet.timestampUs)
+    }
+
+    @Synchronized
+    fun writeRawPacket(payload: ByteArray, timestampUs: Long) {
         if (closed) return
-        val seconds = (packet.timestampUs / 1_000_000L).toInt()
-        val micros = (packet.timestampUs % 1_000_000L).toInt()
+        val seconds = (timestampUs / 1_000_000L).toInt()
+        val micros = (timestampUs % 1_000_000L).toInt()
         writeIntLE(seconds)
         writeIntLE(micros)
-        writeIntLE(packet.payload.size)
-        writeIntLE(packet.payload.size)
-        out.write(packet.payload)
+        writeIntLE(payload.size)
+        writeIntLE(payload.size)
+        out.write(payload)
         packetsSinceFlush += 1
         maybeFlush(force = false)
     }

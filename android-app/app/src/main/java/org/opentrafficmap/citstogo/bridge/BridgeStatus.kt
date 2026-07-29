@@ -14,11 +14,18 @@ data class BridgeStatus(
     val discoveredDevices: Long = 0,
     val truncated: Long = 0,
     val protocolErrors: Long = 0,
+    val txRequested: Long = 0,
+    val txSuccessful: Long = 0,
+    val txFailed: Long = 0,
+    val camEnabled: Boolean = false,
+    val camSent: Long = 0,
+    val lastTxSummary: String = "",
     val lastPacketSummary: String = "",
     val lastError: String = "",
 ) {
     fun summary(): String {
         val pcap = if (pcapRecording) " | PCAP recording" else ""
-        return "$usbState | MQTT $mqttState$pcap"
+        val cam = if (camEnabled) " | CAM active" else ""
+        return "$usbState | MQTT $mqttState$pcap$cam"
     }
 }

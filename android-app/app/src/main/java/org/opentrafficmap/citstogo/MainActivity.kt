@@ -32,17 +32,24 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -50,8 +57,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.launch
 import org.opentrafficmap.citstogo.bridge.BridgeStatus
 import org.opentrafficmap.citstogo.bridge.CitsBridgeService
+import org.opentrafficmap.citstogo.cam.StationType
 import java.security.SecureRandom
 import java.util.Locale
 import kotlin.math.roundToLong
@@ -68,6 +77,9 @@ class MainActivity : ComponentActivity() {
     private var maxQueueLength by mutableStateOf("")
     private var maxQueueAgeSeconds by mutableStateOf("")
     private var logLine by mutableStateOf("")
+    private var camStationType by mutableStateOf(StationType.PEDESTRIAN)
+    private var camIntervalMs by mutableStateOf(CitsBridgeService.DEFAULT_CAM_INTERVAL_MS.toString())
+    private var enableCamAfterPermission = false
 
     private val usbPermissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -102,6 +114,12 @@ class MainActivity : ComponentActivity() {
                 discoveredDevices = intent.getLongExtra(CitsBridgeService.EXTRA_DISCOVERED_DEVICES, 0),
                 truncated = intent.getLongExtra(CitsBridgeService.EXTRA_TRUNCATED, 0),
                 protocolErrors = intent.getLongExtra(CitsBridgeService.EXTRA_PROTOCOL_ERRORS, 0),
+                txRequested = intent.getLongExtra(CitsBridgeService.EXTRA_TX_REQUESTED, 0),
+                txSuccessful = intent.getLongExtra(CitsBridgeService.EXTRA_TX_SUCCESSFUL, 0),
+                txFailed = intent.getLongExtra(CitsBridgeService.EXTRA_TX_FAILED, 0),
+                camEnabled = intent.getBooleanExtra(CitsBridgeService.EXTRA_CAM_ENABLED, false),
+                camSent = intent.getLongExtra(CitsBridgeService.EXTRA_CAM_SENT, 0),
+                lastTxSummary = intent.getStringExtra(CitsBridgeService.EXTRA_LAST_TX).orEmpty(),
                 lastPacketSummary = intent.getStringExtra(CitsBridgeService.EXTRA_LAST_PACKET).orEmpty(),
                 lastError = intent.getStringExtra(CitsBridgeService.EXTRA_LAST_ERROR).orEmpty(),
             )
@@ -125,6 +143,12 @@ class MainActivity : ComponentActivity() {
                 CitsBridgeService.DEFAULT_MQTT_MAX_QUEUE_AGE_MS,
             ),
         )
+        camStationType = StationType.selectableFromCode(
+            prefs.getInt(CitsBridgeService.PREF_CAM_STATION_TYPE, StationType.PEDESTRIAN.code))
+        camIntervalMs = prefs.getInt(
+            CitsBridgeService.PREF_CAM_INTERVAL_MS,
+            CitsBridgeService.DEFAULT_CAM_INTERVAL_MS,
+        ).toString()
         status = status.copy(
             discoveredDevices = prefs.getStringSet(CitsBridgeService.PREF_DISCOVERED_MAC_ADDRESSES, emptySet())
                 ?.size
@@ -157,6 +181,11 @@ class MainActivity : ComponentActivity() {
                     onStop = ::stopBridge,
                     onStartPcap = ::choosePcapFile,
                     onStopPcap = ::stopPcap,
+                    camStationType = camStationType,
+                    onCamStationTypeChange = { camStationType = it },
+                    camIntervalMs = camIntervalMs,
+                    onCamIntervalChange = { camIntervalMs = it },
+                    onConfigureCam = ::configureCam,
                     onSaveSettings = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds ->
                         mqttUri = updatedMqttUri
                         nodeId = updatedNodeId
@@ -183,6 +212,22 @@ class MainActivity : ComponentActivity() {
         runCatching { unregisterReceiver(usbPermissionReceiver) }
         runCatching { unregisterReceiver(statusReceiver) }
         super.onDestroy()
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQUEST_LOCATION && enableCamAfterPermission) {
+            enableCamAfterPermission = false
+            if (grantResults.any { it == PackageManager.PERMISSION_GRANTED }) {
+                configureCam(true)
+            } else {
+                logLine = "Location permission denied; CAM remains off"
+            }
+        }
     }
 
     @Deprecated("Deprecated Android callback kept to avoid an activity dependency.")
@@ -254,8 +299,34 @@ class MainActivity : ComponentActivity() {
         sendServiceIntent(CitsBridgeService.ACTION_STOP_PCAP)
     }
 
-    private fun sendServiceIntent(action: String) {
-        val intent = Intent(this, CitsBridgeService::class.java).setAction(action)
+    private fun configureCam(enabled: Boolean) {
+        if (enabled &&
+            checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
+        ) {
+            enableCamAfterPermission = true
+            requestPermissions(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                ),
+                REQUEST_LOCATION,
+            )
+            return
+        }
+        val interval = camIntervalMs.toIntOrNull()
+            ?.coerceIn(CitsBridgeService.MIN_CAM_INTERVAL_MS, CitsBridgeService.MAX_CAM_INTERVAL_MS)
+            ?: CitsBridgeService.DEFAULT_CAM_INTERVAL_MS
+        camIntervalMs = interval.toString()
+        sendServiceIntent(CitsBridgeService.ACTION_CONFIGURE_CAM) {
+            putExtra(CitsBridgeService.EXTRA_CAM_ENABLED, enabled)
+            putExtra(CitsBridgeService.EXTRA_CAM_STATION_TYPE, camStationType.code)
+            putExtra(CitsBridgeService.EXTRA_CAM_INTERVAL_MS, interval)
+        }
+    }
+
+    private fun sendServiceIntent(action: String, configure: Intent.() -> Unit = {}) {
+        val intent = Intent(this, CitsBridgeService::class.java).setAction(action).apply(configure)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && action == CitsBridgeService.ACTION_START) {
             startForegroundService(intent)
         } else {
@@ -334,6 +405,7 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val REQUEST_CREATE_PCAP = 1001
+        private const val REQUEST_LOCATION = 1002
     }
 }
 
@@ -371,67 +443,243 @@ private fun CitsApp(
     onStop: () -> Unit,
     onStartPcap: () -> Unit,
     onStopPcap: () -> Unit,
+    camStationType: StationType,
+    onCamStationTypeChange: (StationType) -> Unit,
+    camIntervalMs: String,
+    onCamIntervalChange: (String) -> Unit,
+    onConfigureCam: (Boolean) -> Unit,
     onSaveSettings: (String, String, String, String) -> Unit,
 ) {
-    var settingsOpen by rememberSaveable { mutableStateOf(false) }
+    var selectedPage by rememberSaveable { mutableStateOf(AppPage.Home) }
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val scope = rememberCoroutineScope()
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.safeDrawing)
-                .verticalScroll(rememberScrollState())
-                .padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            drawerContent = {
+                ModalDrawerSheet(
+                    drawerContainerColor = MaterialTheme.colorScheme.surface,
+                    drawerContentColor = MaterialTheme.colorScheme.onSurface,
+                ) {
+                    Text(
+                        "C-ITS to go",
+                        modifier = Modifier.padding(20.dp),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    AppPage.entries.forEach { page ->
+                        NavigationDrawerItem(
+                            label = { Text(page.title) },
+                            selected = page == selectedPage,
+                            onClick = {
+                                selectedPage = page
+                                scope.launch { drawerState.close() }
+                            },
+                            modifier = Modifier.padding(horizontal = 12.dp),
+                            colors = NavigationDrawerItemDefaults.colors(
+                                selectedContainerColor = Color(0xFFE0F2F1),
+                                unselectedContainerColor = MaterialTheme.colorScheme.surface,
+                                selectedTextColor = MaterialTheme.colorScheme.primary,
+                                unselectedTextColor = MaterialTheme.colorScheme.secondary,
+                            ),
+                        )
+                    }
+                }
+            },
         ) {
-            AppHeader(onOpenSettings = { settingsOpen = true })
-            StatusBand(status)
-            ConfigPanel(
-                devices,
-                selectedDeviceName,
-                onSelectDevice,
-                onRefresh,
-            )
-            ActionRow(status.running, onStart, onStop)
-            RecordingRow(status, onStartPcap, onStopPcap)
-            Metrics(status)
-            if (logLine.isNotBlank() || status.lastError.isNotBlank()) {
-                EventLog(logLine, status.lastError)
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .verticalScroll(rememberScrollState())
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                AppHeader(
+                    title = selectedPage.title,
+                    onOpenMenu = { scope.launch { drawerState.open() } },
+                )
+                when (selectedPage) {
+                    AppPage.Home -> HomePage(
+                        devices = devices,
+                        selectedDeviceName = selectedDeviceName,
+                        onSelectDevice = onSelectDevice,
+                        status = status,
+                        logLine = logLine,
+                        onRefresh = onRefresh,
+                        onStart = onStart,
+                        onStop = onStop,
+                        onStartPcap = onStartPcap,
+                        onStopPcap = onStopPcap,
+                    )
+                    AppPage.CamBroadcast -> CamBroadcastPage(
+                        status = status,
+                        logLine = logLine,
+                        stationType = camStationType,
+                        onStationTypeChange = onCamStationTypeChange,
+                        intervalMs = camIntervalMs,
+                        onIntervalChange = onCamIntervalChange,
+                        onConfigure = onConfigureCam,
+                    )
+                    AppPage.Settings -> SettingsPage(
+                        mqttUri = mqttUri,
+                        nodeId = nodeId,
+                        maxQueueLength = maxQueueLength,
+                        maxQueueAgeSeconds = maxQueueAgeSeconds,
+                        onSave = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds ->
+                            onMqttUriChange(updatedMqttUri)
+                            onNodeIdChange(updatedNodeId)
+                            onMaxQueueLengthChange(updatedMaxQueueLength)
+                            onMaxQueueAgeSecondsChange(updatedMaxQueueAgeSeconds)
+                            onSaveSettings(
+                                updatedMqttUri,
+                                updatedNodeId,
+                                updatedMaxQueueLength,
+                                updatedMaxQueueAgeSeconds,
+                            )
+                        },
+                    )
+                }
             }
         }
     }
+}
 
-    if (settingsOpen) {
-        SettingsDialog(
-            mqttUri = mqttUri,
-            nodeId = nodeId,
-            maxQueueLength = maxQueueLength,
-            maxQueueAgeSeconds = maxQueueAgeSeconds,
-            onDismiss = { settingsOpen = false },
-            onDone = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds ->
-                onMqttUriChange(updatedMqttUri)
-                onNodeIdChange(updatedNodeId)
-                onMaxQueueLengthChange(updatedMaxQueueLength)
-                onMaxQueueAgeSecondsChange(updatedMaxQueueAgeSeconds)
-                onSaveSettings(updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds)
-                settingsOpen = false
-            },
-        )
+private enum class AppPage(val title: String) {
+    Home("Home"),
+    CamBroadcast("CAM Broadcast"),
+    Settings("Settings"),
+}
+
+@Composable
+private fun HomePage(
+    devices: List<UsbDevice>,
+    selectedDeviceName: String?,
+    onSelectDevice: (String) -> Unit,
+    status: BridgeStatus,
+    logLine: String,
+    onRefresh: () -> Unit,
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onStartPcap: () -> Unit,
+    onStopPcap: () -> Unit,
+) {
+    StatusBand(status)
+    ConfigPanel(
+        devices,
+        selectedDeviceName,
+        onSelectDevice,
+        onRefresh,
+    )
+    ActionRow(status.running, onStart, onStop)
+    RecordingRow(status, onStartPcap, onStopPcap)
+    Metrics(status)
+    if (logLine.isNotBlank() || status.lastError.isNotBlank()) {
+        EventLog(logLine, status.lastError)
     }
 }
 
 @Composable
-private fun AppHeader(onOpenSettings: () -> Unit) {
+private fun CamBroadcastPage(
+    status: BridgeStatus,
+    logLine: String,
+    stationType: StationType,
+    onStationTypeChange: (StationType) -> Unit,
+    intervalMs: String,
+    onIntervalChange: (String) -> Unit,
+    onConfigure: (Boolean) -> Unit,
+) {
+    CamPanel(
+        status = status,
+        stationType = stationType,
+        onStationTypeChange = onStationTypeChange,
+        intervalMs = intervalMs,
+        onIntervalChange = onIntervalChange,
+        onConfigure = onConfigure,
+    )
+    if (logLine.isNotBlank() || status.lastError.isNotBlank()) {
+        EventLog(logLine, status.lastError)
+    }
+}
+
+@Composable
+private fun CamPanel(
+    status: BridgeStatus,
+    stationType: StationType,
+    onStationTypeChange: (StationType) -> Unit,
+    intervalMs: String,
+    onIntervalChange: (String) -> Unit,
+    onConfigure: (Boolean) -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Color.White, RoundedCornerShape(8.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text("CAM broadcast", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "ETSI CAM Release 1 over GeoNetworking SHB/BTP-B. Location values come from Android; unavailable sensor values are explicitly encoded as unavailable.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Type", modifier = Modifier.weight(1f))
+            TextButton(onClick = {
+                val types = StationType.selectable
+                val index = (types.indexOf(stationType) - 1 + types.size) % types.size
+                onStationTypeChange(types[index])
+            }) { Text("‹") }
+            Text(stationType.displayName, modifier = Modifier.weight(2f))
+            TextButton(onClick = {
+                val types = StationType.selectable
+                onStationTypeChange(types[(types.indexOf(stationType) + 1) % types.size])
+            }) { Text("›") }
+        }
+        OutlinedTextField(
+            value = intervalMs,
+            onValueChange = onIntervalChange,
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            enabled = !status.camEnabled,
+            label = { Text("Broadcast interval") },
+            suffix = { Text("ms") },
+            supportingText = { Text("Allowed CAM range: 100–1000 ms") },
+        )
+        Button(
+            onClick = { onConfigure(!status.camEnabled) },
+            enabled = status.running,
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            colors = if (status.camEnabled) {
+                ButtonDefaults.buttonColors(containerColor = Color(0xFFB91C1C))
+            } else {
+                ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            },
+            shape = RoundedCornerShape(8.dp),
+        ) {
+            Text(if (status.camEnabled) "Stop CAM broadcast" else "Start CAM broadcast")
+        }
+    }
+}
+
+@Composable
+private fun AppHeader(title: String, onOpenMenu: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        IconButton(onClick = onOpenMenu) {
+            Text("☰", style = MaterialTheme.typography.titleLarge)
+        }
         Column(
             modifier = Modifier.weight(1f),
             verticalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             Text(
-                "C-ITS to go",
+                title,
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -440,9 +688,6 @@ private fun AppHeader(onOpenSettings: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.secondary,
             )
-        }
-        TextButton(onClick = onOpenSettings) {
-            Text("Settings")
         }
     }
 }
@@ -497,82 +742,72 @@ private fun ConfigPanel(
 }
 
 @Composable
-private fun SettingsDialog(
+private fun SettingsPage(
     mqttUri: String,
     nodeId: String,
     maxQueueLength: String,
     maxQueueAgeSeconds: String,
-    onDismiss: () -> Unit,
-    onDone: (String, String, String, String) -> Unit,
+    onSave: (String, String, String, String) -> Unit,
 ) {
     var draftMqttUri by rememberSaveable(mqttUri) { mutableStateOf(mqttUri) }
     var draftNodeId by rememberSaveable(nodeId) { mutableStateOf(nodeId) }
     var draftMaxQueueLength by rememberSaveable(maxQueueLength) { mutableStateOf(maxQueueLength) }
     var draftMaxQueueAgeSeconds by rememberSaveable(maxQueueAgeSeconds) { mutableStateOf(maxQueueAgeSeconds) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(8.dp),
-        title = {
-            Text("Settings", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                OutlinedTextField(
-                    value = draftMqttUri,
-                    onValueChange = { draftMqttUri = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("MQTT broker") },
-                    placeholder = { Text("mqtt://broker.example:1883") },
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Color.White, RoundedCornerShape(8.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        OutlinedTextField(
+            value = draftMqttUri,
+            onValueChange = { draftMqttUri = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("MQTT broker") },
+            placeholder = { Text("mqtt://broker.example:1883") },
+        )
+        OutlinedTextField(
+            value = draftNodeId,
+            onValueChange = { draftNodeId = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Node ID") },
+        )
+        OutlinedTextField(
+            value = draftMaxQueueLength,
+            onValueChange = { draftMaxQueueLength = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Max queue length") },
+            placeholder = { Text("100") },
+        )
+        OutlinedTextField(
+            value = draftMaxQueueAgeSeconds,
+            onValueChange = { draftMaxQueueAgeSeconds = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text("Max queue age") },
+            placeholder = { Text("0.2") },
+            suffix = { Text("s") },
+        )
+        Button(
+            onClick = {
+                onSave(
+                    draftMqttUri,
+                    draftNodeId,
+                    draftMaxQueueLength,
+                    draftMaxQueueAgeSeconds,
                 )
-                OutlinedTextField(
-                    value = draftNodeId,
-                    onValueChange = { draftNodeId = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("Node ID") },
-                )
-                OutlinedTextField(
-                    value = draftMaxQueueLength,
-                    onValueChange = { draftMaxQueueLength = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("Max queue length") },
-                    placeholder = { Text("100") },
-                )
-                OutlinedTextField(
-                    value = draftMaxQueueAgeSeconds,
-                    onValueChange = { draftMaxQueueAgeSeconds = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text("Max queue age") },
-                    placeholder = { Text("0.2") },
-                    suffix = { Text("s") },
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    onDone(
-                        draftMqttUri,
-                        draftNodeId,
-                        draftMaxQueueLength,
-                        draftMaxQueueAgeSeconds,
-                    )
-                },
-                shape = RoundedCornerShape(8.dp),
-            ) {
-                Text("Done")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
-            }
-        },
-    )
+            },
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            shape = RoundedCornerShape(8.dp),
+        ) {
+            Text("Save")
+        }
+    }
 }
 
 @Composable
@@ -631,9 +866,17 @@ private fun Metrics(status: BridgeStatus) {
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             MetricCard("Errors", status.protocolErrors.toString(), Modifier.weight(1f))
+            MetricCard("TX sent", status.txSuccessful.toString(), Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            MetricCard("TX failed", status.txFailed.toString(), Modifier.weight(1f))
+            MetricCard("CAM sent", status.camSent.toString(), Modifier.weight(1f))
         }
         if (status.lastPacketSummary.isNotBlank()) {
             Text("Last packet: ${status.lastPacketSummary}", style = MaterialTheme.typography.bodyMedium)
+        }
+        if (status.lastTxSummary.isNotBlank()) {
+            Text("Last TX: ${status.lastTxSummary}", style = MaterialTheme.typography.bodyMedium)
         }
     }
 }

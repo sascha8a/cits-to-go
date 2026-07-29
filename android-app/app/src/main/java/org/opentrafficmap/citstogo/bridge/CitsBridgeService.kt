@@ -10,8 +10,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.content.pm.PackageManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -21,21 +25,32 @@ import android.os.SystemClock
 import android.net.Uri
 import org.opentrafficmap.citstogo.BuildConfig
 import org.opentrafficmap.citstogo.MainActivity
+import org.opentrafficmap.citstogo.cam.CamIdentity
+import org.opentrafficmap.citstogo.cam.CamPosition
+import org.opentrafficmap.citstogo.cam.ItsG5FrameBuilder
+import org.opentrafficmap.citstogo.cam.StationType
 import org.opentrafficmap.citstogo.protocol.CitsPacket
+import org.opentrafficmap.citstogo.protocol.CtgFrameEncoder
+import org.opentrafficmap.citstogo.protocol.CtgInboundFrame
 import org.opentrafficmap.citstogo.protocol.Ieee80211Mac
 import org.opentrafficmap.citstogo.protocol.SerialPacketReader
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
 
 class CitsBridgeService : Service() {
     private val handler = Handler(Looper.getMainLooper())
     private val pcapLock = Any()
     private lateinit var usbManager: UsbManager
+    private lateinit var locationManager: LocationManager
     private lateinit var spool: MqttSpool
 
     private var serial: UsbCdcSerial? = null
-    private var serialThread: Thread? = null
+    private var serialReadThread: Thread? = null
+    private var serialWriteThread: Thread? = null
     private var pcapWriter: PcapWriter? = null
     private var mqttClient = MiniMqttClient()
     private var wakeLock: PowerManager.WakeLock? = null
@@ -56,6 +71,16 @@ class CitsBridgeService : Service() {
     private var lastStatsElapsedMs = 0L
     private var lastPacketStatusElapsedMs = 0L
     private var lastPacketStatusPackets = 0L
+    private val txQueue = LinkedBlockingQueue<TxEnvelope>(MAX_TX_QUEUE)
+    private val nextTxRequestId = AtomicLong(1)
+    private val pendingTx = ConcurrentHashMap<Long, PendingTx>()
+    private lateinit var camIdentity: CamIdentity
+    @Volatile private var lastLocation: Location? = null
+    private var camEnabled = false
+    private var camStationType = StationType.PEDESTRIAN
+    private var camIntervalMs = DEFAULT_CAM_INTERVAL_MS
+    private var lastCamGeneratedElapsedMs = 0L
+    private var lastCamLocation: Location? = null
 
     private var status = BridgeStatus()
     private var packets = 0L
@@ -64,6 +89,10 @@ class CitsBridgeService : Service() {
     private var discoveredDevices = 0L
     private var truncated = 0L
     private var protocolErrors = 0L
+    private var txRequested = 0L
+    private var txSuccessful = 0L
+    private var txFailed = 0L
+    private var camSent = 0L
     private val discoveredMacAddresses = mutableSetOf<String>()
 
     private val usbReceiver = object : BroadcastReceiver() {
@@ -88,6 +117,63 @@ class CitsBridgeService : Service() {
         }
     }
 
+    private val locationListener = LocationListener { location ->
+        val previous = lastLocation
+        if (previous == null || location.time >= previous.time ||
+            (location.hasAccuracy() && (!previous.hasAccuracy() || location.accuracy < previous.accuracy))
+        ) {
+            lastLocation = location
+        }
+    }
+
+    private val camBroadcaster = object : Runnable {
+        override fun run() {
+            if (!camEnabled) return
+            val elapsedMs = SystemClock.elapsedRealtime()
+            val wallClockMs = System.currentTimeMillis()
+            val sampledLocation = lastLocation?.takeIf {
+                it.time in (wallClockMs - MAX_LOCATION_AGE_MS)..(wallClockMs + 1_000L)
+            }
+            if (sampledLocation == null) {
+                handler.postDelayed(this, CAM_TRIGGER_CHECK_MS)
+                return
+            }
+            if (!camGenerationDue(elapsedMs, sampledLocation)) {
+                handler.postDelayed(this, CAM_TRIGGER_CHECK_MS)
+                return
+            }
+            val referenceTimeMs = sampledLocation.time
+            val packet = ItsG5FrameBuilder.camFrame(
+                camIdentity,
+                camStationType,
+                CamPosition.fromLocation(sampledLocation),
+                referenceTimeMs,
+            )
+            if (queueTransmit(packet, isCam = true)) {
+                lastCamGeneratedElapsedMs = elapsedMs
+                lastCamLocation = sampledLocation
+            }
+            handler.postDelayed(this, CAM_TRIGGER_CHECK_MS)
+        }
+    }
+
+    private fun camGenerationDue(nowElapsedMs: Long, location: Location?): Boolean {
+        val elapsed = nowElapsedMs - lastCamGeneratedElapsedMs
+        if (lastCamGeneratedElapsedMs == 0L || elapsed >= camIntervalMs) return true
+        if (elapsed < MIN_CAM_INTERVAL_MS) return false
+        val previous = lastCamLocation ?: return false
+        val current = location ?: return false
+        if (previous.distanceTo(current) > 4f) return true
+        if (previous.hasSpeed() && current.hasSpeed() &&
+            kotlin.math.abs(previous.speed - current.speed) > 0.5f
+        ) return true
+        if (previous.hasBearing() && current.hasBearing()) {
+            val raw = kotlin.math.abs(previous.bearing - current.bearing).mod(360f)
+            if (minOf(raw, 360f - raw) > 4f) return true
+        }
+        return false
+    }
+
     private val maintenance = object : Runnable {
         override fun run() {
             if (mqttEnabled) {
@@ -105,8 +191,11 @@ class CitsBridgeService : Service() {
     override fun onCreate() {
         super.onCreate()
         usbManager = getSystemService(USB_SERVICE) as UsbManager
+        locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
         spool = MqttSpool(this)
         nodeId = loadOrCreateNodeId()
+        camIdentity = loadOrCreateCamIdentity()
+        loadCamSettings()
         loadMqttQueueSettings()
         discoveredMacAddresses.addAll(loadDiscoveredMacAddresses())
         discoveredDevices = discoveredMacAddresses.size.toLong()
@@ -137,6 +226,11 @@ class CitsBridgeService : Service() {
             ACTION_START_PCAP -> startPcap(intent.getStringExtra(EXTRA_PCAP_URI).orEmpty())
             ACTION_STOP_PCAP -> stopPcap(log = true)
             ACTION_REQUEST_STATUS -> publishStatus(null)
+            ACTION_CONFIGURE_CAM -> configureCam(
+                intent.getBooleanExtra(EXTRA_CAM_ENABLED, false),
+                StationType.selectableFromCode(intent.getIntExtra(EXTRA_CAM_STATION_TYPE, StationType.PEDESTRIAN.code)),
+                intent.getIntExtra(EXTRA_CAM_INTERVAL_MS, DEFAULT_CAM_INTERVAL_MS),
+            )
             else -> publishStatus(null)
         }
         return START_STICKY
@@ -146,6 +240,7 @@ class CitsBridgeService : Service() {
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        stopLocationUpdates()
         runCatching { unregisterReceiver(usbReceiver) }
         stopBridge()
         runCatching { spool.close() }
@@ -179,6 +274,7 @@ class CitsBridgeService : Service() {
     private fun stopBridge() {
         usbWanted = false
         mqttEnabled = false
+        configureCam(false, camStationType, camIntervalMs)
         closeSerial("USB stopped")
         runCatching { mqttClient.close() }
         stopPcap(log = false)
@@ -207,20 +303,34 @@ class CitsBridgeService : Service() {
             serial = opened
             promoteConnectedDeviceForeground()
             status = status.copy(running = true, usbState = "Connected: ${opened.description()}")
-            val running = AtomicBoolean(true)
-            val reader = SerialPacketReader(::handlePacket, ::handleProtocolError)
-            serialThread = Thread({
+            val reader = SerialPacketReader(::handlePacket, ::handleTxResult, ::handleProtocolError)
+            serialReadThread = Thread({
                 val buffer = ByteArray(16 * 1024)
-                while (usbWanted && running.get()) {
+                while (usbWanted && serial === opened) {
                     try {
                         val count = opened.read(buffer, USB_READ_TIMEOUT_MS)
                         if (count > 0) reader.accept(buffer, count)
                     } catch (e: Exception) {
-                        running.set(false)
                         handleSerialError(e)
                     }
                 }
-            }, "ctg-serial").apply { start() }
+            }, "ctg-serial-read").apply { start() }
+            serialWriteThread = Thread({
+                while (usbWanted && serial === opened) {
+                    try {
+                        val tx = txQueue.take()
+                        opened.writeAll(
+                            CtgFrameEncoder.txRequest(tx.requestId, tx.packet),
+                            USB_WRITE_TIMEOUT_MS,
+                        )
+                    } catch (e: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        break
+                    } catch (e: Exception) {
+                        handleSerialError(e)
+                    }
+                }
+            }, "ctg-serial-write").apply { start() }
             publishStatus("USB connected")
         } catch (e: Exception) {
             closeSerial(null)
@@ -233,8 +343,16 @@ class CitsBridgeService : Service() {
     private fun closeSerial(message: String?) {
         val old = serial
         serial = null
+        serialReadThread?.interrupt()
+        serialWriteThread?.interrupt()
         runCatching { old?.close() }
-        serialThread = null
+        serialReadThread = null
+        serialWriteThread = null
+        txQueue.clear()
+        if (pendingTx.isNotEmpty()) {
+            txFailed += pendingTx.size
+            pendingTx.clear()
+        }
         if (message != null) {
             status = status.copy(usbState = if (usbWanted) "Waiting for USB device" else "Stopped")
             publishStatus(message)
@@ -250,14 +368,7 @@ class CitsBridgeService : Service() {
             storeDiscoveredMacAddresses()
         }
         val summary = "#${packet.sequence} ${packet.payload.size}B ${packet.frequencyMhz}MHz ${packet.rssiDbm}dBm"
-        if (mqttEnabled) {
-            runCatching {
-                spool.append(packet.payload)
-                updateQueueDrainSchedule()
-            }.onFailure {
-                status = status.copy(lastError = "MQTT spool failed: ${it.message}")
-            }
-        }
+        queueMqttPacket(packet.payload)
         writePcap(packet)
         status = status.copy(
             running = true,
@@ -272,6 +383,102 @@ class CitsBridgeService : Service() {
             packetTopic = "its/$nodeId/packet",
         )
         if (shouldPublishPacketStatus()) publishStatus("Packet $summary")
+    }
+
+    private fun queueTransmit(packet: ByteArray, isCam: Boolean): Boolean {
+        if (packet.isEmpty() || packet.size > CtgFrameEncoder.MAX_PACKET_BYTES) {
+            txFailed += 1
+            status = status.copy(lastError = "TX packet size ${packet.size} is outside 1..${CtgFrameEncoder.MAX_PACKET_BYTES}")
+            publishStatus(status.lastError)
+            return false
+        }
+        if (serial == null) {
+            txFailed += 1
+            status = status.copy(lastError = "TX requires a connected USB device")
+            publishStatus(status.lastError)
+            return false
+        }
+        val requestId = nextTxRequestId.getAndIncrement() and 0xffff_ffffL
+        val packetCopy = packet.copyOf()
+        val envelope = TxEnvelope(requestId, packetCopy)
+        pendingTx[requestId] = PendingTx(packetCopy, isCam)
+        if (!txQueue.offer(envelope)) {
+            pendingTx.remove(requestId)
+            txFailed += 1
+            status = status.copy(lastError = "Android TX queue is full")
+            publishStatus(status.lastError)
+            return false
+        }
+        txRequested += 1
+        return true
+    }
+
+    private fun handleTxResult(result: CtgInboundFrame.TxResult) {
+        val pending = pendingTx.remove(result.requestId)
+        val isCam = pending?.isCam == true
+        val summary = "#${result.requestId} ${result.packetLength}B " +
+            if (result.successful) "sent" else "failed (ESP 0x${result.status.toString(16)})"
+        if (result.successful) {
+            txSuccessful += 1
+            if (isCam) camSent += 1
+            val packet = result.packet ?: pending?.packet
+            queueMqttPacket(packet)
+            writePcapPacket(packet)
+        } else {
+            txFailed += 1
+        }
+        status = status.copy(lastTxSummary = summary, lastError = if (result.successful) "" else summary)
+        publishStatus("TX $summary")
+    }
+
+    private fun configureCam(enabled: Boolean, stationType: StationType, requestedIntervalMs: Int) {
+        camStationType = if (stationType in StationType.selectable) stationType else StationType.PEDESTRIAN
+        camIntervalMs = requestedIntervalMs.coerceIn(MIN_CAM_INTERVAL_MS, MAX_CAM_INTERVAL_MS)
+        camEnabled = enabled
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(PREF_CAM_ENABLED, camEnabled)
+            .putInt(PREF_CAM_STATION_TYPE, camStationType.code)
+            .putInt(PREF_CAM_INTERVAL_MS, camIntervalMs)
+            .apply()
+        handler.removeCallbacks(camBroadcaster)
+        if (camEnabled) {
+            if (!startLocationUpdates()) {
+                camEnabled = false
+                status = status.copy(lastError = "Location permission is required for CAM broadcast")
+                publishStatus(status.lastError)
+                return
+            }
+            promoteCamForeground()
+            lastCamGeneratedElapsedMs = 0
+            lastCamLocation = null
+            handler.post(camBroadcaster)
+        } else {
+            stopLocationUpdates()
+        }
+        publishStatus(if (camEnabled) "CAM broadcast enabled" else "CAM broadcast disabled")
+    }
+
+    private fun startLocationUpdates(): Boolean {
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
+        ) return false
+        runCatching {
+            locationManager.getLastKnownLocation(LocationManager.GPS_PROVIDER)?.let { lastLocation = it }
+            locationManager.requestLocationUpdates(
+                LocationManager.GPS_PROVIDER, 100L, 0f, locationListener, Looper.getMainLooper())
+            if (locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
+                locationManager.requestLocationUpdates(
+                    LocationManager.NETWORK_PROVIDER, 250L, 0f, locationListener, Looper.getMainLooper())
+            }
+        }.onFailure {
+            status = status.copy(lastError = "Location unavailable: ${it.message}")
+            return false
+        }
+        return true
+    }
+
+    private fun stopLocationUpdates() {
+        runCatching { locationManager.removeUpdates(locationListener) }
     }
 
     private fun shouldPublishPacketStatus(): Boolean {
@@ -344,6 +551,22 @@ class CitsBridgeService : Service() {
         }
     }
 
+    private fun writePcapPacket(packet: ByteArray?) {
+        if (packet == null) return
+        synchronized(pcapLock) {
+            val writer = pcapWriter ?: return
+            try {
+                writer.writeRawPacket(packet, System.currentTimeMillis() * 1_000L)
+                pcapPackets += 1
+            } catch (e: Exception) {
+                pcapWriter = null
+                runCatching { writer.close() }
+                status = status.copy(pcapRecording = false, lastError = "PCAP write failed: ${e.message}")
+                publishStatus(status.lastError)
+            }
+        }
+    }
+
     private fun flushPcapQuietly() {
         synchronized(pcapLock) {
             runCatching { pcapWriter?.flush() }
@@ -361,6 +584,16 @@ class CitsBridgeService : Service() {
         publishStatus(status.lastError)
         closeSerial(null)
         if (usbWanted) scheduleUsbReconnect(2_000)
+    }
+
+    private fun queueMqttPacket(packet: ByteArray?) {
+        if (!mqttEnabled || packet == null) return
+        runCatching {
+            spool.append(packet)
+            updateQueueDrainSchedule()
+        }.onFailure {
+            status = status.copy(lastError = "MQTT spool failed: ${it.message}")
+        }
     }
 
     private fun ensureMqttConnected() {
@@ -532,6 +765,11 @@ class CitsBridgeService : Service() {
             discoveredDevices = discoveredDevices,
             truncated = truncated,
             protocolErrors = protocolErrors,
+            txRequested = txRequested,
+            txSuccessful = txSuccessful,
+            txFailed = txFailed,
+            camEnabled = camEnabled,
+            camSent = camSent,
             mqttState = when {
                 !mqttEnabled -> "Disabled"
                 mqttClient.isConnected() -> "Connected"
@@ -553,6 +791,12 @@ class CitsBridgeService : Service() {
         intent.putExtra(EXTRA_DISCOVERED_DEVICES, status.discoveredDevices)
         intent.putExtra(EXTRA_TRUNCATED, status.truncated)
         intent.putExtra(EXTRA_PROTOCOL_ERRORS, status.protocolErrors)
+        intent.putExtra(EXTRA_TX_REQUESTED, status.txRequested)
+        intent.putExtra(EXTRA_TX_SUCCESSFUL, status.txSuccessful)
+        intent.putExtra(EXTRA_TX_FAILED, status.txFailed)
+        intent.putExtra(EXTRA_CAM_ENABLED, status.camEnabled)
+        intent.putExtra(EXTRA_CAM_SENT, status.camSent)
+        intent.putExtra(EXTRA_LAST_TX, status.lastTxSummary)
         intent.putExtra(EXTRA_LAST_PACKET, status.lastPacketSummary)
         intent.putExtra(EXTRA_LAST_ERROR, status.lastError)
         if (!log.isNullOrBlank()) intent.putExtra(EXTRA_LOG, log)
@@ -587,6 +831,18 @@ class CitsBridgeService : Service() {
                 NOTIFICATION_ID,
                 buildNotification(status.summary()),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
+        }
+    }
+
+    private fun promoteCamForeground() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                buildNotification(status.summary()),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION or
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
             )
         }
     }
@@ -677,6 +933,40 @@ class CitsBridgeService : Service() {
         return generated
     }
 
+    private fun loadOrCreateCamIdentity(): CamIdentity {
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val storedId = prefs.getLong(PREF_CAM_STATION_ID, -1L)
+        val storedMac = prefs.getString(PREF_CAM_MAC, null)?.let(::parseMac)
+        if (storedId in 0..0xffff_ffffL && storedMac != null) {
+            return CamIdentity(storedId, storedMac)
+        }
+        val random = SecureRandom()
+        val stationId = random.nextInt().toLong() and 0xffff_ffffL
+        val mac = ByteArray(6).also(random::nextBytes)
+        mac[0] = ((mac[0].toInt() and 0xfc) or 0x02).toByte()
+        prefs.edit()
+            .putLong(PREF_CAM_STATION_ID, stationId)
+            .putString(PREF_CAM_MAC, mac.joinToString(":") { "%02x".format(it) })
+            .apply()
+        return CamIdentity(stationId, mac)
+    }
+
+    private fun parseMac(value: String): ByteArray? {
+        val parts = value.split(":")
+        if (parts.size != 6) return null
+        return runCatching { ByteArray(6) { parts[it].toInt(16).toByte() } }.getOrNull()
+    }
+
+    private fun loadCamSettings() {
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        camStationType = StationType.selectableFromCode(
+            prefs.getInt(PREF_CAM_STATION_TYPE, StationType.PEDESTRIAN.code))
+        camIntervalMs = prefs.getInt(PREF_CAM_INTERVAL_MS, DEFAULT_CAM_INTERVAL_MS)
+            .coerceIn(MIN_CAM_INTERVAL_MS, MAX_CAM_INTERVAL_MS)
+        // Never resume RF transmission merely because the process was recreated.
+        camEnabled = false
+    }
+
     private fun loadDiscoveredMacAddresses(): Set<String> =
         getSharedPreferences(PREFS, MODE_PRIVATE)
             .getStringSet(PREF_DISCOVERED_MAC_ADDRESSES, emptySet())
@@ -720,6 +1010,7 @@ class CitsBridgeService : Service() {
         const val ACTION_START_PCAP = "org.opentrafficmap.citstogo.action.START_PCAP"
         const val ACTION_STOP_PCAP = "org.opentrafficmap.citstogo.action.STOP_PCAP"
         const val ACTION_REQUEST_STATUS = "org.opentrafficmap.citstogo.action.REQUEST_STATUS"
+        const val ACTION_CONFIGURE_CAM = "org.opentrafficmap.citstogo.action.CONFIGURE_CAM"
         const val ACTION_STATUS = "org.opentrafficmap.citstogo.action.STATUS"
         const val ACTION_USB_PERMISSION = "org.opentrafficmap.citstogo.action.USB_PERMISSION"
 
@@ -744,6 +1035,14 @@ class CitsBridgeService : Service() {
         const val EXTRA_LAST_PACKET = "lastPacket"
         const val EXTRA_LAST_ERROR = "lastError"
         const val EXTRA_LOG = "log"
+        const val EXTRA_TX_REQUESTED = "txRequested"
+        const val EXTRA_TX_SUCCESSFUL = "txSuccessful"
+        const val EXTRA_TX_FAILED = "txFailed"
+        const val EXTRA_LAST_TX = "lastTx"
+        const val EXTRA_CAM_ENABLED = "camEnabled"
+        const val EXTRA_CAM_SENT = "camSent"
+        const val EXTRA_CAM_STATION_TYPE = "camStationType"
+        const val EXTRA_CAM_INTERVAL_MS = "camIntervalMs"
 
         const val PREFS = "cits_to_go"
         const val PREF_NODE_ID = "node_id"
@@ -751,19 +1050,34 @@ class CitsBridgeService : Service() {
         const val PREF_MQTT_MAX_QUEUE_LENGTH = "mqtt_max_queue_length"
         const val PREF_MQTT_MAX_QUEUE_AGE_MS = "mqtt_max_queue_age_ms"
         const val PREF_DISCOVERED_MAC_ADDRESSES = "discovered_mac_addresses"
+        const val PREF_CAM_ENABLED = "cam_enabled"
+        const val PREF_CAM_STATION_TYPE = "cam_station_type"
+        const val PREF_CAM_INTERVAL_MS = "cam_interval_ms"
+        const val PREF_CAM_STATION_ID = "cam_station_id"
+        const val PREF_CAM_MAC = "cam_mac"
         const val DEFAULT_MQTT_URI = "mqtts://cits1.opentrafficmap.org"
         const val DEFAULT_MQTT_MAX_QUEUE_LENGTH = 100
         const val DEFAULT_MQTT_MAX_QUEUE_AGE_MS = 200L
+        const val DEFAULT_CAM_INTERVAL_MS = 500
+        const val MIN_CAM_INTERVAL_MS = 100
+        const val MAX_CAM_INTERVAL_MS = 1_000
 
         private const val CHANNEL_ID = "cits_bridge"
         private const val DISCOVERY_CHANNEL_ID = "cits_device_discovery"
         private const val NOTIFICATION_ID = 2301
         private const val DISCOVERY_NOTIFICATION_ID_BASE = 2400
         private const val USB_READ_TIMEOUT_MS = 5_000
+        private const val USB_WRITE_TIMEOUT_MS = 2_000
+        private const val MAX_TX_QUEUE = 64
+        private const val MAX_LOCATION_AGE_MS = 5_000L
+        private const val CAM_TRIGGER_CHECK_MS = 100L
         private const val MAINTENANCE_INTERVAL_MS = 2_000L
         private const val PACKET_STATUS_INTERVAL_MS = 100L
         private const val PACKET_STATUS_PACKET_INTERVAL = 10L
         private const val MQTT_MAX_BATCH = 100
         private const val ESPRESSIF_VENDOR_ID = 0x303A
     }
+
+    private data class TxEnvelope(val requestId: Long, val packet: ByteArray)
+    private data class PendingTx(val packet: ByteArray, val isCam: Boolean)
 }

@@ -1,6 +1,6 @@
 # CITS-to-go Firmware
 
-Firmware for the **CITS-to-go** portable C-ITS receiver.
+Firmware for the **CITS-to-go** portable C-ITS transceiver.
 
 This firmware is intended for the **Seeed Studio XIAO ESP32-C5**. It captures C-ITS packets, pulses the onboard USER LED when packets are accepted, and streams the captured packets to an Android phone over USB serial.
 
@@ -13,13 +13,17 @@ This firmware is intended for the **Seeed Studio XIAO ESP32-C5**. It captures C-
 - Enables ESP32-C5 802.11p receive mode and captures ITS-G5 frames on the configured C-ITS channel.
 - Uses the Wi-Fi promiscuous callback only to copy packets into a fixed buffer pool and queue work.
 - Streams accepted packets as compact COBS-delimited binary records over USB Serial/JTAG.
+- Accepts bounded raw 802.11 transmit requests on the same serial link.
+- Returns a result frame for every structurally valid request.
 - Pulses the Seeed Studio XIAO ESP32-C5 onboard USER LED on accepted packets.
 
 The default channel is **5900 MHz** (G5CC). By default, only 802.11 broadcast destination frames are accepted.
 
 ## Serial communication format
 
-The firmware writes one COBS record per captured packet to USB Serial/JTAG. Each encoded record is terminated by a single `0x00` delimiter.
+The firmware uses the bidirectional `CTG1` protocol over USB Serial/JTAG. Each
+COBS-encoded record is terminated by a single `0x00` delimiter. CRC-32/IEEE is
+calculated over every decoded frame except its final four-byte CRC field.
 
 Receiver steps:
 
@@ -54,6 +58,44 @@ Decoded packet frame:
 
 COBS framing means raw `0x00` bytes never appear inside an encoded record, so serial readers can resynchronize by scanning for the delimiter.
 
+### Android to firmware: transmit request (type 2)
+
+| Offset | Size | Field | Description |
+| --- | ---: | --- | --- |
+| 0 | 4 | `magic` | ASCII `CTG1` |
+| 4 | 1 | `version` | `1` |
+| 5 | 1 | `type` | `2` = transmit request |
+| 6 | 2 | `header_len` | `16` |
+| 8 | 4 | `request_id` | Android-generated correlation ID |
+| 12 | 2 | `packet_len` | Raw 802.11 bytes after the header |
+| 14 | 2 | `flags` | Bit 0 requests firmware-managed sequence numbers |
+| 16 | `packet_len` | `packet` | Raw 802.11 frame without FCS |
+| 16 + `packet_len` | 4 | `crc32` | CRC-32/IEEE |
+
+Requests are copied into a fixed pool. Empty, oversized, corrupt, or
+queue-blocked records cannot reach the radio.
+
+### Firmware to Android: transmit result (type 3)
+
+| Offset | Size | Field | Description |
+| --- | ---: | --- | --- |
+| 0 | 4 | `magic` | ASCII `CTG1` |
+| 4 | 1 | `version` | `1` |
+| 5 | 1 | `type` | `3` = transmit result |
+| 6 | 2 | `header_len` | `20` |
+| 8 | 4 | `request_id` | ID from the request |
+| 12 | 4 | `status` | ESP-IDF `esp_err_t`; zero means accepted by HMAC TX |
+| 16 | 2 | `packet_len` | Requested raw frame length |
+| 18 | 2 | `reserved` | `0` |
+| 20 | `packet_len` | `packet` | Present only when `status == 0`; echoed transmitted frame without FCS |
+| 20 + payload length | 4 | `crc32` | CRC-32/IEEE |
+
+The USB write mutex prevents capture and result records from interleaving.
+The radio path uses 802.11a 12 Mbit/s, 20 MHz settings and the ESP32-C5
+internal HMAC transmit adapter derived from the tx-enabled OpenTrafficMap
+firmware. That adapter is guarded by structure-size assertions and tied to the
+ESP-IDF revision used by this project.
+
 ## Firmware configuration
 
 The defaults are defined in `main/Kconfig.projbuild` and can be changed with `idf.py menuconfig`:
@@ -61,6 +103,7 @@ The defaults are defined in `main/Kconfig.projbuild` and can be changed with `id
 - `CONFIG_CITS_RX_FREQUENCY_MHZ`: ITS-G5 channel center frequency.
 - `CONFIG_CITS_BROADCAST_ONLY`: drop non-broadcast 802.11 destination frames.
 - `CONFIG_CITS_PACKET_POOL_SIZE`: fixed packet buffer pool depth.
+- `CONFIG_CITS_TX_POOL_SIZE`: fixed transmit request pool depth.
 - `CONFIG_CITS_MAX_PACKET_BYTES`: maximum captured 802.11 frame size.
 - `CONFIG_CITS_LED_GPIO`: USER LED GPIO. The XIAO ESP32-C5 USER LED is GPIO27 and active-low.
 

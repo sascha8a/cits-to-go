@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream
 
 class SerialPacketReader(
     private val onPacket: (CitsPacket) -> Unit,
+    private val onTxResult: (CtgInboundFrame.TxResult) -> Unit,
     private val onProtocolError: (String) -> Unit,
 ) {
     private val decoder = CtgFrameDecoder()
@@ -28,7 +29,10 @@ class SerialPacketReader(
         val bytes = record.toByteArray()
         record.reset()
         try {
-            onPacket(decoder.decode(bytes))
+            when (val frame = decoder.decode(bytes)) {
+                is CtgInboundFrame.Capture -> onPacket(frame.packet)
+                is CtgInboundFrame.TxResult -> onTxResult(frame)
+            }
         } catch (e: Exception) {
             onProtocolError(e.message ?: e.javaClass.simpleName)
         }

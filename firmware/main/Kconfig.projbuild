@@ -1,7 +1,7 @@
 menu "CITS-to-go Configuration"
 
     config CITS_RX_FREQUENCY_MHZ
-        int "C-ITS receive frequency in MHz"
+        int "C-ITS receive/transmit frequency in MHz"
         range 5860 5900
         default 5900
         help
@@ -29,6 +29,19 @@ menu "CITS-to-go Configuration"
         default 2352
         help
             Packets larger than this are dropped and counted in the drop stats.
+
+    config CITS_TX_POOL_SIZE
+        int "Transmit request buffer pool size"
+        range 2 32
+        default 8
+        help
+            Number of bounded raw 802.11 transmit requests that can wait for
+            the radio. A full queue is reported to Android as ESP_ERR_NO_MEM.
+
+    config CITS_SERIAL_READ_TIMEOUT_MS
+        int "USB serial read timeout in milliseconds"
+        range 1 1000
+        default 20
 
     config CITS_SERIAL_WRITE_TIMEOUT_MS
         int "USB serial write timeout in milliseconds"

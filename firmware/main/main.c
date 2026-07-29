@@ -15,8 +15,11 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "hal/modem_syscon_ll.h"
 #include "nvs_flash.h"
+#include "tx_custom.h"
 
 #define TAG "CITS"
 
@@ -26,7 +29,11 @@
 #define CITS_FRAME_MAGIC_3 '1'
 #define CITS_PROTOCOL_VERSION 1
 #define CITS_FRAME_TYPE_PACKET 1
+#define CITS_FRAME_TYPE_TX_REQUEST 2
+#define CITS_FRAME_TYPE_TX_RESULT 3
 #define CITS_PACKET_HEADER_LEN 32
+#define CITS_TX_REQUEST_HEADER_LEN 16
+#define CITS_TX_RESULT_HEADER_LEN 20
 #define CITS_FRAME_TRAILER_LEN 4
 #define CITS_PAYLOAD_FCS_LEN 4
 #define CITS_COBS_OVERHEAD(len) (((len) / 254u) + 1u)
@@ -35,6 +42,7 @@
 
 #define CITS_FLAG_BROADCAST 0x0001u
 #define CITS_FLAG_TRUNCATED 0x0002u
+#define CITS_TX_FLAG_EN_SYS_SEQ 0x0001u
 
 typedef struct {
     uint16_t len;
@@ -47,9 +55,20 @@ typedef struct {
     uint8_t payload[CONFIG_CITS_MAX_PACKET_BYTES];
 } packet_slot_t;
 
+typedef struct {
+    uint32_t request_id;
+    uint16_t len;
+    uint16_t flags;
+    uint8_t payload[CONFIG_CITS_MAX_PACKET_BYTES];
+} tx_slot_t;
+
 static QueueHandle_t free_queue;
 static QueueHandle_t capture_queue;
+static QueueHandle_t tx_free_queue;
+static QueueHandle_t tx_queue;
+static SemaphoreHandle_t serial_write_mutex;
 static packet_slot_t packet_slots[CONFIG_CITS_PACKET_POOL_SIZE];
+static tx_slot_t tx_slots[CONFIG_CITS_TX_POOL_SIZE];
 static uint32_t sequence;
 static volatile uint32_t dropped_no_buffer;
 static volatile uint32_t dropped_too_large;
@@ -76,6 +95,16 @@ static void put_u64(uint8_t *buf, uint64_t value)
 {
     put_u32(buf, (uint32_t)value);
     put_u32(buf + 4, (uint32_t)(value >> 32));
+}
+
+static uint16_t get_u16(const uint8_t *buf)
+{
+    return (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+}
+
+static uint32_t get_u32(const uint8_t *buf)
+{
+    return (uint32_t)get_u16(buf) | ((uint32_t)get_u16(buf + 2) << 16);
 }
 
 static uint32_t crc32_ieee(const uint8_t *data, size_t len)
@@ -121,6 +150,29 @@ static size_t cobs_encode_to(const uint8_t *input, size_t input_len, uint8_t *ou
 
     *code_ptr = code;
     return (size_t)(output - start);
+}
+
+static bool cobs_decode_to(const uint8_t *input, size_t input_len, uint8_t *output, size_t *output_len)
+{
+    size_t read = 0;
+    size_t write = 0;
+
+    while (read < input_len) {
+        const uint8_t code = input[read++];
+        if (code == 0 || read + (size_t)code - 1 > input_len) {
+            return false;
+        }
+        for (uint8_t i = 1; i < code; ++i) {
+            if (write >= CITS_DECODED_MAX_LEN) return false;
+            output[write++] = input[read++];
+        }
+        if (code < 0xff && read < input_len) {
+            if (write >= CITS_DECODED_MAX_LEN) return false;
+            output[write++] = 0;
+        }
+    }
+    *output_len = write;
+    return true;
 }
 
 static void set_led(bool on)
@@ -172,7 +224,7 @@ static esp_err_t init_serial(void)
     return usb_serial_jtag_driver_install(&cfg);
 }
 
-static void serial_write_all(const uint8_t *data, size_t len)
+static void serial_write_all_locked(const uint8_t *data, size_t len)
 {
     while (len > 0) {
         int written = usb_serial_jtag_write_bytes(data, len, pdMS_TO_TICKS(CONFIG_CITS_SERIAL_WRITE_TIMEOUT_MS));
@@ -183,6 +235,13 @@ static void serial_write_all(const uint8_t *data, size_t len)
         data += written;
         len -= (size_t)written;
     }
+}
+
+static void serial_write_all(const uint8_t *data, size_t len)
+{
+    xSemaphoreTake(serial_write_mutex, portMAX_DELAY);
+    serial_write_all_locked(data, len);
+    xSemaphoreGive(serial_write_mutex);
 }
 
 static void write_packet_record(const packet_slot_t *slot)
@@ -216,6 +275,132 @@ static void write_packet_record(const packet_slot_t *slot)
     const size_t encoded_len = cobs_encode_to(decoded, frame_without_crc_len + CITS_FRAME_TRAILER_LEN, encoded);
     encoded[encoded_len] = 0;
     serial_write_all(encoded, encoded_len + 1);
+}
+
+static void write_tx_result(uint32_t request_id, esp_err_t status, uint16_t packet_len, const uint8_t *payload)
+{
+    const size_t payload_len = (status == ESP_OK && payload != NULL) ? packet_len : 0;
+    static uint8_t decoded[CITS_DECODED_MAX_LEN];
+    static uint8_t encoded[CITS_ENCODED_MAX_LEN];
+
+    xSemaphoreTake(serial_write_mutex, portMAX_DELAY);
+    decoded[0] = CITS_FRAME_MAGIC_0;
+    decoded[1] = CITS_FRAME_MAGIC_1;
+    decoded[2] = CITS_FRAME_MAGIC_2;
+    decoded[3] = CITS_FRAME_MAGIC_3;
+    decoded[4] = CITS_PROTOCOL_VERSION;
+    decoded[5] = CITS_FRAME_TYPE_TX_RESULT;
+    put_u16(&decoded[6], CITS_TX_RESULT_HEADER_LEN);
+    put_u32(&decoded[8], request_id);
+    put_u32(&decoded[12], (uint32_t)status);
+    put_u16(&decoded[16], packet_len);
+    put_u16(&decoded[18], 0);
+    if (payload_len > 0) {
+        memcpy(&decoded[CITS_TX_RESULT_HEADER_LEN], payload, payload_len);
+    }
+    const size_t frame_without_crc_len = CITS_TX_RESULT_HEADER_LEN + payload_len;
+    put_u32(&decoded[frame_without_crc_len], crc32_ieee(decoded, frame_without_crc_len));
+
+    const size_t encoded_len = cobs_encode_to(decoded, frame_without_crc_len + CITS_FRAME_TRAILER_LEN, encoded);
+    encoded[encoded_len] = 0;
+    serial_write_all_locked(encoded, encoded_len + 1);
+    xSemaphoreGive(serial_write_mutex);
+}
+
+static void handle_serial_record(const uint8_t *encoded, size_t encoded_len)
+{
+    static uint8_t decoded[CITS_DECODED_MAX_LEN];
+    size_t decoded_len = 0;
+    if (!cobs_decode_to(encoded, encoded_len, decoded, &decoded_len) ||
+        decoded_len < CITS_TX_REQUEST_HEADER_LEN + CITS_FRAME_TRAILER_LEN ||
+        decoded[0] != CITS_FRAME_MAGIC_0 || decoded[1] != CITS_FRAME_MAGIC_1 ||
+        decoded[2] != CITS_FRAME_MAGIC_2 || decoded[3] != CITS_FRAME_MAGIC_3 ||
+        decoded[4] != CITS_PROTOCOL_VERSION ||
+        decoded[5] != CITS_FRAME_TYPE_TX_REQUEST ||
+        get_u16(&decoded[6]) != CITS_TX_REQUEST_HEADER_LEN) {
+        return;
+    }
+
+    const uint32_t request_id = get_u32(&decoded[8]);
+    const uint16_t packet_len = get_u16(&decoded[12]);
+    const uint16_t flags = get_u16(&decoded[14]);
+    const uint32_t expected_crc = get_u32(&decoded[decoded_len - CITS_FRAME_TRAILER_LEN]);
+    if (crc32_ieee(decoded, decoded_len - CITS_FRAME_TRAILER_LEN) != expected_crc) {
+        write_tx_result(request_id, ESP_ERR_INVALID_CRC, packet_len, NULL);
+        return;
+    }
+    const size_t expected_len = CITS_TX_REQUEST_HEADER_LEN + packet_len + CITS_FRAME_TRAILER_LEN;
+    if (packet_len == 0 || packet_len > CONFIG_CITS_MAX_PACKET_BYTES || decoded_len != expected_len) {
+        write_tx_result(request_id, ESP_ERR_INVALID_SIZE, packet_len, NULL);
+        return;
+    }
+
+    uint8_t slot_index;
+    if (xQueueReceive(tx_free_queue, &slot_index, 0) != pdTRUE) {
+        write_tx_result(request_id, ESP_ERR_NO_MEM, packet_len, NULL);
+        return;
+    }
+    tx_slot_t *slot = &tx_slots[slot_index];
+    slot->request_id = request_id;
+    slot->len = packet_len;
+    slot->flags = flags;
+    memcpy(slot->payload, &decoded[CITS_TX_REQUEST_HEADER_LEN], packet_len);
+    if (xQueueSend(tx_queue, &slot_index, 0) != pdTRUE) {
+        (void)xQueueSend(tx_free_queue, &slot_index, 0);
+        write_tx_result(request_id, ESP_ERR_NO_MEM, packet_len, NULL);
+    }
+}
+
+static void serial_reader_task(void *arg)
+{
+    (void)arg;
+    static uint8_t encoded[CITS_ENCODED_MAX_LEN];
+    static uint8_t input[256];
+    size_t encoded_len = 0;
+
+    for (;;) {
+        const int count = usb_serial_jtag_read_bytes(
+            input, sizeof(input), pdMS_TO_TICKS(CONFIG_CITS_SERIAL_READ_TIMEOUT_MS));
+        for (int i = 0; i < count; ++i) {
+            if (input[i] == 0) {
+                if (encoded_len > 0) handle_serial_record(encoded, encoded_len);
+                encoded_len = 0;
+            } else if (encoded_len < sizeof(encoded)) {
+                encoded[encoded_len++] = input[i];
+            } else {
+                encoded_len = 0;
+            }
+        }
+    }
+}
+
+static void radio_tx_task(void *arg)
+{
+    (void)arg;
+    const cits_wifi_tx_rate_config_t rate = {
+        .rate = WIFI_PHY_RATE_12M,
+        .phymode = WIFI_PHY_MODE_11A,
+        .ersu = false,
+        .dcm = false,
+    };
+    uint8_t slot_index;
+
+    for (;;) {
+        if (xQueueReceive(tx_queue, &slot_index, portMAX_DELAY) == pdTRUE) {
+            tx_slot_t *slot = &tx_slots[slot_index];
+            const esp_err_t result = cits_wifi_80211_tx(
+                WIFI_IF_STA,
+                slot->payload,
+                slot->len,
+                (slot->flags & CITS_TX_FLAG_EN_SYS_SEQ) != 0,
+                &rate,
+                WIFI_BAND_5G,
+                WIFI_BW20);
+            write_tx_result(slot->request_id, result, slot->len, slot->payload);
+            if (result == ESP_OK) led_pulse();
+            (void)xQueueSend(tx_free_queue, &slot_index, portMAX_DELAY);
+        }
+    }
 }
 
 static bool is_broadcast_80211(const uint8_t *payload, uint16_t len)
@@ -297,10 +482,18 @@ static esp_err_t init_queues(void)
 {
     free_queue = xQueueCreate(CONFIG_CITS_PACKET_POOL_SIZE, sizeof(uint8_t));
     capture_queue = xQueueCreate(CONFIG_CITS_PACKET_POOL_SIZE, sizeof(uint8_t));
-    ESP_RETURN_ON_FALSE(free_queue && capture_queue, ESP_ERR_NO_MEM, TAG, "xQueueCreate");
+    tx_free_queue = xQueueCreate(CONFIG_CITS_TX_POOL_SIZE, sizeof(uint8_t));
+    tx_queue = xQueueCreate(CONFIG_CITS_TX_POOL_SIZE, sizeof(uint8_t));
+    serial_write_mutex = xSemaphoreCreateMutex();
+    ESP_RETURN_ON_FALSE(
+        free_queue && capture_queue && tx_free_queue && tx_queue && serial_write_mutex,
+        ESP_ERR_NO_MEM, TAG, "queue/mutex create");
 
     for (uint8_t i = 0; i < CONFIG_CITS_PACKET_POOL_SIZE; ++i) {
         ESP_RETURN_ON_FALSE(xQueueSend(free_queue, &i, 0) == pdTRUE, ESP_FAIL, TAG, "free_queue init");
+    }
+    for (uint8_t i = 0; i < CONFIG_CITS_TX_POOL_SIZE; ++i) {
+        ESP_RETURN_ON_FALSE(xQueueSend(tx_free_queue, &i, 0) == pdTRUE, ESP_FAIL, TAG, "tx_free_queue init");
     }
 
     return ESP_OK;
@@ -313,9 +506,11 @@ static esp_err_t init_wifi_11p_sniffer(void)
         .filter_mask = WIFI_PROMIS_FILTER_MASK_ALL & ~WIFI_PROMIS_FILTER_MASK_FCSFAIL,
     };
 
+    modem_syscon_ll_enable_fe_40m_clock(&MODEM_SYSCON, 1);
     ESP_RETURN_ON_ERROR(esp_wifi_init(&cfg), TAG, "esp_wifi_init");
     ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "esp_wifi_set_storage");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_NULL), TAG, "esp_wifi_set_mode");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "esp_wifi_set_mode");
+    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "esp_wifi_start");
     ESP_RETURN_ON_ERROR(esp_wifi_set_promiscuous_filter(&filter), TAG, "esp_wifi_set_promiscuous_filter");
     ESP_RETURN_ON_ERROR(esp_wifi_set_promiscuous_rx_cb(wifi_sniffer_cb), TAG, "esp_wifi_set_promiscuous_rx_cb");
     ESP_RETURN_ON_ERROR(esp_wifi_set_promiscuous(true), TAG, "esp_wifi_set_promiscuous");
@@ -348,4 +543,8 @@ void app_main(void)
     ESP_ERROR_CHECK(xTaskCreate(packet_writer_task, "cits_serial", 4096, NULL, 3, NULL) == pdPASS ?
                     ESP_OK : ESP_ERR_NO_MEM);
     ESP_ERROR_CHECK(init_wifi_11p_sniffer());
+    ESP_ERROR_CHECK(xTaskCreate(serial_reader_task, "cits_serial_rx", 4096, NULL, 4, NULL) == pdPASS ?
+                    ESP_OK : ESP_ERR_NO_MEM);
+    ESP_ERROR_CHECK(xTaskCreate(radio_tx_task, "cits_radio_tx", 4096, NULL, 4, NULL) == pdPASS ?
+                    ESP_OK : ESP_ERR_NO_MEM);
 }

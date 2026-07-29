@@ -1,6 +1,6 @@
 # CITS-to-go
 
-**CITS-to-go** is a portable C-ITS capture bridge built around a Seeed Studio XIAO ESP32-C5 and an Android phone.
+**CITS-to-go** is a portable C-ITS capture/transmit bridge built around a Seeed Studio XIAO ESP32-C5 and an Android phone.
 
 The ESP32-C5 firmware listens for C-ITS packets, forwards them over USB serial, and the Android app can save the captured data as PCAP and forward the packets to an MQTT broker using the same packet-topic style as the original OpenTrafficMap receiver firmware.
 
@@ -39,6 +39,8 @@ Currently implemented goals:
 - Save captures as PCAP files on Android.
 - Forward packets to MQTT.
 - Keep compatibility with the OpenTrafficMap-style MQTT packet format.
+- Send arbitrary raw 802.11 packets from Android to the ESP32-C5.
+- Generate and broadcast configurable ETSI CAM Release 1 messages.
 
 ---
 
@@ -74,6 +76,8 @@ Responsibilities:
 - Receive C-ITS packets.
 - Blink the XIAO onboard USER LED on received/logged packets.
 - Send captured packets to the Android app over USB serial.
+- Accept framed transmit requests, place them on the 802.11p radio, and return
+  a correlated success/error result.
 
 ### Android app
 
@@ -86,6 +90,8 @@ Responsibilities:
 - Decode the firmware's USB serial packet frames.
 - Save captures to PCAP.
 - Forward packets to MQTT.
+- Generate CAM messages from Android location data.
+- Send arbitrary raw 802.11 frames entered as hexadecimal bytes.
 
 ---
 
@@ -160,4 +166,7 @@ Before capturing, storing, forwarding, or publishing packets:
 - Avoid publishing raw captures that could identify vehicles, infrastructure, routes, or individuals.
 - Treat PCAP files as potentially sensitive data.
 - Do not use this project for unlawful monitoring or interference.
-- This project is receive/logging oriented and must not be used to transmit unauthorized messages.
+- Transmitting in the 5.9 GHz ITS band is regulated and safety-adjacent. Only
+  enable transmission in a controlled, shielded, or otherwise authorized
+  environment, with valid station identity and authorization for the selected
+  channel. Never inject deceptive traffic into a live road environment.
