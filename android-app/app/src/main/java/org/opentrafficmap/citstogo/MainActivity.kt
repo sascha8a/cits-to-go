@@ -7,6 +7,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.net.Uri
@@ -17,6 +19,11 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -55,20 +62,31 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.opentrafficmap.citstogo.bridge.BridgeStatus
 import org.opentrafficmap.citstogo.bridge.CitsBridgeService
@@ -81,8 +99,11 @@ import org.opentrafficmap.citstogo.intersection.MapIntersection
 import org.opentrafficmap.citstogo.intersection.MapLane
 import org.opentrafficmap.citstogo.intersection.MovementPhaseState
 import org.opentrafficmap.citstogo.intersection.SignalEvent
+import org.opentrafficmap.citstogo.intersection.SpatIntersection
 import java.security.SecureRandom
 import java.util.Locale
+import kotlin.math.exp
+import kotlin.math.hypot
 import kotlin.math.roundToLong
 
 class MainActivity : ComponentActivity() {
@@ -830,18 +851,147 @@ private fun formatIntersectionAge(updatedAtMs: Long, nowMs: Long = System.curren
     }
 }
 
+private const val INTERSECTION_MAX_ZOOM = 6f
+private const val LANE_TIMING_ZOOM_THRESHOLD = 2.2f
+private const val TIME_MARK_UNKNOWN = 36_001
+private const val TENTHS_PER_HOUR = 36_000
+private const val TENTHS_PER_MINUTE = 600
+private const val DOUBLE_TAP_TIMEOUT_MS = 300L
+private const val TAP_TIMEOUT_MS = 220L
+private const val QUICK_SCALE_SENSITIVITY = 0.006f
+
+private fun clampIntersectionPan(
+    pan: Offset,
+    zoomScale: Float,
+    viewportWidth: Float,
+    viewportHeight: Float,
+): Offset {
+    if (zoomScale <= 1.0001f || viewportWidth <= 0f || viewportHeight <= 0f) return Offset.Zero
+    return Offset(
+        x = pan.x.coerceIn(viewportWidth - viewportWidth * zoomScale, 0f),
+        y = pan.y.coerceIn(viewportHeight - viewportHeight * zoomScale, 0f),
+    )
+}
+
 @Composable
 private fun IntersectionRenderer(
     map: MapIntersection,
-    spat: org.opentrafficmap.citstogo.intersection.SpatIntersection?,
+    spat: SpatIntersection?,
 ) {
     val signalGroups = spat?.movementsBySignalGroup.orEmpty()
     val canvasBackground = Color(0xFFF8FAFC)
+    var zoomScale by rememberSaveable(map.key.toString(), map.revision) { mutableStateOf(1f) }
+    var panX by rememberSaveable(map.key.toString(), map.revision) { mutableStateOf(0f) }
+    var panY by rememberSaveable(map.key.toString(), map.revision) { mutableStateOf(0f) }
+    var canvasSize by remember { mutableStateOf(IntSize.Zero) }
+    var lastTapUpMs by remember { mutableStateOf<Long?>(null) }
+    var lastTapPosition by remember { mutableStateOf<Offset?>(null) }
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    fun updateTransform(nextScale: Float, nextPan: Offset) {
+        val constrainedScale = nextScale.coerceIn(1f, INTERSECTION_MAX_ZOOM)
+        val constrainedPan = clampIntersectionPan(
+            pan = nextPan,
+            zoomScale = constrainedScale,
+            viewportWidth = canvasSize.width.toFloat(),
+            viewportHeight = canvasSize.height.toFloat(),
+        )
+        zoomScale = constrainedScale
+        panX = constrainedPan.x
+        panY = constrainedPan.y
+    }
+    LaunchedEffect(spat?.receivedAtMs) {
+        while (true) {
+            nowMs = System.currentTimeMillis()
+            delay(1_000L)
+        }
+    }
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
             .height(420.dp)
-            .background(canvasBackground, RoundedCornerShape(8.dp)),
+            .onSizeChanged { canvasSize = it }
+            .clip(RoundedCornerShape(8.dp))
+            .background(canvasBackground)
+            .pointerInput(map.key, map.revision) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    down.consume()
+                    val downPosition = down.position
+                    val downTimeMs = down.uptimeMillis
+                    val tapSlop = 18.dp.toPx()
+                    val doubleTapSlop = 56.dp.toPx()
+                    val isQuickScale = lastTapUpMs
+                        ?.let { downTimeMs - it <= DOUBLE_TAP_TIMEOUT_MS }
+                        ?.takeIf { it }
+                        ?.let {
+                            lastTapPosition?.let { previousTap ->
+                                hypot(
+                                    (downPosition.x - previousTap.x).toDouble(),
+                                    (downPosition.y - previousTap.y).toDouble(),
+                                ) <= doubleTapSlop
+                            }
+                        } == true
+                    if (isQuickScale) {
+                        lastTapUpMs = null
+                        lastTapPosition = null
+                    }
+                    var movedDistance = 0f
+                    var lastQuickScaleY = downPosition.y
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        val pressedChanges = event.changes.filter { it.pressed }
+                        event.changes.forEach { it.consume() }
+                        if (pressedChanges.isEmpty()) {
+                            if (!isQuickScale && movedDistance <= tapSlop && event.changes.any { !it.pressed }) {
+                                val upTimeMs = event.changes.maxOf { it.uptimeMillis }
+                                if (upTimeMs - downTimeMs <= TAP_TIMEOUT_MS) {
+                                    lastTapUpMs = upTimeMs
+                                    lastTapPosition = downPosition
+                                }
+                            }
+                            break
+                        }
+
+                        if (isQuickScale && pressedChanges.size == 1) {
+                            val currentY = pressedChanges.first().position.y
+                            val dy = currentY - lastQuickScaleY
+                            val scaleChange = exp((dy * QUICK_SCALE_SENSITIVITY).toDouble()).toFloat()
+                            val nextScale = (zoomScale * scaleChange).coerceIn(1f, INTERSECTION_MAX_ZOOM)
+                            val actualScaleChange = nextScale / zoomScale
+                            updateTransform(
+                                nextScale = nextScale,
+                                nextPan = downPosition - (downPosition - Offset(panX, panY)) * actualScaleChange,
+                            )
+                            movedDistance += kotlin.math.abs(dy)
+                            lastQuickScaleY = currentY
+                            continue
+                        }
+
+                        if (pressedChanges.size >= 2) {
+                            val zoom = event.calculateZoom()
+                            val pan = event.calculatePan()
+                            val centroid = event.calculateCentroid()
+                            val nextScale = (zoomScale * zoom).coerceIn(1f, INTERSECTION_MAX_ZOOM)
+                            val scaleChange = nextScale / zoomScale
+                            val currentPan = Offset(panX, panY)
+                            updateTransform(
+                                nextScale = nextScale,
+                                nextPan = centroid - (centroid - currentPan) * scaleChange + pan,
+                            )
+                            movedDistance += hypot(pan.x.toDouble(), pan.y.toDouble()).toFloat()
+                            continue
+                        }
+
+                        val change = pressedChanges.first()
+                        val pan = change.position - change.previousPosition
+                        updateTransform(
+                            nextScale = zoomScale,
+                            nextPan = Offset(panX + pan.x, panY + pan.y),
+                        )
+                        movedDistance += hypot(pan.x.toDouble(), pan.y.toDouble()).toFloat()
+                    }
+                }
+            },
     ) {
         val allNodes = map.lanes.flatMap { it.nodes }
         if (allNodes.isEmpty()) return@Canvas
@@ -853,23 +1003,41 @@ private fun IntersectionRenderer(
         val width = (maxX - minX).coerceAtLeast(1f)
         val height = (maxY - minY).coerceAtLeast(1f)
         val scale = minOf((size.width - padding * 2) / width, (size.height - padding * 2) / height)
+        val panOffset = Offset(panX, panY)
 
-        fun point(x: Int, y: Int): Offset = Offset(
-            x = padding + (x - minX) * scale,
-            y = size.height - padding - (y - minY) * scale,
-        )
+        fun point(x: Int, y: Int): Offset {
+            val base = Offset(
+                x = padding + (x - minX) * scale,
+                y = size.height - padding - (y - minY) * scale,
+            )
+            return Offset(
+                x = base.x * zoomScale + panOffset.x,
+                y = base.y * zoomScale + panOffset.y,
+            )
+        }
 
         val lanesById = map.lanes.associateBy { it.id }
-        fun phaseFor(lane: MapLane, connection: LaneConnection? = null): MovementPhaseState? {
-            return connection?.signalGroup?.let { signalGroups[it]?.currentEvent?.state }
+        fun eventFor(lane: MapLane, connection: LaneConnection? = null): SignalEvent? {
+            return connection?.signalGroup?.let { signalGroups[it]?.currentEvent }
                 ?: lane.connections.firstNotNullOfOrNull { laneConnection ->
-                    laneConnection.signalGroup?.let { signalGroups[it]?.currentEvent?.state }
+                    laneConnection.signalGroup?.let { signalGroups[it]?.currentEvent }
                 }
         }
+
+        fun phaseFor(lane: MapLane, connection: LaneConnection? = null): MovementPhaseState? =
+            eventFor(lane, connection)?.state
 
         fun signalColorFor(lane: MapLane, connection: LaneConnection? = null): Color {
             val phase = phaseFor(lane, connection)
             return phase?.phaseColor() ?: lane.laneType.baseColor()
+        }
+
+        fun laneLabelPoint(lane: MapLane): Offset {
+            val start = lane.nodes.first()
+            val end = lane.nodes.last()
+            val startPoint = point(start.xCm, start.yCm)
+            val endPoint = point(end.xCm, end.yCm)
+            return Offset((startPoint.x + endPoint.x) / 2f, (startPoint.y + endPoint.y) / 2f)
         }
 
         fun lanePath(lane: MapLane): Path = Path().apply {
@@ -1037,6 +1205,44 @@ private fun IntersectionRenderer(
                 )
             }
         }
+        if (zoomScale >= LANE_TIMING_ZOOM_THRESHOLD) {
+            val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.White.toArgb()
+                textAlign = Paint.Align.LEFT
+                textSize = 12.dp.toPx()
+                typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            }
+            val horizontalPadding = 6.dp.toPx()
+            val verticalPadding = 3.dp.toPx()
+            val horizontalViewportPadding = 40.dp.toPx()
+            val verticalViewportPadding = 24.dp.toPx()
+            map.lanes.sortedBy { it.id }.forEach { lane ->
+                if (lane.nodes.size < 2) return@forEach
+                val event = eventFor(lane) ?: return@forEach
+                val seconds = event.secondsUntilChange(spat, nowMs) ?: return@forEach
+                val labelPoint = laneLabelPoint(lane)
+                if (labelPoint.x < -horizontalViewportPadding || labelPoint.x > size.width + horizontalViewportPadding) return@forEach
+                if (labelPoint.y < -verticalViewportPadding || labelPoint.y > size.height + verticalViewportPadding) return@forEach
+
+                val label = "${seconds}s"
+                val textWidth = textPaint.measureText(label)
+                val labelWidth = textWidth + horizontalPadding * 2
+                val labelHeight = textPaint.textSize + verticalPadding * 2
+                val topLeft = Offset(labelPoint.x - labelWidth / 2f, labelPoint.y - labelHeight / 2f)
+                drawRoundRect(
+                    color = event.state.phaseColor().copy(alpha = 0.94f),
+                    topLeft = topLeft,
+                    size = Size(labelWidth, labelHeight),
+                    cornerRadius = CornerRadius(5.dp.toPx(), 5.dp.toPx()),
+                )
+                drawContext.canvas.nativeCanvas.drawText(
+                    label,
+                    topLeft.x + horizontalPadding,
+                    topLeft.y + verticalPadding + textPaint.textSize * 0.82f,
+                    textPaint,
+                )
+            }
+        }
     }
 }
 
@@ -1105,8 +1311,25 @@ private fun SignalEvent.nextChangeLabel(): String {
     }
 }
 
+private fun SignalEvent.secondsUntilChange(spat: SpatIntersection?, nowMs: Long): Long? {
+    val targetTenths = listOfNotNull(likelyTime, minEndTime, maxEndTime)
+        .firstOrNull { it in 0 until TIME_MARK_UNKNOWN }
+        ?: return null
+    val moy = spat?.moy ?: return null
+    val timestampMs = spat.timestampMs?.takeIf { it in 0 until 61_000 } ?: return null
+    val messageTenths = (moy % 60) * TENTHS_PER_MINUTE + (timestampMs / 100).coerceAtMost(TENTHS_PER_MINUTE - 1)
+    val elapsedTenths = ((nowMs - spat.receivedAtMs).coerceAtLeast(0L) / 100L).toInt()
+    val currentTenths = (messageTenths + elapsedTenths) % TENTHS_PER_HOUR
+    val remainingTenths = if (targetTenths >= currentTenths) {
+        targetTenths - currentTenths
+    } else {
+        TENTHS_PER_HOUR - currentTenths + targetTenths
+    }
+    return (remainingTenths / 10.0).roundToLong()
+}
+
 private fun formatTimeMark(value: Int): String {
-    if (value >= 36001) return "unknown"
+    if (value >= TIME_MARK_UNKNOWN) return "unknown"
     val totalTenths = value.coerceAtLeast(0)
     val minutes = totalTenths / 600
     val seconds = (totalTenths / 10) % 60
