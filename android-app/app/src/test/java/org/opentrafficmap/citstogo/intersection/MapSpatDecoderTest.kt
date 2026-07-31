@@ -22,7 +22,7 @@ class MapSpatDecoderTest {
 
     @Test
     fun decodesSampleSpatemSignalStates() {
-        val packet = requireNotNull(ItsFrameExtractor.extract(pcapFrames()[0]))
+        val packet = requireNotNull(ItsFrameExtractor.extract(pcapFrames("cits-1785335702733.pcap")[0]))
         val intersections = MapSpatDecoder.decodeSpat(packet, 1_000)
 
         assertEquals(1, intersections.size)
@@ -35,8 +35,60 @@ class MapSpatDecoderTest {
     }
 
     @Test
+    fun decodesNamedSpatemSignalStates() {
+        val packet = requireNotNull(ItsFrameExtractor.extract(pcapFrames("cits-1785487825313.pcap")[0]))
+        val intersections = MapSpatDecoder.decodeSpat(packet, 1_000)
+
+        assertEquals(1, intersections.size)
+        val spat = intersections.first()
+        assertEquals(IntersectionKey(43, 4003), spat.key)
+        assertEquals(1, spat.revision)
+        assertEquals(22, spat.movements.size)
+        assertEquals(MovementPhaseState.ProtectedAllowed, spat.movements.first { it.signalGroup == 1 }.currentEvent?.state)
+        assertEquals(MovementPhaseState.StopAndRemain, spat.movements.first { it.signalGroup == 2 }.currentEvent?.state)
+        assertEquals(MovementPhaseState.PermissiveAllowed, spat.movements.first { it.signalGroup == 9 }.currentEvent?.state)
+    }
+
+    @Test
+    fun decodesNamedSpatemSignalStatesAcrossCapture() {
+        val decoded = pcapFrames("cits-1785487825313.pcap")
+            .mapIndexedNotNull { index, frame ->
+                val packet = ItsFrameExtractor.extract(frame)
+                    ?.takeIf { it.destinationPort == MapSpatDecoder.BTP_PORT_SPATEM }
+                    ?: return@mapIndexedNotNull null
+                index to MapSpatDecoder.decodeSpat(packet, 1_000)
+            }
+
+        assertTrue(decoded.isNotEmpty())
+        decoded.forEach { (_, intersections) ->
+            intersections.forEach { spat ->
+                assertTrue(spat.movements.isNotEmpty())
+                assertTrue(spat.movements.none { it.currentEvent?.state == MovementPhaseState.Unknown })
+            }
+        }
+    }
+
+    @Test
+    fun decodesNamedSpatemTimingDetails() {
+        val packet = requireNotNull(ItsFrameExtractor.extract(pcapFrames("cits-1785487825313.pcap")[16]))
+        val intersections = MapSpatDecoder.decodeSpat(packet, 1_000)
+
+        assertEquals(1, intersections.size)
+        val spat = intersections.first()
+        assertEquals(IntersectionKey(17153, 4006), spat.key)
+        assertEquals(4, spat.movements.size)
+        val signalGroup1 = spat.movements.first { it.signalGroup == 1 }
+        assertEquals(MovementPhaseState.StopAndRemain, signalGroup1.currentEvent?.state)
+        assertEquals(30440, signalGroup1.currentEvent?.minEndTime)
+        assertEquals(30440, signalGroup1.currentEvent?.likelyTime)
+        assertEquals(30440, signalGroup1.currentEvent?.maxEndTime)
+        assertEquals(MovementPhaseState.PreMovement, signalGroup1.events[1].state)
+        assertEquals(30460, signalGroup1.events[1].likelyTime)
+    }
+
+    @Test
     fun decodesSampleMapemIntersectionGeometry() {
-        val packet = requireNotNull(ItsFrameExtractor.extract(pcapFrames()[3]))
+        val packet = requireNotNull(ItsFrameExtractor.extract(pcapFrames("cits-1785335702733.pcap")[3]))
         val intersections = MapSpatDecoder.decodeMap(packet, 1_000)
 
         assertEquals(1, intersections.size)
@@ -51,11 +103,11 @@ class MapSpatDecoderTest {
         assertTrue(map.lanes.any { lane -> lane.nodes.any { it.stopLine } })
     }
 
-    private fun pcapFrames(): List<ByteArray> {
+    private fun pcapFrames(fileName: String = "cits-1785335702733.pcap"): List<ByteArray> {
         val pcap = listOf(
-            File("../cits-1785335702733.pcap"),
-            File("../../cits-1785335702733.pcap"),
-            File("cits-1785335702733.pcap"),
+            File("../$fileName"),
+            File("../../$fileName"),
+            File(fileName),
         ).first { it.exists() }
         val bytes = pcap.readBytes()
         require(intLE(bytes, 0) == 0xA1B2C3D4.toInt())

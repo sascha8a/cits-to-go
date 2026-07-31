@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -828,6 +829,15 @@ private fun SignalTimingPanel(snapshot: IntersectionSnapshot?) {
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text("Signal phases", style = MaterialTheme.typography.titleMedium)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Group", modifier = Modifier.weight(0.6f), style = MaterialTheme.typography.labelMedium)
+            Text("Phase", modifier = Modifier.weight(1.2f), style = MaterialTheme.typography.labelMedium)
+            Text("Next change", modifier = Modifier.weight(1.0f), style = MaterialTheme.typography.labelMedium)
+        }
         movements.sortedBy { it.signalGroup }.take(16).forEach { movement ->
             val event = movement.currentEvent
             Row(
@@ -835,26 +845,40 @@ private fun SignalTimingPanel(snapshot: IntersectionSnapshot?) {
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Canvas(Modifier.height(18.dp).weight(0.12f)) {
-                    drawCircle(event?.state?.phaseColor() ?: Color(0xFF94A3B8), radius = 6.dp.toPx())
+                Text(
+                    "SG ${movement.signalGroup}",
+                    modifier = Modifier.weight(0.6f),
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Row(
+                    modifier = Modifier.weight(1.2f),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Canvas(Modifier.width(18.dp).height(18.dp)) {
+                        drawCircle(event?.state?.phaseColor() ?: Color(0xFF94A3B8), radius = 6.dp.toPx())
+                    }
+                    Text(event?.state?.label ?: "Unknown")
                 }
-                Text("SG ${movement.signalGroup}", modifier = Modifier.weight(0.35f), fontWeight = FontWeight.SemiBold)
-                Text(event?.state?.label.orEmpty(), modifier = Modifier.weight(0.65f))
-                Text(event?.timingLabel().orEmpty(), modifier = Modifier.weight(0.8f), color = MaterialTheme.colorScheme.secondary)
+                Text(
+                    event?.nextChangeLabel() ?: "No timing",
+                    modifier = Modifier.weight(1.0f),
+                    color = MaterialTheme.colorScheme.secondary,
+                )
             }
         }
     }
 }
 
-private fun SignalEvent.timingLabel(): String {
+private fun SignalEvent.nextChangeLabel(): String {
     val likely = likelyTime?.let(::formatTimeMark)
     val min = minEndTime?.let(::formatTimeMark)
     val max = maxEndTime?.let(::formatTimeMark)
     return when {
-        likely != null -> "likely $likely"
+        likely != null -> likely
         min != null && max != null -> "$min-$max"
-        min != null -> "min $min"
-        else -> ""
+        min != null -> min
+        else -> "No timing"
     }
 }
 
