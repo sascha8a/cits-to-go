@@ -12,6 +12,10 @@ data class IntersectionSnapshot(
     val available: Boolean get() = map != null || spat != null
 }
 
+data class IntersectionSnapshotList(
+    val snapshots: List<IntersectionSnapshot>,
+) : Serializable
+
 enum class SelectionSource : Serializable {
     DeviceLocation,
     LatestObserved,

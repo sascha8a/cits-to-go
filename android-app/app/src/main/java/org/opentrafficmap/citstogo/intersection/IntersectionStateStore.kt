@@ -5,16 +5,19 @@ import android.location.Location
 class IntersectionStateStore {
     private val maps = LinkedHashMap<IntersectionKey, MapIntersection>()
     private val spats = LinkedHashMap<IntersectionKey, SpatIntersection>()
+    private val firstReceivedAtMs = LinkedHashMap<IntersectionKey, Long>()
     private var lastKey: IntersectionKey? = null
 
     fun accept(packet: ByteArray, receivedAtMs: Long = System.currentTimeMillis()): IntersectionSnapshot? {
         val its = ItsFrameExtractor.extract(packet) ?: return null
         val updatedKeys = when (its.messageId) {
             MapSpatDecoder.MESSAGE_ID_MAPEM -> MapSpatDecoder.decodeMap(its, receivedAtMs).map { map ->
+                firstReceivedAtMs.putIfAbsent(map.key, receivedAtMs)
                 maps[map.key] = mergeMap(maps[map.key], map)
                 map.key
             }
             MapSpatDecoder.MESSAGE_ID_SPATEM -> MapSpatDecoder.decodeSpat(its, receivedAtMs).map { spat ->
+                firstReceivedAtMs.putIfAbsent(spat.key, receivedAtMs)
                 spats[spat.key] = spat
                 spat.key
             }
@@ -33,6 +36,39 @@ class IntersectionStateStore {
                 source = if (location == null) SelectionSource.LatestObserved else SelectionSource.DeviceLocation,
                 updatedAtMs = maxOf(maps[it]?.receivedAtMs ?: 0L, spats[it]?.receivedAtMs ?: 0L),
             )
+        }
+    }
+
+    fun activeSnapshots(location: Location?, nowMs: Long, maxAgeMs: Long): List<IntersectionSnapshot> {
+        val cutoffMs = nowMs - maxAgeMs
+        val knownKeys = LinkedHashSet<IntersectionKey>().apply {
+            addAll(maps.keys)
+            addAll(spats.keys)
+        }
+        val activeKeys = knownKeys.filter { key ->
+            maxOf(maps[key]?.receivedAtMs ?: 0L, spats[key]?.receivedAtMs ?: 0L) >= cutoffMs
+        }
+        maps.keys.removeAll { key -> key !in activeKeys }
+        spats.keys.removeAll { key -> key !in activeKeys }
+        firstReceivedAtMs.keys.removeAll { key -> key !in activeKeys }
+        if (lastKey !in activeKeys) lastKey = activeKeys.lastOrNull()
+
+        val snapshots = activeKeys.map { key ->
+            IntersectionSnapshot(
+                map = maps[key],
+                spat = spats[key],
+                source = if (location == null) SelectionSource.LatestObserved else SelectionSource.DeviceLocation,
+                updatedAtMs = maxOf(maps[key]?.receivedAtMs ?: 0L, spats[key]?.receivedAtMs ?: 0L),
+            )
+        }
+        val latitude = location?.let { (it.latitude * 10_000_000.0).toInt() }
+        val longitude = location?.let { (it.longitude * 10_000_000.0).toInt() }
+        return if (latitude != null && longitude != null) {
+            snapshots.sortedBy { it.map?.distanceTo(latitude, longitude) ?: Double.MAX_VALUE }
+        } else {
+            snapshots.sortedBy { snapshot ->
+                firstReceivedAtMs[snapshot.map?.key ?: snapshot.spat?.key] ?: snapshot.updatedAtMs
+            }
         }
     }
 

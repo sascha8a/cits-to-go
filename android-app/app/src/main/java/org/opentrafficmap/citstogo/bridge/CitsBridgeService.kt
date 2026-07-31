@@ -30,6 +30,7 @@ import org.opentrafficmap.citstogo.cam.CamPosition
 import org.opentrafficmap.citstogo.cam.ItsG5FrameBuilder
 import org.opentrafficmap.citstogo.cam.StationType
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
+import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
 import org.opentrafficmap.citstogo.intersection.IntersectionStateStore
 import org.opentrafficmap.citstogo.protocol.CitsPacket
 import org.opentrafficmap.citstogo.protocol.CtgFrameEncoder
@@ -85,6 +86,7 @@ class CitsBridgeService : Service() {
     private var lastCamLocation: Location? = null
     private val intersectionStore = IntersectionStateStore()
     private var intersectionSnapshot: IntersectionSnapshot? = null
+    private var intersectionSnapshots: List<IntersectionSnapshot> = emptyList()
 
     private var status = BridgeStatus()
     private var packets = 0L
@@ -393,7 +395,8 @@ class CitsBridgeService : Service() {
     private fun updateIntersection(packet: ByteArray) {
         try {
             intersectionStore.accept(packet)?.let {
-                intersectionSnapshot = intersectionStore.closest(lastLocation) ?: it
+                refreshIntersectionSnapshots()
+                intersectionSnapshot = intersectionSnapshots.firstOrNull() ?: it
             }
         } catch (_: Exception) {
             // MAPEM/SPATEM decoding is best-effort; malformed or unsupported messages should not affect capture.
@@ -768,7 +771,7 @@ class CitsBridgeService : Service() {
     }
 
     private fun publishStatus(log: String?) {
-        intersectionSnapshot = intersectionStore.closest(lastLocation) ?: intersectionSnapshot
+        refreshIntersectionSnapshots()
         status = status.copy(
             running = usbWanted,
             nodeId = nodeId,
@@ -815,9 +818,15 @@ class CitsBridgeService : Service() {
         intent.putExtra(EXTRA_LAST_TX, status.lastTxSummary)
         intent.putExtra(EXTRA_LAST_PACKET, status.lastPacketSummary)
         intent.putExtra(EXTRA_LAST_ERROR, status.lastError)
+        intent.putExtra(EXTRA_INTERSECTION_SNAPSHOTS, IntersectionSnapshotList(intersectionSnapshots))
         intersectionSnapshot?.let { intent.putExtra(EXTRA_INTERSECTION_SNAPSHOT, it) }
         if (!log.isNullOrBlank()) intent.putExtra(EXTRA_LOG, log)
         sendBroadcast(intent)
+    }
+
+    private fun refreshIntersectionSnapshots(nowMs: Long = System.currentTimeMillis()) {
+        intersectionSnapshots = intersectionStore.activeSnapshots(lastLocation, nowMs, INTERSECTION_MAX_AGE_MS)
+        intersectionSnapshot = intersectionSnapshots.firstOrNull()
     }
 
     private fun updateNotification() {
@@ -1061,6 +1070,7 @@ class CitsBridgeService : Service() {
         const val EXTRA_CAM_STATION_TYPE = "camStationType"
         const val EXTRA_CAM_INTERVAL_MS = "camIntervalMs"
         const val EXTRA_INTERSECTION_SNAPSHOT = "intersectionSnapshot"
+        const val EXTRA_INTERSECTION_SNAPSHOTS = "intersectionSnapshots"
 
         const val PREFS = "cits_to_go"
         const val PREF_NODE_ID = "node_id"
@@ -1079,6 +1089,7 @@ class CitsBridgeService : Service() {
         const val DEFAULT_CAM_INTERVAL_MS = 500
         const val MIN_CAM_INTERVAL_MS = 100
         const val MAX_CAM_INTERVAL_MS = 1_000
+        const val INTERSECTION_MAX_AGE_MS = 15_000L
 
         private const val CHANNEL_ID = "cits_bridge"
         private const val DISCOVERY_CHANNEL_ID = "cits_device_discovery"

@@ -28,6 +28,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -48,6 +50,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -71,6 +74,7 @@ import org.opentrafficmap.citstogo.bridge.BridgeStatus
 import org.opentrafficmap.citstogo.bridge.CitsBridgeService
 import org.opentrafficmap.citstogo.cam.StationType
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
+import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
 import org.opentrafficmap.citstogo.intersection.LaneConnection
 import org.opentrafficmap.citstogo.intersection.LaneType
 import org.opentrafficmap.citstogo.intersection.MapIntersection
@@ -95,6 +99,7 @@ class MainActivity : ComponentActivity() {
     private var maxQueueAgeSeconds by mutableStateOf("")
     private var logLine by mutableStateOf("")
     private var intersectionSnapshot by mutableStateOf<IntersectionSnapshot?>(null)
+    private var intersectionSnapshots by mutableStateOf<List<IntersectionSnapshot>>(emptyList())
     private var camStationType by mutableStateOf(StationType.PEDESTRIAN)
     private var camIntervalMs by mutableStateOf(CitsBridgeService.DEFAULT_CAM_INTERVAL_MS.toString())
     private var enableCamAfterPermission = false
@@ -142,8 +147,13 @@ class MainActivity : ComponentActivity() {
                 lastError = intent.getStringExtra(CitsBridgeService.EXTRA_LAST_ERROR).orEmpty(),
             )
             intent.getStringExtra(CitsBridgeService.EXTRA_LOG)?.let { logLine = it }
+            serializableExtra<IntersectionSnapshotList>(intent, CitsBridgeService.EXTRA_INTERSECTION_SNAPSHOTS)?.let {
+                intersectionSnapshots = it.snapshots
+                intersectionSnapshot = it.snapshots.firstOrNull()
+            }
             serializableExtra<IntersectionSnapshot>(intent, CitsBridgeService.EXTRA_INTERSECTION_SNAPSHOT)?.let {
                 intersectionSnapshot = it
+                if (intersectionSnapshots.isEmpty()) intersectionSnapshots = listOf(it)
             }
         }
     }
@@ -197,7 +207,7 @@ class MainActivity : ComponentActivity() {
                     onMaxQueueAgeSecondsChange = { maxQueueAgeSeconds = it },
                     status = status,
                     logLine = logLine,
-                    intersectionSnapshot = intersectionSnapshot,
+                    intersectionSnapshots = intersectionSnapshots.ifEmpty { listOfNotNull(intersectionSnapshot) },
                     onRefresh = ::refreshDevices,
                     onStart = ::requestUsbThenStart,
                     onStop = ::stopBridge,
@@ -469,7 +479,7 @@ private fun CitsApp(
     onMaxQueueAgeSecondsChange: (String) -> Unit,
     status: BridgeStatus,
     logLine: String,
-    intersectionSnapshot: IntersectionSnapshot?,
+    intersectionSnapshots: List<IntersectionSnapshot>,
     onRefresh: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -521,12 +531,20 @@ private fun CitsApp(
                 }
             },
         ) {
+            val mainScrollState = rememberScrollState()
+            val contentModifier = Modifier
+                .fillMaxSize()
+                .windowInsetsPadding(WindowInsets.safeDrawing)
+                .padding(20.dp)
+                .then(
+                    if (selectedPage == AppPage.IntersectionView) {
+                        Modifier
+                    } else {
+                        Modifier.verticalScroll(mainScrollState)
+                    },
+                )
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .windowInsetsPadding(WindowInsets.safeDrawing)
-                    .verticalScroll(rememberScrollState())
-                    .padding(20.dp),
+                modifier = contentModifier,
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 AppHeader(
@@ -556,8 +574,9 @@ private fun CitsApp(
                         onConfigure = onConfigureCam,
                     )
                     AppPage.IntersectionView -> IntersectionViewPage(
-                        snapshot = intersectionSnapshot,
+                        snapshots = intersectionSnapshots,
                         status = status,
+                        modifier = Modifier.weight(1f),
                     )
                     AppPage.Settings -> SettingsPage(
                         mqttUri = mqttUri,
@@ -704,6 +723,60 @@ private fun CamPanel(
 
 @Composable
 private fun IntersectionViewPage(
+    snapshots: List<IntersectionSnapshot>,
+    status: BridgeStatus,
+    modifier: Modifier = Modifier,
+) {
+    if (snapshots.isEmpty()) {
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
+        ) {
+            IntersectionPageContent(null, status)
+        }
+        return
+    }
+
+    val pagerState = rememberPagerState(pageCount = { snapshots.size })
+    LaunchedEffect(snapshots.size) {
+        if (pagerState.currentPage >= snapshots.size) {
+            pagerState.scrollToPage(snapshots.lastIndex)
+        }
+    }
+
+    Column(
+        modifier = modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        if (snapshots.size > 1) {
+            Text(
+                "${pagerState.currentPage + 1} / ${snapshots.size}",
+                modifier = Modifier.fillMaxWidth(),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+        }
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+        ) { page ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 2.dp),
+            ) {
+                IntersectionPageContent(snapshots[page], status)
+            }
+        }
+    }
+}
+
+@Composable
+private fun IntersectionPageContent(
     snapshot: IntersectionSnapshot?,
     status: BridgeStatus,
 ) {

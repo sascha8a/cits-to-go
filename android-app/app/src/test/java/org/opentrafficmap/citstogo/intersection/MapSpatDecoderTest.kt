@@ -113,6 +113,23 @@ class MapSpatDecoderTest {
     }
 
     @Test
+    fun listsActiveIntersectionsAndExpiresStaleOnes() {
+        val frames = pcapFrames("cits-1785487825313.pcap")
+        val store = IntersectionStateStore()
+
+        store.accept(frames[16], 1_000)
+        store.accept(frames[24], 1_001)
+        store.accept(frames[20], 1_002)
+
+        val active = store.activeSnapshots(null, 1_002, 15_000)
+        assertEquals(2, active.size)
+        assertEquals(IntersectionKey(17153, 4006), active[0].spat?.key ?: active[0].map?.key)
+        assertEquals(IntersectionKey(43, 4003), active[1].map?.key ?: active[1].spat?.key)
+
+        assertTrue(store.activeSnapshots(null, 16_003, 15_000).isEmpty())
+    }
+
+    @Test
     fun decodesSampleMapemIntersectionGeometry() {
         val packet = requireNotNull(ItsFrameExtractor.extract(pcapFrames("cits-1785335702733.pcap")[3]))
         val intersections = MapSpatDecoder.decodeMap(packet, 1_000)
