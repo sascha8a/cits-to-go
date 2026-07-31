@@ -757,11 +757,12 @@ private fun IntersectionRenderer(
     spat: org.opentrafficmap.citstogo.intersection.SpatIntersection?,
 ) {
     val signalGroups = spat?.movementsBySignalGroup.orEmpty()
+    val canvasBackground = Color(0xFFF8FAFC)
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
             .height(420.dp)
-            .background(Color(0xFFF8FAFC), RoundedCornerShape(8.dp)),
+            .background(canvasBackground, RoundedCornerShape(8.dp)),
     ) {
         val allNodes = map.lanes.flatMap { it.nodes }
         if (allNodes.isEmpty()) return@Canvas
@@ -814,53 +815,146 @@ private fun IntersectionRenderer(
         }
 
         val crosswalkDash = PathEffect.dashPathEffect(floatArrayOf(10.dp.toPx(), 8.dp.toPx()))
+        val bikeDash = PathEffect.dashPathEffect(floatArrayOf(2.dp.toPx(), 7.dp.toPx()))
+        val sidewalkDash = PathEffect.dashPathEffect(floatArrayOf(16.dp.toPx(), 8.dp.toPx()))
+        val medianDash = PathEffect.dashPathEffect(floatArrayOf(18.dp.toPx(), 10.dp.toPx()))
+        val stripingDash = PathEffect.dashPathEffect(floatArrayOf(10.dp.toPx(), 4.dp.toPx(), 2.dp.toPx(), 4.dp.toPx()))
+        val parkingDash = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 6.dp.toPx()))
+        val otherDash = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 8.dp.toPx()))
 
-        map.lanes.sortedBy { if (it.laneType == LaneType.Crosswalk) 1 else 0 }.forEach { lane ->
+        class LaneVisualStyle(
+            val width: Float,
+            val pathEffect: PathEffect? = null,
+            val backingWidth: Float? = null,
+            val backingColor: Color = Color.White.copy(alpha = 0.84f),
+            val centerGapWidth: Float? = null,
+            val unsignalizedAlpha: Float = 0.72f,
+        )
+
+        fun styleFor(type: LaneType): LaneVisualStyle = when (type) {
+            LaneType.Vehicle -> LaneVisualStyle(width = 5.dp.toPx())
+            LaneType.Crosswalk -> LaneVisualStyle(
+                width = 6.dp.toPx(),
+                pathEffect = crosswalkDash,
+                backingWidth = 9.dp.toPx(),
+                backingColor = Color.White.copy(alpha = 0.9f),
+            )
+            LaneType.Bike -> LaneVisualStyle(
+                width = 4.dp.toPx(),
+                pathEffect = bikeDash,
+                backingWidth = 6.dp.toPx(),
+                backingColor = Color.White.copy(alpha = 0.72f),
+            )
+            LaneType.Sidewalk -> LaneVisualStyle(
+                width = 3.5.dp.toPx(),
+                pathEffect = sidewalkDash,
+                backingWidth = 6.dp.toPx(),
+                backingColor = Color.White.copy(alpha = 0.68f),
+            )
+            LaneType.Median -> LaneVisualStyle(
+                width = 8.dp.toPx(),
+                pathEffect = medianDash,
+                unsignalizedAlpha = 0.46f,
+            )
+            LaneType.Striping -> LaneVisualStyle(
+                width = 3.dp.toPx(),
+                pathEffect = stripingDash,
+                unsignalizedAlpha = 0.62f,
+            )
+            LaneType.TrackedVehicle -> LaneVisualStyle(
+                width = 7.dp.toPx(),
+                backingWidth = 9.dp.toPx(),
+                backingColor = Color.White.copy(alpha = 0.68f),
+                centerGapWidth = 3.dp.toPx(),
+            )
+            LaneType.Parking -> LaneVisualStyle(
+                width = 4.dp.toPx(),
+                pathEffect = parkingDash,
+                unsignalizedAlpha = 0.68f,
+            )
+            LaneType.Other -> LaneVisualStyle(
+                width = 3.dp.toPx(),
+                pathEffect = otherDash,
+                unsignalizedAlpha = 0.56f,
+            )
+        }
+
+        fun renderOrder(type: LaneType): Int = when (type) {
+            LaneType.Median -> 0
+            LaneType.Striping -> 1
+            LaneType.Parking -> 2
+            LaneType.Sidewalk -> 3
+            LaneType.Bike -> 4
+            LaneType.TrackedVehicle -> 5
+            LaneType.Vehicle -> 6
+            LaneType.Other -> 7
+            LaneType.Crosswalk -> 8
+        }
+
+        map.lanes.sortedBy { renderOrder(it.laneType) }.forEach { lane ->
             if (lane.nodes.size < 2) return@forEach
             val phase = phaseFor(lane)
             val color = signalColorFor(lane)
             val path = lanePath(lane)
-            if (lane.laneType == LaneType.Crosswalk) {
+            val style = styleFor(lane.laneType)
+            style.backingWidth?.let { backingWidth ->
                 drawPath(
                     path = path,
-                    color = Color.White.copy(alpha = 0.9f),
-                    style = Stroke(width = 9.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+                    color = style.backingColor,
+                    style = Stroke(
+                        width = backingWidth,
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                        pathEffect = style.pathEffect,
+                    ),
                 )
             }
             drawPath(
                 path = path,
-                color = color.copy(alpha = if (phase == null) 0.72f else 0.92f),
+                color = color.copy(alpha = if (phase == null) style.unsignalizedAlpha else 0.92f),
                 style = Stroke(
-                    width = when (lane.laneType) {
-                        LaneType.Crosswalk -> 6.dp.toPx()
-                        LaneType.Bike, LaneType.Sidewalk -> 4.dp.toPx()
-                        else -> 5.dp.toPx()
-                    },
+                    width = style.width,
                     cap = StrokeCap.Round,
                     join = StrokeJoin.Round,
-                    pathEffect = if (lane.laneType == LaneType.Crosswalk) crosswalkDash else null,
+                    pathEffect = style.pathEffect,
                 ),
             )
+            style.centerGapWidth?.let { centerGapWidth ->
+                drawPath(
+                    path = path,
+                    color = canvasBackground,
+                    style = Stroke(
+                        width = centerGapWidth,
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                        pathEffect = style.pathEffect,
+                    ),
+                )
+            }
         }
         map.lanes.filter { it.laneType == LaneType.Crosswalk }.forEach { lane ->
+            val style = styleFor(LaneType.Crosswalk)
             lane.connections.forEach { connection ->
                 val connectedLane = lanesById[connection.laneId]
                 if (connectedLane?.laneType != LaneType.Crosswalk || lane.id > connectedLane.id) return@forEach
                 val (start, end) = closestEndpointPair(lane, connectedLane)
-                drawLine(
-                    color = Color.White.copy(alpha = 0.9f),
-                    start = start,
-                    end = end,
-                    strokeWidth = 9.dp.toPx(),
-                    cap = StrokeCap.Round,
-                )
+                style.backingWidth?.let { backingWidth ->
+                    drawLine(
+                        color = style.backingColor,
+                        start = start,
+                        end = end,
+                        strokeWidth = backingWidth,
+                        cap = StrokeCap.Round,
+                        pathEffect = style.pathEffect,
+                    )
+                }
                 drawLine(
                     color = signalColorFor(lane, connection).copy(alpha = 0.92f),
                     start = start,
                     end = end,
-                    strokeWidth = 6.dp.toPx(),
+                    strokeWidth = style.width,
                     cap = StrokeCap.Round,
-                    pathEffect = crosswalkDash,
+                    pathEffect = style.pathEffect,
                 )
             }
         }
