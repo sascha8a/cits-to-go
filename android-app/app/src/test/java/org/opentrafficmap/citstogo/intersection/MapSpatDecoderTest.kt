@@ -121,12 +121,15 @@ class MapSpatDecoderTest {
         store.accept(frames[24], 1_001)
         store.accept(frames[20], 1_002)
 
-        val active = store.activeSnapshots(null, 1_002, 15_000)
+        val active = store.activeSnapshots(1_002, 30_000)
         assertEquals(2, active.size)
         assertEquals(IntersectionKey(17153, 4006), active[0].spat?.key ?: active[0].map?.key)
         assertEquals(IntersectionKey(43, 4003), active[1].map?.key ?: active[1].spat?.key)
 
-        assertTrue(store.activeSnapshots(null, 16_003, 15_000).isEmpty())
+        val partiallyExpired = store.activeSnapshots(31_002, 30_000)
+        assertEquals(1, partiallyExpired.size)
+        assertEquals(IntersectionKey(17153, 4006), partiallyExpired[0].map?.key ?: partiallyExpired[0].spat?.key)
+        assertTrue(store.activeSnapshots(31_003, 30_000).isEmpty())
     }
 
     @Test

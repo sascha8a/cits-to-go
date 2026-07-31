@@ -825,7 +825,7 @@ class CitsBridgeService : Service() {
     }
 
     private fun refreshIntersectionSnapshots(nowMs: Long = System.currentTimeMillis()) {
-        intersectionSnapshots = intersectionStore.activeSnapshots(lastLocation, nowMs, INTERSECTION_MAX_AGE_MS)
+        intersectionSnapshots = intersectionStore.activeSnapshots(nowMs, INTERSECTION_MAX_AGE_MS)
         intersectionSnapshot = intersectionSnapshots.firstOrNull()
     }
 
@@ -1089,7 +1089,7 @@ class CitsBridgeService : Service() {
         const val DEFAULT_CAM_INTERVAL_MS = 500
         const val MIN_CAM_INTERVAL_MS = 100
         const val MAX_CAM_INTERVAL_MS = 1_000
-        const val INTERSECTION_MAX_AGE_MS = 15_000L
+        const val INTERSECTION_MAX_AGE_MS = 30_000L
 
         private const val CHANNEL_ID = "cits_bridge"
         private const val DISCOVERY_CHANNEL_ID = "cits_device_discovery"

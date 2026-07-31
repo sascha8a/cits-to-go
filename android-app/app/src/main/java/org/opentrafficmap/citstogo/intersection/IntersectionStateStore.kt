@@ -39,7 +39,7 @@ class IntersectionStateStore {
         }
     }
 
-    fun activeSnapshots(location: Location?, nowMs: Long, maxAgeMs: Long): List<IntersectionSnapshot> {
+    fun activeSnapshots(nowMs: Long, maxAgeMs: Long): List<IntersectionSnapshot> {
         val cutoffMs = nowMs - maxAgeMs
         val knownKeys = LinkedHashSet<IntersectionKey>().apply {
             addAll(maps.keys)
@@ -57,18 +57,12 @@ class IntersectionStateStore {
             IntersectionSnapshot(
                 map = maps[key],
                 spat = spats[key],
-                source = if (location == null) SelectionSource.LatestObserved else SelectionSource.DeviceLocation,
+                source = SelectionSource.LatestObserved,
                 updatedAtMs = maxOf(maps[key]?.receivedAtMs ?: 0L, spats[key]?.receivedAtMs ?: 0L),
             )
         }
-        val latitude = location?.let { (it.latitude * 10_000_000.0).toInt() }
-        val longitude = location?.let { (it.longitude * 10_000_000.0).toInt() }
-        return if (latitude != null && longitude != null) {
-            snapshots.sortedBy { it.map?.distanceTo(latitude, longitude) ?: Double.MAX_VALUE }
-        } else {
-            snapshots.sortedBy { snapshot ->
-                firstReceivedAtMs[snapshot.map?.key ?: snapshot.spat?.key] ?: snapshot.updatedAtMs
-            }
+        return snapshots.sortedBy { snapshot ->
+            firstReceivedAtMs[snapshot.map?.key ?: snapshot.spat?.key] ?: snapshot.updatedAtMs
         }
     }
 

@@ -80,7 +80,6 @@ import org.opentrafficmap.citstogo.intersection.LaneType
 import org.opentrafficmap.citstogo.intersection.MapIntersection
 import org.opentrafficmap.citstogo.intersection.MapLane
 import org.opentrafficmap.citstogo.intersection.MovementPhaseState
-import org.opentrafficmap.citstogo.intersection.SelectionSource
 import org.opentrafficmap.citstogo.intersection.SignalEvent
 import java.security.SecureRandom
 import java.util.Locale
@@ -803,9 +802,7 @@ private fun IntersectionPageContent(
         Text(
             listOfNotNull(
                 map?.key?.let { "id $it" },
-                map?.revision?.let { "MAP rev $it" },
-                spat?.revision?.let { "SPAT rev $it" },
-                if (snapshot.source == SelectionSource.DeviceLocation) "nearest to device" else "latest observed",
+                snapshot.updatedAtMs.takeIf { it > 0L }?.let { "last ${formatIntersectionAge(it)}" },
             ).joinToString(" • "),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.secondary,
@@ -822,6 +819,15 @@ private fun IntersectionPageContent(
         }
     }
     SignalTimingPanel(snapshot)
+}
+
+private fun formatIntersectionAge(updatedAtMs: Long, nowMs: Long = System.currentTimeMillis()): String {
+    val ageSeconds = ((nowMs - updatedAtMs).coerceAtLeast(0L) / 1_000L)
+    return when {
+        ageSeconds < 2L -> "just now"
+        ageSeconds < 60L -> "${ageSeconds}s ago"
+        else -> "${ageSeconds / 60L}m ${ageSeconds % 60L}s ago"
+    }
 }
 
 @Composable
