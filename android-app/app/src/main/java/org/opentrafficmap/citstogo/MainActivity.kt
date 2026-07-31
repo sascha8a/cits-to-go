@@ -1248,8 +1248,16 @@ private fun IntersectionRenderer(
 
 @Composable
 private fun SignalTimingPanel(snapshot: IntersectionSnapshot?) {
-    val movements = snapshot?.spat?.movements.orEmpty()
+    val spat = snapshot?.spat
+    val movements = spat?.movements.orEmpty()
     if (movements.isEmpty()) return
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(spat?.receivedAtMs) {
+        while (true) {
+            nowMs = System.currentTimeMillis()
+            delay(1_000L)
+        }
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -1290,24 +1298,12 @@ private fun SignalTimingPanel(snapshot: IntersectionSnapshot?) {
                     Text(event?.state?.label ?: "Unknown")
                 }
                 Text(
-                    event?.nextChangeLabel() ?: "No timing",
+                    event?.secondsUntilChange(spat, nowMs)?.let { "${it}s" } ?: "No timing",
                     modifier = Modifier.weight(1.0f),
                     color = MaterialTheme.colorScheme.secondary,
                 )
             }
         }
-    }
-}
-
-private fun SignalEvent.nextChangeLabel(): String {
-    val likely = likelyTime?.let(::formatTimeMark)
-    val min = minEndTime?.let(::formatTimeMark)
-    val max = maxEndTime?.let(::formatTimeMark)
-    return when {
-        likely != null -> likely
-        min != null && max != null -> "$min-$max"
-        min != null -> min
-        else -> "No timing"
     }
 }
 
@@ -1326,15 +1322,6 @@ private fun SignalEvent.secondsUntilChange(spat: SpatIntersection?, nowMs: Long)
         TENTHS_PER_HOUR - currentTenths + targetTenths
     }
     return (remainingTenths / 10.0).roundToLong()
-}
-
-private fun formatTimeMark(value: Int): String {
-    if (value >= TIME_MARK_UNKNOWN) return "unknown"
-    val totalTenths = value.coerceAtLeast(0)
-    val minutes = totalTenths / 600
-    val seconds = (totalTenths / 10) % 60
-    val tenths = totalTenths % 10
-    return "%02d:%02d.%d".format(minutes, seconds, tenths)
 }
 
 private fun MovementPhaseState.phaseColor(): Color = when (this) {
