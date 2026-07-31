@@ -87,6 +87,32 @@ class MapSpatDecoderTest {
     }
 
     @Test
+    fun mergesSplitMapemLaneSetsForSameIntersectionRevision() {
+        val frames = pcapFrames("cits-1785487825313.pcap")
+        val store = IntersectionStateStore()
+
+        store.accept(frames[24], 1_000)
+        val firstHalf = requireNotNull(store.closest(null)?.map)
+        assertEquals(IntersectionKey(43, 4003), firstHalf.key)
+        assertEquals("Wien_04003_V011a", firstHalf.name)
+        assertEquals(24, firstHalf.lanes.size)
+        assertEquals(12, firstHalf.lanes.count { it.connections.isNotEmpty() })
+
+        store.accept(frames[25], 1_001)
+        val merged = requireNotNull(store.closest(null)?.map)
+        assertEquals(IntersectionKey(43, 4003), merged.key)
+        assertEquals(48, merged.lanes.size)
+        assertEquals(30, merged.lanes.count { it.connections.isNotEmpty() })
+        assertTrue(merged.lanes.any { it.id == 4 })
+        assertTrue(merged.lanes.any { it.id == 58 })
+
+        store.accept(frames[117], 1_002)
+        val refreshed = requireNotNull(store.closest(null)?.map)
+        assertEquals(48, refreshed.lanes.size)
+        assertEquals(30, refreshed.lanes.count { it.connections.isNotEmpty() })
+    }
+
+    @Test
     fun decodesSampleMapemIntersectionGeometry() {
         val packet = requireNotNull(ItsFrameExtractor.extract(pcapFrames("cits-1785335702733.pcap")[3]))
         val intersections = MapSpatDecoder.decodeMap(packet, 1_000)

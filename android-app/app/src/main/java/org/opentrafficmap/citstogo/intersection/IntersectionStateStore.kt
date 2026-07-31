@@ -11,7 +11,7 @@ class IntersectionStateStore {
         val its = ItsFrameExtractor.extract(packet) ?: return null
         val updatedKeys = when (its.messageId) {
             MapSpatDecoder.MESSAGE_ID_MAPEM -> MapSpatDecoder.decodeMap(its, receivedAtMs).map { map ->
-                maps[map.key] = map
+                maps[map.key] = mergeMap(maps[map.key], map)
                 map.key
             }
             MapSpatDecoder.MESSAGE_ID_SPATEM -> MapSpatDecoder.decodeSpat(its, receivedAtMs).map { spat ->
@@ -40,5 +40,18 @@ class IntersectionStateStore {
         val latitude = (location.latitude * 10_000_000.0).toInt()
         val longitude = (location.longitude * 10_000_000.0).toInt()
         return maps.values.minByOrNull { it.distanceTo(latitude, longitude) }?.key
+    }
+
+    private fun mergeMap(existing: MapIntersection?, incoming: MapIntersection): MapIntersection {
+        if (existing == null || existing.revision != incoming.revision) return incoming
+        val lanesById = LinkedHashMap<Int, MapLane>()
+        existing.lanes.forEach { lanesById[it.id] = it }
+        incoming.lanes.forEach { lanesById[it.id] = it }
+        return incoming.copy(
+            name = incoming.name ?: existing.name,
+            laneWidthCm = incoming.laneWidthCm ?: existing.laneWidthCm,
+            lanes = lanesById.values.toList(),
+            receivedAtMs = maxOf(existing.receivedAtMs, incoming.receivedAtMs),
+        )
     }
 }
