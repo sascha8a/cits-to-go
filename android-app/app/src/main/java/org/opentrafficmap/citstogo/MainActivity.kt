@@ -60,6 +60,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -70,8 +71,10 @@ import org.opentrafficmap.citstogo.bridge.BridgeStatus
 import org.opentrafficmap.citstogo.bridge.CitsBridgeService
 import org.opentrafficmap.citstogo.cam.StationType
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
+import org.opentrafficmap.citstogo.intersection.LaneConnection
 import org.opentrafficmap.citstogo.intersection.LaneType
 import org.opentrafficmap.citstogo.intersection.MapIntersection
+import org.opentrafficmap.citstogo.intersection.MapLane
 import org.opentrafficmap.citstogo.intersection.MovementPhaseState
 import org.opentrafficmap.citstogo.intersection.SelectionSource
 import org.opentrafficmap.citstogo.intersection.SignalEvent
@@ -776,19 +779,53 @@ private fun IntersectionRenderer(
             y = size.height - padding - (y - minY) * scale,
         )
 
+        val lanesById = map.lanes.associateBy { it.id }
+        fun phaseFor(lane: MapLane, connection: LaneConnection? = null): MovementPhaseState? {
+            return connection?.signalGroup?.let { signalGroups[it]?.currentEvent?.state }
+                ?: lane.connections.firstNotNullOfOrNull { laneConnection ->
+                    laneConnection.signalGroup?.let { signalGroups[it]?.currentEvent?.state }
+                }
+        }
+
+        fun signalColorFor(lane: MapLane, connection: LaneConnection? = null): Color {
+            val phase = phaseFor(lane, connection)
+            return phase?.phaseColor() ?: lane.laneType.baseColor()
+        }
+
+        fun lanePath(lane: MapLane): Path = Path().apply {
+            val first = lane.nodes.first()
+            moveTo(point(first.xCm, first.yCm).x, point(first.xCm, first.yCm).y)
+            lane.nodes.drop(1).forEach { node ->
+                val p = point(node.xCm, node.yCm)
+                lineTo(p.x, p.y)
+            }
+        }
+
+        fun closestEndpointPair(first: MapLane, second: MapLane): Pair<Offset, Offset> {
+            val firstEndpoints = listOf(first.nodes.first(), first.nodes.last()).map { point(it.xCm, it.yCm) }
+            val secondEndpoints = listOf(second.nodes.first(), second.nodes.last()).map { point(it.xCm, it.yCm) }
+            return firstEndpoints.flatMap { firstPoint ->
+                secondEndpoints.map { secondPoint -> firstPoint to secondPoint }
+            }.minBy { (firstPoint, secondPoint) ->
+                val dx = firstPoint.x - secondPoint.x
+                val dy = firstPoint.y - secondPoint.y
+                dx * dx + dy * dy
+            }
+        }
+
+        val crosswalkDash = PathEffect.dashPathEffect(floatArrayOf(10.dp.toPx(), 8.dp.toPx()))
+
         map.lanes.sortedBy { if (it.laneType == LaneType.Crosswalk) 1 else 0 }.forEach { lane ->
             if (lane.nodes.size < 2) return@forEach
-            val phase = lane.connections.firstNotNullOfOrNull { connection ->
-                connection.signalGroup?.let { signalGroups[it]?.currentEvent?.state }
-            }
-            val color = phase?.phaseColor() ?: lane.laneType.baseColor()
-            val path = Path().apply {
-                val first = lane.nodes.first()
-                moveTo(point(first.xCm, first.yCm).x, point(first.xCm, first.yCm).y)
-                lane.nodes.drop(1).forEach { node ->
-                    val p = point(node.xCm, node.yCm)
-                    lineTo(p.x, p.y)
-                }
+            val phase = phaseFor(lane)
+            val color = signalColorFor(lane)
+            val path = lanePath(lane)
+            if (lane.laneType == LaneType.Crosswalk) {
+                drawPath(
+                    path = path,
+                    color = Color.White.copy(alpha = 0.9f),
+                    style = Stroke(width = 9.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round),
+                )
             }
             drawPath(
                 path = path,
@@ -801,17 +838,30 @@ private fun IntersectionRenderer(
                     },
                     cap = StrokeCap.Round,
                     join = StrokeJoin.Round,
+                    pathEffect = if (lane.laneType == LaneType.Crosswalk) crosswalkDash else null,
                 ),
             )
-            lane.nodes.filter { it.stopLine }.forEach { node ->
-                drawCircle(Color.White, radius = 5.dp.toPx(), center = point(node.xCm, node.yCm))
-                drawCircle(Color(0xFF111827), radius = 3.dp.toPx(), center = point(node.xCm, node.yCm))
-            }
-            val signalGroup = lane.connections.firstNotNullOfOrNull { it.signalGroup }
-            if (signalGroup != null && phase != null) {
-                val anchor = point(lane.nodes.first().xCm, lane.nodes.first().yCm)
-                drawCircle(Color.White, radius = 8.dp.toPx(), center = anchor)
-                drawCircle(phase.phaseColor(), radius = 5.dp.toPx(), center = anchor)
+        }
+        map.lanes.filter { it.laneType == LaneType.Crosswalk }.forEach { lane ->
+            lane.connections.forEach { connection ->
+                val connectedLane = lanesById[connection.laneId]
+                if (connectedLane?.laneType != LaneType.Crosswalk || lane.id > connectedLane.id) return@forEach
+                val (start, end) = closestEndpointPair(lane, connectedLane)
+                drawLine(
+                    color = Color.White.copy(alpha = 0.9f),
+                    start = start,
+                    end = end,
+                    strokeWidth = 9.dp.toPx(),
+                    cap = StrokeCap.Round,
+                )
+                drawLine(
+                    color = signalColorFor(lane, connection).copy(alpha = 0.92f),
+                    start = start,
+                    end = end,
+                    strokeWidth = 6.dp.toPx(),
+                    cap = StrokeCap.Round,
+                    pathEffect = crosswalkDash,
+                )
             }
         }
     }
