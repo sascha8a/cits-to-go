@@ -87,6 +87,18 @@ class MapSpatDecoderTest {
     }
 
     @Test
+    fun skipsSpatemMovementEventRegionalExtensions() {
+        val packet = syntheticSpatemWithMovementEventRegionalExtension()
+        val intersections = MapSpatDecoder.decodeSpat(packet, 1_000)
+
+        assertEquals(1, intersections.size)
+        val spat = intersections.first()
+        assertEquals(IntersectionKey(43, 1005), spat.key)
+        assertEquals(1, spat.movements.size)
+        assertEquals(MovementPhaseState.ProtectedAllowed, spat.movements.first().currentEvent?.state)
+    }
+
+    @Test
     fun mergesSplitMapemLaneSetsForSameIntersectionRevision() {
         val frames = pcapFrames("cits-1785487825313.pcap")
         val store = IntersectionStateStore()
@@ -174,4 +186,92 @@ class MapSpatDecoderTest {
             ((bytes[offset + 1].toInt() and 0xff) shl 8) or
             ((bytes[offset + 2].toInt() and 0xff) shl 16) or
             ((bytes[offset + 3].toInt() and 0xff) shl 24)
+
+    private fun syntheticSpatemWithMovementEventRegionalExtension(): ItsPacket {
+        val writer = TestBitWriter()
+        writer.bit(false) // SPAT extension marker.
+        writer.bit(false) // timeStamp absent.
+        writer.bit(false) // name absent.
+        writer.bit(false) // regional absent.
+        writer.constrained(1, 1, 32) // intersections.
+
+        writer.bit(false) // IntersectionState extension marker.
+        writer.bit(false) // name absent.
+        writer.bit(false) // moy absent.
+        writer.bit(false) // timeStamp absent.
+        writer.bit(false) // enabledLanes absent.
+        writer.bit(false) // maneuverAssistList absent.
+        writer.bit(false) // regional absent.
+        writer.bit(true) // IntersectionReferenceID region present.
+        writer.constrained(43, 0, 65535)
+        writer.constrained(1005, 0, 65535)
+        writer.constrained(1, 0, 127) // revision.
+        writer.bits(0, 16) // IntersectionStatusObject.
+        writer.constrained(1, 1, 255) // states.
+
+        writer.bit(false) // MovementState extension marker.
+        writer.bit(false) // movementName absent.
+        writer.bit(false) // maneuverAssistList absent.
+        writer.bit(false) // regional absent.
+        writer.constrained(1, 0, 255) // signalGroup.
+        writer.constrained(1, 1, 16) // state-time-speed.
+
+        writer.bit(false) // MovementEvent extension marker.
+        writer.bit(false) // timing absent.
+        writer.bit(false) // speeds absent.
+        writer.bit(true) // regional present.
+        writer.bits(MovementPhaseState.ProtectedAllowed.code.toLong(), 4)
+        writer.constrained(1, 1, 4) // regional SEQUENCE OF length.
+        writer.constrained(1, 0, 255) // regExtId.
+        writer.bit(false)
+        writer.bits(1, 7) // one-octet open type.
+        writer.bits(0xaa, 8) // opaque regExtValue.
+
+        val body = writer.toByteArray()
+        return ItsPacket(
+            destinationPort = MapSpatDecoder.BTP_PORT_SPATEM,
+            protocolVersion = 2,
+            messageId = MapSpatDecoder.MESSAGE_ID_SPATEM,
+            stationId = 1005,
+            bodyOffset = 6,
+            payload = byteArrayOf(2, MapSpatDecoder.MESSAGE_ID_SPATEM.toByte(), 0, 0, 3, 0xed.toByte()) + body,
+            sourceLatitude = null,
+            sourceLongitude = null,
+        )
+    }
+
+    private class TestBitWriter {
+        private var buffer = ByteArray(32)
+        private var bitCount = 0
+
+        fun bit(value: Boolean) {
+            bits(if (value) 1 else 0, 1)
+        }
+
+        fun constrained(value: Long, minimum: Long, maximum: Long) {
+            val range = maximum - minimum + 1
+            val width = if (range <= 1) 0 else 64 - java.lang.Long.numberOfLeadingZeros(range - 1)
+            bits(value - minimum, width)
+        }
+
+        fun bits(value: Long, width: Int) {
+            require(width in 0..64)
+            ensure(bitCount + width)
+            for (shift in width - 1 downTo 0) {
+                if (((value ushr shift) and 1L) != 0L) {
+                    val byteIndex = bitCount / 8
+                    val bitIndex = 7 - bitCount % 8
+                    buffer[byteIndex] = (buffer[byteIndex].toInt() or (1 shl bitIndex)).toByte()
+                }
+                bitCount += 1
+            }
+        }
+
+        fun toByteArray(): ByteArray = buffer.copyOf((bitCount + 7) / 8)
+
+        private fun ensure(bits: Int) {
+            val bytes = (bits + 7) / 8
+            if (bytes > buffer.size) buffer = buffer.copyOf(maxOf(bytes, buffer.size * 2))
+        }
+    }
 }

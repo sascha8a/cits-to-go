@@ -83,7 +83,7 @@ object MapSpatDecoder {
         if (hasTimeStamp) reader.constrained(0, 527040)
         if (hasName) reader.ia5String(1, 63)
         val intersections = List(reader.sequenceLength(1, 32)) { reader.intersectionState(receivedAtMs) }
-        if (hasRegional) throw IntersectionDecodeException("SPAT regional extensions are not supported")
+        if (hasRegional) reader.regionalExtensions()
         return intersections
     }
 
@@ -105,7 +105,7 @@ object MapSpatDecoder {
         if (hasEnabledLanes) repeat(sequenceLength(1, 16)) { constrained(0, 255) }
         val movements = List(sequenceLength(1, 255)) { movementState() }
         if (hasManeuverAssist) repeat(sequenceLength(1, 16)) { connectionManeuverAssist() }
-        if (hasRegional) throw IntersectionDecodeException("IntersectionState regional extensions are not supported")
+        if (hasRegional) regionalExtensions()
         return SpatIntersection(key, revision, moy, timestamp, movements, receivedAtMs)
     }
 
@@ -123,7 +123,7 @@ object MapSpatDecoder {
         } else {
             emptyList()
         }
-        if (hasRegional) throw IntersectionDecodeException("MovementState regional extensions are not supported")
+        if (hasRegional) regionalExtensions()
         return SignalMovement(signalGroup, events, connectionIds)
     }
 
@@ -136,7 +136,7 @@ object MapSpatDecoder {
         val state = MovementPhaseState.fromCode(readRootEnum(this, 10))
         val timing = if (hasTiming) timeChangeDetails() else null
         if (hasSpeeds) throw IntersectionDecodeException("MovementEvent advisory speeds are not supported")
-        if (hasRegional) throw IntersectionDecodeException("MovementEvent regional extensions are not supported")
+        if (hasRegional) regionalExtensions()
         return SignalEvent(
             state = state,
             minEndTime = timing?.minEndTime,
@@ -368,6 +368,30 @@ object MapSpatDecoder {
     private fun UperBitReader.regulatorySpeedLimit() {
         readExtensibleEnum(this, 13)
         constrained(0, 8191)
+    }
+
+    private fun UperBitReader.regionalExtensions() {
+        repeat(sequenceLength(1, 4)) {
+            constrained(0, 255)
+            skipOpenType()
+        }
+    }
+
+    private fun UperBitReader.skipOpenType() {
+        var remainingOctets = openTypeLength()
+        while (remainingOctets >= 16_384) {
+            skipOctets(16_384)
+            remainingOctets -= 16_384
+        }
+        skipOctets(remainingOctets)
+    }
+
+    private fun UperBitReader.openTypeLength(): Int {
+        if (!bit()) return bits(7).toInt()
+        if (!bit()) return bits(14).toInt()
+        val fragments = bits(6).toInt()
+        if (fragments in 1..4) return fragments * 16_384 + openTypeLength()
+        throw IntersectionDecodeException("Unsupported open type length determinant")
     }
 
     private fun UperBitReader.ia5String(minimum: Int, maximum: Int): String {

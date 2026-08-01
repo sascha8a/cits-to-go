@@ -43,6 +43,10 @@ internal class UperBitReader(private val bytes: ByteArray, byteOffset: Int = 0) 
             skipBits(octets * 8)
         }
     }
+
+    fun skipOctets(octets: Int) {
+        skipBits(octets * 8)
+    }
 }
 
 class IntersectionDecodeException(message: String) : Exception(message)
