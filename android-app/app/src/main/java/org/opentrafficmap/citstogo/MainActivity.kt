@@ -11,9 +11,13 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
 import java.io.Serializable
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -102,12 +106,15 @@ import org.opentrafficmap.citstogo.intersection.SignalEvent
 import org.opentrafficmap.citstogo.intersection.SpatIntersection
 import java.security.SecureRandom
 import java.util.Locale
+import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.hypot
 import kotlin.math.roundToLong
+import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {
     private lateinit var usbManager: UsbManager
+    private lateinit var locationManager: LocationManager
     private var startAfterPermission: UsbDevice? = null
 
     private val devices = mutableStateListOf<UsbDevice>()
@@ -120,9 +127,16 @@ class MainActivity : ComponentActivity() {
     private var logLine by mutableStateOf("")
     private var intersectionSnapshot by mutableStateOf<IntersectionSnapshot?>(null)
     private var intersectionSnapshots by mutableStateOf<List<IntersectionSnapshot>>(emptyList())
+    private var currentPosition by mutableStateOf<DevicePosition?>(null)
     private var camStationType by mutableStateOf(StationType.PEDESTRIAN)
     private var camIntervalMs by mutableStateOf(CitsBridgeService.DEFAULT_CAM_INTERVAL_MS.toString())
     private var enableCamAfterPermission = false
+    private var wantsIntersectionLocation = false
+    private var intersectionLocationActive = false
+
+    private val intersectionLocationListener = LocationListener { location ->
+        updateCurrentPosition(location)
+    }
 
     private val usbPermissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -181,6 +195,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         usbManager = getSystemService(USB_SERVICE) as UsbManager
+        locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
         val prefs = getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE)
         mqttUri = prefs.getString(CitsBridgeService.PREF_MQTT_URI, CitsBridgeService.DEFAULT_MQTT_URI).orEmpty()
         nodeId = prefs.getString(CitsBridgeService.PREF_NODE_ID, null) ?: createAndStoreNodeId()
@@ -228,6 +243,7 @@ class MainActivity : ComponentActivity() {
                     status = status,
                     logLine = logLine,
                     intersectionSnapshots = intersectionSnapshots.ifEmpty { listOfNotNull(intersectionSnapshot) },
+                    currentPosition = currentPosition,
                     onRefresh = ::refreshDevices,
                     onStart = ::requestUsbThenStart,
                     onStop = ::stopBridge,
@@ -238,6 +254,7 @@ class MainActivity : ComponentActivity() {
                     camIntervalMs = camIntervalMs,
                     onCamIntervalChange = { camIntervalMs = it },
                     onConfigureCam = ::configureCam,
+                    onIntersectionLocationActiveChange = ::setIntersectionLocationActive,
                     onSaveSettings = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds ->
                         mqttUri = updatedMqttUri
                         nodeId = updatedNodeId
@@ -258,9 +275,18 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshDevices()
+        if (wantsIntersectionLocation) {
+            startOrRequestIntersectionLocation()
+        }
+    }
+
+    override fun onPause() {
+        stopIntersectionLocationUpdates()
+        super.onPause()
     }
 
     override fun onDestroy() {
+        stopIntersectionLocationUpdates()
         runCatching { unregisterReceiver(usbPermissionReceiver) }
         runCatching { unregisterReceiver(statusReceiver) }
         super.onDestroy()
@@ -278,6 +304,13 @@ class MainActivity : ComponentActivity() {
                 configureCam(true)
             } else {
                 logLine = "Location permission denied; CAM remains off"
+            }
+        }
+        if (requestCode == REQUEST_LOCATION && wantsIntersectionLocation) {
+            if (grantResults.any { it == PackageManager.PERMISSION_GRANTED }) {
+                startIntersectionLocationUpdates()
+            } else {
+                logLine = "Location permission denied; position marker disabled"
             }
         }
     }
@@ -377,6 +410,78 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun setIntersectionLocationActive(active: Boolean) {
+        wantsIntersectionLocation = active
+        if (active) {
+            startOrRequestIntersectionLocation()
+        } else {
+            stopIntersectionLocationUpdates()
+        }
+    }
+
+    private fun startOrRequestIntersectionLocation() {
+        if (!hasLocationPermission()) {
+            requestPermissions(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                ),
+                REQUEST_LOCATION,
+            )
+            return
+        }
+        startIntersectionLocationUpdates()
+    }
+
+    private fun startIntersectionLocationUpdates() {
+        if (!hasLocationPermission() || intersectionLocationActive) return
+        var requestedProvider = false
+        runCatching {
+            listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).forEach { provider ->
+                runCatching { locationManager.getLastKnownLocation(provider) }
+                    .getOrNull()
+                    ?.let { updateCurrentPosition(it) }
+                if (locationManager.isProviderEnabled(provider)) {
+                    locationManager.requestLocationUpdates(
+                        provider,
+                        INTERSECTION_LOCATION_MIN_TIME_MS,
+                        0f,
+                        intersectionLocationListener,
+                        Looper.getMainLooper(),
+                    )
+                    requestedProvider = true
+                }
+            }
+        }.onFailure {
+            logLine = "Location unavailable: ${it.message}"
+            return
+        }
+        intersectionLocationActive = requestedProvider
+        if (!requestedProvider) {
+            logLine = "Location provider disabled; position marker unavailable"
+        }
+    }
+
+    private fun stopIntersectionLocationUpdates() {
+        if (!::locationManager.isInitialized || !intersectionLocationActive) return
+        runCatching { locationManager.removeUpdates(intersectionLocationListener) }
+        intersectionLocationActive = false
+    }
+
+    private fun updateCurrentPosition(location: Location) {
+        val previous = currentPosition
+        if (previous == null ||
+            location.time >= previous.timeMs ||
+            (location.hasAccuracy() && (previous.accuracyM == null || location.accuracy < previous.accuracyM))
+        ) {
+            currentPosition = DevicePosition.from(location)
+        }
+    }
+
+    private fun hasLocationPermission(): Boolean =
+        checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
     private fun sendServiceIntent(action: String, configure: Intent.() -> Unit = {}) {
         val intent = Intent(this, CitsBridgeService::class.java).setAction(action).apply(configure)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && action == CitsBridgeService.ACTION_START) {
@@ -458,6 +563,23 @@ class MainActivity : ComponentActivity() {
     companion object {
         private const val REQUEST_CREATE_PCAP = 1001
         private const val REQUEST_LOCATION = 1002
+        private const val INTERSECTION_LOCATION_MIN_TIME_MS = 500L
+    }
+}
+
+private data class DevicePosition(
+    val latitudeE7: Int,
+    val longitudeE7: Int,
+    val accuracyM: Float?,
+    val timeMs: Long,
+) {
+    companion object {
+        fun from(location: Location): DevicePosition = DevicePosition(
+            latitudeE7 = (location.latitude * 10_000_000.0).toInt(),
+            longitudeE7 = (location.longitude * 10_000_000.0).toInt(),
+            accuracyM = location.takeIf { it.hasAccuracy() }?.accuracy,
+            timeMs = location.time,
+        )
     }
 }
 
@@ -500,6 +622,7 @@ private fun CitsApp(
     status: BridgeStatus,
     logLine: String,
     intersectionSnapshots: List<IntersectionSnapshot>,
+    currentPosition: DevicePosition?,
     onRefresh: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -510,11 +633,15 @@ private fun CitsApp(
     camIntervalMs: String,
     onCamIntervalChange: (String) -> Unit,
     onConfigureCam: (Boolean) -> Unit,
+    onIntersectionLocationActiveChange: (Boolean) -> Unit,
     onSaveSettings: (String, String, String, String) -> Unit,
 ) {
     var selectedPage by rememberSaveable { mutableStateOf(AppPage.Home) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    LaunchedEffect(selectedPage) {
+        onIntersectionLocationActiveChange(selectedPage == AppPage.IntersectionView)
+    }
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         ModalNavigationDrawer(
@@ -596,6 +723,7 @@ private fun CitsApp(
                     AppPage.IntersectionView -> IntersectionViewPage(
                         snapshots = intersectionSnapshots,
                         status = status,
+                        currentPosition = currentPosition,
                         modifier = Modifier.weight(1f),
                     )
                     AppPage.Settings -> SettingsPage(
@@ -627,6 +755,11 @@ private enum class AppPage(val title: String) {
     CamBroadcast("CAM Broadcast"),
     IntersectionView("Intersection View"),
     Settings("Settings"),
+}
+
+private enum class IntersectionSortMode(val label: String) {
+    FirstReceived("first received"),
+    Distance("distance"),
 }
 
 @Composable
@@ -745,34 +878,74 @@ private fun CamPanel(
 private fun IntersectionViewPage(
     snapshots: List<IntersectionSnapshot>,
     status: BridgeStatus,
+    currentPosition: DevicePosition?,
     modifier: Modifier = Modifier,
 ) {
+    var sortMode by rememberSaveable { mutableStateOf(IntersectionSortMode.FirstReceived) }
     if (snapshots.isEmpty()) {
         Column(
             modifier = modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState()),
         ) {
-            IntersectionPageContent(null, status)
+            IntersectionPageContent(null, status, currentPosition)
         }
         return
     }
 
-    val pagerState = rememberPagerState(pageCount = { snapshots.size })
-    LaunchedEffect(snapshots.size) {
-        if (pagerState.currentPage >= snapshots.size) {
-            pagerState.scrollToPage(snapshots.lastIndex)
+    val sortedSnapshots = remember(snapshots, sortMode, currentPosition) {
+        when (sortMode) {
+            IntersectionSortMode.FirstReceived -> snapshots.sortedWith(
+                compareBy<IntersectionSnapshot> { it.firstReceivedAtMs }
+                    .thenBy { it.updatedAtMs },
+            )
+            IntersectionSortMode.Distance -> snapshots.sortedWith(
+                compareBy<IntersectionSnapshot> {
+                    it.distanceTo(currentPosition) ?: Double.POSITIVE_INFINITY
+                }.thenBy { it.firstReceivedAtMs },
+            )
         }
+    }
+    val pagerState = rememberPagerState(pageCount = { sortedSnapshots.size })
+    LaunchedEffect(snapshots.size) {
+        if (pagerState.currentPage >= sortedSnapshots.size) {
+            pagerState.scrollToPage(sortedSnapshots.lastIndex)
+        }
+    }
+    LaunchedEffect(sortMode) {
+        pagerState.scrollToPage(0)
     }
 
     Column(
         modifier = modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        if (snapshots.size > 1) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
-                "${pagerState.currentPage + 1} / ${snapshots.size}",
-                modifier = Modifier.fillMaxWidth(),
+                if (sortedSnapshots.size > 1) "${pagerState.currentPage + 1} / ${sortedSnapshots.size}" else "1 / 1",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+            Button(
+                onClick = {
+                    sortMode = when (sortMode) {
+                        IntersectionSortMode.FirstReceived -> IntersectionSortMode.Distance
+                        IntersectionSortMode.Distance -> IntersectionSortMode.FirstReceived
+                    }
+                },
+                shape = RoundedCornerShape(8.dp),
+            ) {
+                Text("Sort: ${sortMode.label}")
+            }
+        }
+        if (sortMode == IntersectionSortMode.Distance && currentPosition == null) {
+            Text(
+                "Waiting for location fix; showing first-received order.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.secondary,
             )
@@ -789,7 +962,7 @@ private fun IntersectionViewPage(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 2.dp),
             ) {
-                IntersectionPageContent(snapshots[page], status)
+                IntersectionPageContent(sortedSnapshots[page], status, currentPosition)
             }
         }
     }
@@ -799,6 +972,7 @@ private fun IntersectionViewPage(
 private fun IntersectionPageContent(
     snapshot: IntersectionSnapshot?,
     status: BridgeStatus,
+    currentPosition: DevicePosition?,
 ) {
     val map = snapshot?.map
     val spat = snapshot?.spat
@@ -831,7 +1005,7 @@ private fun IntersectionPageContent(
         if (map == null) {
             Text("SPATEM received; waiting for matching MAPEM geometry.", color = MaterialTheme.colorScheme.secondary)
         } else {
-            IntersectionRenderer(map, spat)
+            IntersectionRenderer(map, spat, currentPosition)
             Text(
                 "${map.lanes.size} lanes • ${map.lanes.count { it.connections.isNotEmpty() }} signalized lane links",
                 style = MaterialTheme.typography.bodySmall,
@@ -851,8 +1025,24 @@ private fun formatIntersectionAge(updatedAtMs: Long, nowMs: Long = System.curren
     }
 }
 
+private fun IntersectionSnapshot.distanceTo(position: DevicePosition?): Double? {
+    val map = map ?: return null
+    val devicePosition = position ?: return null
+    return map.distanceTo(devicePosition.latitudeE7, devicePosition.longitudeE7)
+}
+
+private fun DevicePosition.toIntersectionOffsetCm(map: MapIntersection): Offset {
+    val latitudeScaleCm = E7_DEGREE_TO_CM
+    val longitudeScaleCm = E7_DEGREE_TO_CM * cos(Math.toRadians(map.latitude / 10_000_000.0)).toFloat()
+    return Offset(
+        x = (longitudeE7 - map.longitude) * longitudeScaleCm,
+        y = (latitudeE7 - map.latitude) * latitudeScaleCm,
+    )
+}
+
 private const val INTERSECTION_MAX_ZOOM = 6f
 private const val LANE_TIMING_ZOOM_THRESHOLD = 2.2f
+private const val E7_DEGREE_TO_CM = 1.1132f
 private const val TIME_MARK_UNKNOWN = 36_001
 private const val TENTHS_PER_HOUR = 36_000
 private const val TENTHS_PER_MINUTE = 600
@@ -877,6 +1067,7 @@ private fun clampIntersectionPan(
 private fun IntersectionRenderer(
     map: MapIntersection,
     spat: SpatIntersection?,
+    currentPosition: DevicePosition?,
 ) {
     val signalGroups = spat?.movementsBySignalGroup.orEmpty()
     val canvasBackground = Color(0xFFF8FAFC)
@@ -1005,7 +1196,7 @@ private fun IntersectionRenderer(
         val scale = minOf((size.width - padding * 2) / width, (size.height - padding * 2) / height)
         val panOffset = Offset(panX, panY)
 
-        fun point(x: Int, y: Int): Offset {
+        fun point(x: Float, y: Float): Offset {
             val base = Offset(
                 x = padding + (x - minX) * scale,
                 y = size.height - padding - (y - minY) * scale,
@@ -1014,6 +1205,55 @@ private fun IntersectionRenderer(
                 x = base.x * zoomScale + panOffset.x,
                 y = base.y * zoomScale + panOffset.y,
             )
+        }
+
+        fun point(x: Int, y: Int): Offset = point(x.toFloat(), y.toFloat())
+
+        fun drawLocationDot(center: Offset, accuracyM: Float?) {
+            accuracyM?.let { accuracy ->
+                val accuracyRadius = (accuracy * 100f * scale * zoomScale)
+                    .coerceIn(10.dp.toPx(), 80.dp.toPx())
+                drawCircle(
+                    color = Color(0xFF2563EB).copy(alpha = 0.14f),
+                    radius = accuracyRadius,
+                    center = center,
+                )
+                drawCircle(
+                    color = Color(0xFF2563EB).copy(alpha = 0.34f),
+                    radius = accuracyRadius,
+                    center = center,
+                    style = Stroke(width = 1.dp.toPx()),
+                )
+            }
+            drawCircle(Color.White, radius = 8.dp.toPx(), center = center)
+            drawCircle(Color(0xFF2563EB), radius = 6.dp.toPx(), center = center)
+            drawCircle(Color.White, radius = 2.dp.toPx(), center = center)
+        }
+
+        fun drawLocationEdgeArrow(direction: Offset) {
+            val margin = 16.dp.toPx()
+            val halfWidth = (size.width / 2f - margin).coerceAtLeast(1f)
+            val halfHeight = (size.height / 2f - margin).coerceAtLeast(1f)
+            val vectorLength = sqrt(direction.x * direction.x + direction.y * direction.y).coerceAtLeast(0.001f)
+            val unit = Offset(direction.x / vectorLength, direction.y / vectorLength)
+            val edgeScale = minOf(
+                halfWidth / kotlin.math.abs(unit.x).coerceAtLeast(0.001f),
+                halfHeight / kotlin.math.abs(unit.y).coerceAtLeast(0.001f),
+            )
+            val tip = Offset(size.width / 2f, size.height / 2f) + unit * edgeScale
+            val markerLength = 22.dp.toPx()
+            val markerHalfWidth = 9.dp.toPx()
+            val base = tip - unit * markerLength
+            val normal = Offset(-unit.y, unit.x)
+            val arrow = Path().apply {
+                moveTo(tip.x, tip.y)
+                lineTo(base.x + normal.x * markerHalfWidth, base.y + normal.y * markerHalfWidth)
+                lineTo(base.x - normal.x * markerHalfWidth, base.y - normal.y * markerHalfWidth)
+                close()
+            }
+            drawCircle(Color.White.copy(alpha = 0.92f), radius = 17.dp.toPx(), center = tip - unit * 9.dp.toPx())
+            drawPath(arrow, Color.White, style = Stroke(width = 5.dp.toPx(), join = StrokeJoin.Round))
+            drawPath(arrow, Color(0xFF2563EB))
         }
 
         val lanesById = map.lanes.associateBy { it.id }
@@ -1240,6 +1480,26 @@ private fun IntersectionRenderer(
                     topLeft.x + horizontalPadding,
                     topLeft.y + verticalPadding + textPaint.textSize * 0.82f,
                     textPaint,
+                )
+            }
+        }
+
+        currentPosition?.let { position ->
+            val location = position.toIntersectionOffsetCm(map)
+            val laneWidthPadding = ((map.laneWidthCm ?: 300) / 2f).coerceAtLeast(150f)
+            val withinIntersection =
+                location.x in (minX - laneWidthPadding)..(maxX + laneWidthPadding) &&
+                    location.y in (minY - laneWidthPadding)..(maxY + laneWidthPadding)
+            if (withinIntersection) {
+                drawLocationDot(point(location.x, location.y), position.accuracyM)
+            } else {
+                val centerX = (minX + maxX) / 2f
+                val centerY = (minY + maxY) / 2f
+                drawLocationEdgeArrow(
+                    Offset(
+                        x = location.x - centerX,
+                        y = centerY - location.y,
+                    ),
                 )
             }
         }

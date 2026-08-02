@@ -35,6 +35,7 @@ class IntersectionStateStore {
                 spat = spats[it],
                 source = if (location == null) SelectionSource.LatestObserved else SelectionSource.DeviceLocation,
                 updatedAtMs = maxOf(maps[it]?.receivedAtMs ?: 0L, spats[it]?.receivedAtMs ?: 0L),
+                firstReceivedAtMs = firstReceivedAtMs[it] ?: maxOf(maps[it]?.receivedAtMs ?: 0L, spats[it]?.receivedAtMs ?: 0L),
             )
         }
     }
@@ -59,10 +60,11 @@ class IntersectionStateStore {
                 spat = spats[key],
                 source = SelectionSource.LatestObserved,
                 updatedAtMs = maxOf(maps[key]?.receivedAtMs ?: 0L, spats[key]?.receivedAtMs ?: 0L),
+                firstReceivedAtMs = firstReceivedAtMs[key] ?: maxOf(maps[key]?.receivedAtMs ?: 0L, spats[key]?.receivedAtMs ?: 0L),
             )
         }
         return snapshots.sortedBy { snapshot ->
-            firstReceivedAtMs[snapshot.map?.key ?: snapshot.spat?.key] ?: snapshot.updatedAtMs
+            snapshot.firstReceivedAtMs
         }
     }
 

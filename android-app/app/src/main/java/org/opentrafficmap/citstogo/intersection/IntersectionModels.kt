@@ -8,6 +8,7 @@ data class IntersectionSnapshot(
     val spat: SpatIntersection?,
     val source: SelectionSource,
     val updatedAtMs: Long,
+    val firstReceivedAtMs: Long = updatedAtMs,
 ) : Serializable {
     val available: Boolean get() = map != null || spat != null
 }
