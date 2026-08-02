@@ -237,6 +237,7 @@ class CitsBridgeService : Service() {
                 StationType.selectableFromCode(intent.getIntExtra(EXTRA_CAM_STATION_TYPE, StationType.PEDESTRIAN.code)),
                 intent.getIntExtra(EXTRA_CAM_INTERVAL_MS, DEFAULT_CAM_INTERVAL_MS),
             )
+            ACTION_REVOKE_TX_APPROVAL -> revokeTxApproval()
             else -> publishStatus(null)
         }
         return START_STICKY
@@ -404,6 +405,12 @@ class CitsBridgeService : Service() {
     }
 
     private fun queueTransmit(packet: ByteArray, isCam: Boolean): Boolean {
+        if (!hasTxApproval()) {
+            txFailed += 1
+            status = status.copy(lastError = "TX approval is required before transmitting")
+            publishStatus(status.lastError)
+            return false
+        }
         if (packet.isEmpty() || packet.size > CtgFrameEncoder.MAX_PACKET_BYTES) {
             txFailed += 1
             status = status.copy(lastError = "TX packet size ${packet.size} is outside 1..${CtgFrameEncoder.MAX_PACKET_BYTES}")
@@ -450,6 +457,15 @@ class CitsBridgeService : Service() {
     }
 
     private fun configureCam(enabled: Boolean, stationType: StationType, requestedIntervalMs: Int) {
+        if (enabled && !hasTxApproval()) {
+            camEnabled = false
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                .putBoolean(PREF_CAM_ENABLED, false)
+                .apply()
+            status = status.copy(lastError = "TX approval is required before CAM broadcast")
+            publishStatus(status.lastError)
+            return
+        }
         camStationType = if (stationType in StationType.selectable) stationType else StationType.PEDESTRIAN
         camIntervalMs = requestedIntervalMs.coerceIn(MIN_CAM_INTERVAL_MS, MAX_CAM_INTERVAL_MS)
         camEnabled = enabled
@@ -474,6 +490,23 @@ class CitsBridgeService : Service() {
             stopLocationUpdates()
         }
         publishStatus(if (camEnabled) "CAM broadcast enabled" else "CAM broadcast disabled")
+    }
+
+    private fun revokeTxApproval() {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(PREF_TX_APPROVED, false)
+            .putBoolean(PREF_CAM_ENABLED, false)
+            .apply()
+        handler.removeCallbacks(camBroadcaster)
+        if (camEnabled) stopLocationUpdates()
+        camEnabled = false
+        txQueue.clear()
+        if (pendingTx.isNotEmpty()) {
+            txFailed += pendingTx.size
+            pendingTx.clear()
+        }
+        status = status.copy(lastTxSummary = "", lastError = "")
+        publishStatus("TX approval revoked")
     }
 
     private fun startLocationUpdates(): Boolean {
@@ -1021,6 +1054,9 @@ class CitsBridgeService : Service() {
         if (spool.pendingCount() > 0L) updateQueueDrainSchedule()
     }
 
+    private fun hasTxApproval(): Boolean =
+        getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_TX_APPROVED, false)
+
     private fun registerReceiverCompat(receiver: BroadcastReceiver, filter: IntentFilter) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(receiver, filter, RECEIVER_NOT_EXPORTED)
@@ -1037,6 +1073,7 @@ class CitsBridgeService : Service() {
         const val ACTION_STOP_PCAP = "org.opentrafficmap.citstogo.action.STOP_PCAP"
         const val ACTION_REQUEST_STATUS = "org.opentrafficmap.citstogo.action.REQUEST_STATUS"
         const val ACTION_CONFIGURE_CAM = "org.opentrafficmap.citstogo.action.CONFIGURE_CAM"
+        const val ACTION_REVOKE_TX_APPROVAL = "org.opentrafficmap.citstogo.action.REVOKE_TX_APPROVAL"
         const val ACTION_STATUS = "org.opentrafficmap.citstogo.action.STATUS"
         const val ACTION_USB_PERMISSION = "org.opentrafficmap.citstogo.action.USB_PERMISSION"
 
@@ -1083,6 +1120,7 @@ class CitsBridgeService : Service() {
         const val PREF_CAM_INTERVAL_MS = "cam_interval_ms"
         const val PREF_CAM_STATION_ID = "cam_station_id"
         const val PREF_CAM_MAC = "cam_mac"
+        const val PREF_TX_APPROVED = "tx_approved"
         const val DEFAULT_MQTT_URI = "mqtts://cits1.opentrafficmap.org"
         const val DEFAULT_MQTT_MAX_QUEUE_LENGTH = 100
         const val DEFAULT_MQTT_MAX_QUEUE_AGE_MS = 200L

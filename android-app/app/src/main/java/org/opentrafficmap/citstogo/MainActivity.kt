@@ -9,6 +9,10 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Paint
 import android.graphics.Typeface
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.location.Location
@@ -18,6 +22,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Looper
+import android.os.SystemClock
 import java.io.Serializable
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -29,6 +34,7 @@ import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -110,11 +116,14 @@ import kotlin.math.cos
 import kotlin.math.exp
 import kotlin.math.hypot
 import kotlin.math.roundToLong
+import kotlin.math.sin
 import kotlin.math.sqrt
 
-class MainActivity : ComponentActivity() {
+class MainActivity : ComponentActivity(), SensorEventListener {
     private lateinit var usbManager: UsbManager
     private lateinit var locationManager: LocationManager
+    private lateinit var sensorManager: SensorManager
+    private var accelerometer: Sensor? = null
     private var startAfterPermission: UsbDevice? = null
 
     private val devices = mutableStateListOf<UsbDevice>()
@@ -130,9 +139,12 @@ class MainActivity : ComponentActivity() {
     private var currentPosition by mutableStateOf<DevicePosition?>(null)
     private var camStationType by mutableStateOf(StationType.PEDESTRIAN)
     private var camIntervalMs by mutableStateOf(CitsBridgeService.DEFAULT_CAM_INTERVAL_MS.toString())
+    private var txApproved by mutableStateOf(false)
+    private var txApprovalPromptState by mutableStateOf(TxApprovalPromptState.Hidden)
     private var enableCamAfterPermission = false
     private var wantsIntersectionLocation = false
     private var intersectionLocationActive = false
+    private var lastShakeElapsedMs = 0L
 
     private val intersectionLocationListener = LocationListener { location ->
         updateCurrentPosition(location)
@@ -196,7 +208,10 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         usbManager = getSystemService(USB_SERVICE) as UsbManager
         locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         val prefs = getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE)
+        txApproved = prefs.getBoolean(CitsBridgeService.PREF_TX_APPROVED, false)
         mqttUri = prefs.getString(CitsBridgeService.PREF_MQTT_URI, CitsBridgeService.DEFAULT_MQTT_URI).orEmpty()
         nodeId = prefs.getString(CitsBridgeService.PREF_NODE_ID, null) ?: createAndStoreNodeId()
         maxQueueLength = prefs.getInt(
@@ -254,6 +269,12 @@ class MainActivity : ComponentActivity() {
                     camIntervalMs = camIntervalMs,
                     onCamIntervalChange = { camIntervalMs = it },
                     onConfigureCam = ::configureCam,
+                    txApproved = txApproved,
+                    txApprovalPromptState = txApprovalPromptState,
+                    onGrantTxApproval = ::grantTxApproval,
+                    onDismissTxApproval = { txApprovalPromptState = TxApprovalPromptState.Hidden },
+                    onFinishTxApproval = { txApprovalPromptState = TxApprovalPromptState.Hidden },
+                    onRevokeTxApproval = ::revokeTxApproval,
                     onIntersectionLocationActiveChange = ::setIntersectionLocationActive,
                     onSaveSettings = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds ->
                         mqttUri = updatedMqttUri
@@ -275,12 +296,14 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         refreshDevices()
+        if (!txApproved) startTxShakeDetection()
         if (wantsIntersectionLocation) {
             startOrRequestIntersectionLocation()
         }
     }
 
     override fun onPause() {
+        stopTxShakeDetection()
         stopIntersectionLocationUpdates()
         super.onPause()
     }
@@ -291,6 +314,25 @@ class MainActivity : ComponentActivity() {
         runCatching { unregisterReceiver(statusReceiver) }
         super.onDestroy()
     }
+
+    override fun onSensorChanged(event: SensorEvent) {
+        if (txApproved ||
+            txApprovalPromptState != TxApprovalPromptState.Hidden ||
+            event.sensor.type != Sensor.TYPE_ACCELEROMETER
+        ) return
+        val x = event.values.getOrNull(0) ?: return
+        val y = event.values.getOrNull(1) ?: return
+        val z = event.values.getOrNull(2) ?: return
+        val gForce = sqrt((x * x + y * y + z * z).toDouble()).toFloat() / SensorManager.GRAVITY_EARTH
+        val now = SystemClock.elapsedRealtime()
+        if (gForce >= TX_SHAKE_THRESHOLD_G && now - lastShakeElapsedMs >= TX_SHAKE_COOLDOWN_MS) {
+            lastShakeElapsedMs = now
+            txApprovalPromptState = TxApprovalPromptState.Ready
+            logLine = "Shake detected; TX approval slider unlocked"
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
     override fun onRequestPermissionsResult(
         requestCode: Int,
@@ -385,6 +427,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun configureCam(enabled: Boolean) {
+        if (enabled && !txApproved) {
+            logLine = "TX approval is required before CAM broadcast"
+            return
+        }
         if (enabled &&
             checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
@@ -407,6 +453,43 @@ class MainActivity : ComponentActivity() {
             putExtra(CitsBridgeService.EXTRA_CAM_ENABLED, enabled)
             putExtra(CitsBridgeService.EXTRA_CAM_STATION_TYPE, camStationType.code)
             putExtra(CitsBridgeService.EXTRA_CAM_INTERVAL_MS, interval)
+        }
+    }
+
+    private fun grantTxApproval() {
+        txApproved = true
+        txApprovalPromptState = TxApprovalPromptState.Granting
+        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+            .putBoolean(CitsBridgeService.PREF_TX_APPROVED, true)
+            .apply()
+        stopTxShakeDetection()
+        logLine = "TX approval granted"
+    }
+
+    private fun revokeTxApproval() {
+        txApproved = false
+        txApprovalPromptState = TxApprovalPromptState.Hidden
+        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+            .putBoolean(CitsBridgeService.PREF_TX_APPROVED, false)
+            .apply()
+        if (status.running || status.camEnabled) {
+            sendServiceIntent(CitsBridgeService.ACTION_REVOKE_TX_APPROVAL)
+        }
+        startTxShakeDetection()
+        logLine = "TX approval revoked"
+    }
+
+    private fun startTxShakeDetection() {
+        val sensor = accelerometer ?: run {
+            logLine = "Accelerometer unavailable; TX approval cannot be granted on this device"
+            return
+        }
+        sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI)
+    }
+
+    private fun stopTxShakeDetection() {
+        if (::sensorManager.isInitialized) {
+            sensorManager.unregisterListener(this)
         }
     }
 
@@ -564,6 +647,8 @@ class MainActivity : ComponentActivity() {
         private const val REQUEST_CREATE_PCAP = 1001
         private const val REQUEST_LOCATION = 1002
         private const val INTERSECTION_LOCATION_MIN_TIME_MS = 500L
+        private const val TX_SHAKE_THRESHOLD_G = 2.7f
+        private const val TX_SHAKE_COOLDOWN_MS = 1_200L
     }
 }
 
@@ -633,121 +718,161 @@ private fun CitsApp(
     camIntervalMs: String,
     onCamIntervalChange: (String) -> Unit,
     onConfigureCam: (Boolean) -> Unit,
+    txApproved: Boolean,
+    txApprovalPromptState: TxApprovalPromptState,
+    onGrantTxApproval: () -> Unit,
+    onDismissTxApproval: () -> Unit,
+    onFinishTxApproval: () -> Unit,
+    onRevokeTxApproval: () -> Unit,
     onIntersectionLocationActiveChange: (Boolean) -> Unit,
     onSaveSettings: (String, String, String, String) -> Unit,
 ) {
     var selectedPage by rememberSaveable { mutableStateOf(AppPage.Home) }
+    var confettiRun by rememberSaveable { mutableStateOf(0) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    val visiblePages = remember(txApproved) {
+        AppPage.entries.filter { it.visibleWithTxApproval(txApproved) }
+    }
+    LaunchedEffect(txApproved) {
+        if (selectedPage !in visiblePages) selectedPage = AppPage.Home
+    }
     LaunchedEffect(selectedPage) {
         onIntersectionLocationActiveChange(selectedPage == AppPage.IntersectionView)
     }
+    LaunchedEffect(txApprovalPromptState) {
+        if (txApprovalPromptState != TxApprovalPromptState.Hidden) {
+            drawerState.close()
+        }
+        if (txApprovalPromptState == TxApprovalPromptState.Granting) {
+            delay(500L)
+            selectedPage = AppPage.Home
+            onFinishTxApproval()
+            confettiRun += 1
+        }
+    }
 
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        ModalNavigationDrawer(
-            drawerState = drawerState,
-            drawerContent = {
-                ModalDrawerSheet(
-                    drawerContainerColor = MaterialTheme.colorScheme.surface,
-                    drawerContentColor = MaterialTheme.colorScheme.onSurface,
-                ) {
-                    Text(
-                        "C-ITS to go",
-                        modifier = Modifier.padding(20.dp),
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary,
+        Box(Modifier.fillMaxSize()) {
+            ModalNavigationDrawer(
+                drawerState = drawerState,
+                drawerContent = {
+                    ModalDrawerSheet(
+                        drawerContainerColor = MaterialTheme.colorScheme.surface,
+                        drawerContentColor = MaterialTheme.colorScheme.onSurface,
+                    ) {
+                        Text(
+                            "C-ITS to go",
+                            modifier = Modifier.padding(20.dp),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        visiblePages.forEach { page ->
+                            NavigationDrawerItem(
+                                label = { Text(page.title) },
+                                selected = page == selectedPage,
+                                onClick = {
+                                    selectedPage = page
+                                    scope.launch { drawerState.close() }
+                                },
+                                modifier = Modifier.padding(horizontal = 12.dp),
+                                colors = NavigationDrawerItemDefaults.colors(
+                                    selectedContainerColor = Color(0xFFE0F2F1),
+                                    unselectedContainerColor = MaterialTheme.colorScheme.surface,
+                                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                                    unselectedTextColor = MaterialTheme.colorScheme.secondary,
+                                ),
+                            )
+                        }
+                    }
+                },
+            ) {
+                val mainScrollState = rememberScrollState()
+                val contentModifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .padding(20.dp)
+                    .then(
+                        if (selectedPage == AppPage.IntersectionView) {
+                            Modifier
+                        } else {
+                            Modifier.verticalScroll(mainScrollState)
+                        },
                     )
-                    AppPage.entries.forEach { page ->
-                        NavigationDrawerItem(
-                            label = { Text(page.title) },
-                            selected = page == selectedPage,
-                            onClick = {
-                                selectedPage = page
-                                scope.launch { drawerState.close() }
+                Column(
+                    modifier = contentModifier,
+                    verticalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    AppHeader(
+                        title = selectedPage.title,
+                        onOpenMenu = { scope.launch { drawerState.open() } },
+                    )
+                    when (selectedPage) {
+                        AppPage.Home -> HomePage(
+                            devices = devices,
+                            selectedDeviceName = selectedDeviceName,
+                            onSelectDevice = onSelectDevice,
+                            status = status,
+                            logLine = logLine,
+                            onRefresh = onRefresh,
+                            onStart = onStart,
+                            onStop = onStop,
+                            onStartPcap = onStartPcap,
+                            onStopPcap = onStopPcap,
+                        )
+                        AppPage.CamBroadcast -> CamBroadcastPage(
+                            status = status,
+                            logLine = logLine,
+                            stationType = camStationType,
+                            onStationTypeChange = onCamStationTypeChange,
+                            intervalMs = camIntervalMs,
+                            onIntervalChange = onCamIntervalChange,
+                            onConfigure = onConfigureCam,
+                        )
+                        AppPage.IntersectionView -> IntersectionViewPage(
+                            snapshots = intersectionSnapshots,
+                            status = status,
+                            currentPosition = currentPosition,
+                            modifier = Modifier.weight(1f),
+                        )
+                        AppPage.Settings -> SettingsPage(
+                            mqttUri = mqttUri,
+                            nodeId = nodeId,
+                            maxQueueLength = maxQueueLength,
+                            maxQueueAgeSeconds = maxQueueAgeSeconds,
+                            txApproved = txApproved,
+                            onRevokeTxApproval = onRevokeTxApproval,
+                            onSave = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds ->
+                                onMqttUriChange(updatedMqttUri)
+                                onNodeIdChange(updatedNodeId)
+                                onMaxQueueLengthChange(updatedMaxQueueLength)
+                                onMaxQueueAgeSecondsChange(updatedMaxQueueAgeSeconds)
+                                onSaveSettings(
+                                    updatedMqttUri,
+                                    updatedNodeId,
+                                    updatedMaxQueueLength,
+                                    updatedMaxQueueAgeSeconds,
+                                )
                             },
-                            modifier = Modifier.padding(horizontal = 12.dp),
-                            colors = NavigationDrawerItemDefaults.colors(
-                                selectedContainerColor = Color(0xFFE0F2F1),
-                                unselectedContainerColor = MaterialTheme.colorScheme.surface,
-                                selectedTextColor = MaterialTheme.colorScheme.primary,
-                                unselectedTextColor = MaterialTheme.colorScheme.secondary,
-                            ),
                         )
                     }
                 }
-            },
-        ) {
-            val mainScrollState = rememberScrollState()
-            val contentModifier = Modifier
-                .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.safeDrawing)
-                .padding(20.dp)
-                .then(
-                    if (selectedPage == AppPage.IntersectionView) {
-                        Modifier
-                    } else {
-                        Modifier.verticalScroll(mainScrollState)
-                    },
-                )
-            Column(
-                modifier = contentModifier,
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                AppHeader(
-                    title = selectedPage.title,
-                    onOpenMenu = { scope.launch { drawerState.open() } },
-                )
-                when (selectedPage) {
-                    AppPage.Home -> HomePage(
-                        devices = devices,
-                        selectedDeviceName = selectedDeviceName,
-                        onSelectDevice = onSelectDevice,
-                        status = status,
-                        logLine = logLine,
-                        onRefresh = onRefresh,
-                        onStart = onStart,
-                        onStop = onStop,
-                        onStartPcap = onStartPcap,
-                        onStopPcap = onStopPcap,
-                    )
-                    AppPage.CamBroadcast -> CamBroadcastPage(
-                        status = status,
-                        logLine = logLine,
-                        stationType = camStationType,
-                        onStationTypeChange = onCamStationTypeChange,
-                        intervalMs = camIntervalMs,
-                        onIntervalChange = onCamIntervalChange,
-                        onConfigure = onConfigureCam,
-                    )
-                    AppPage.IntersectionView -> IntersectionViewPage(
-                        snapshots = intersectionSnapshots,
-                        status = status,
-                        currentPosition = currentPosition,
-                        modifier = Modifier.weight(1f),
-                    )
-                    AppPage.Settings -> SettingsPage(
-                        mqttUri = mqttUri,
-                        nodeId = nodeId,
-                        maxQueueLength = maxQueueLength,
-                        maxQueueAgeSeconds = maxQueueAgeSeconds,
-                        onSave = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds ->
-                            onMqttUriChange(updatedMqttUri)
-                            onNodeIdChange(updatedNodeId)
-                            onMaxQueueLengthChange(updatedMaxQueueLength)
-                            onMaxQueueAgeSecondsChange(updatedMaxQueueAgeSeconds)
-                            onSaveSettings(
-                                updatedMqttUri,
-                                updatedNodeId,
-                                updatedMaxQueueLength,
-                                updatedMaxQueueAgeSeconds,
-                            )
-                        },
-                    )
-                }
             }
+            TxApprovalOverlay(
+                state = txApprovalPromptState,
+                onGrantApproval = onGrantTxApproval,
+                onDismiss = onDismissTxApproval,
+            )
+            ConfettiOverlay(run = confettiRun)
         }
     }
+}
+
+private enum class TxApprovalPromptState {
+    Hidden,
+    Ready,
+    Granting,
 }
 
 private enum class AppPage(val title: String) {
@@ -755,6 +880,12 @@ private enum class AppPage(val title: String) {
     CamBroadcast("CAM Broadcast"),
     IntersectionView("Intersection View"),
     Settings("Settings"),
+    ;
+
+    fun visibleWithTxApproval(txApproved: Boolean): Boolean = when (this) {
+        CamBroadcast -> txApproved
+        else -> true
+    }
 }
 
 private enum class IntersectionSortMode(val label: String) {
@@ -873,6 +1004,241 @@ private fun CamPanel(
         }
     }
 }
+
+@Composable
+private fun TxApprovalOverlay(
+    state: TxApprovalPromptState,
+    onGrantApproval: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    if (state == TxApprovalPromptState.Hidden) return
+    var sliderPosition by rememberSaveable(state) {
+        mutableStateOf(if (state == TxApprovalPromptState.Granting) 1f else 0f)
+    }
+    var submitted by rememberSaveable(state) { mutableStateOf(state == TxApprovalPromptState.Granting) }
+    val granting = state == TxApprovalPromptState.Granting
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0xFFEFF6F5))
+            .windowInsetsPadding(WindowInsets.safeDrawing)
+            .pointerInput(state) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Final)
+                        event.changes.forEach { it.consume() }
+                        if (event.changes.none { it.pressed }) break
+                    }
+                }
+            },
+    ) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .padding(20.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .background(Color.White, RoundedCornerShape(8.dp))
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text("TX approval", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "You are responsible for any regulatory matters when transmitting data. Consult local legislation before transmitting.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(0xFFB45309),
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    if (granting) {
+                        "TX approval granted. Returning home..."
+                    } else {
+                        "Pull the red handle fully from left to right to approve TX."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                TextButton(
+                    onClick = onDismiss,
+                    enabled = !granting,
+                ) {
+                    Text("Cancel")
+                }
+            }
+            TxApprovalSlider(
+                position = sliderPosition,
+                onPositionChange = {
+                    sliderPosition = it
+                    if (!submitted && it >= 0.995f) {
+                        submitted = true
+                        sliderPosition = 1f
+                        onGrantApproval()
+                    }
+                },
+                enabled = !granting,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun TxApprovalSlider(
+    position: Float,
+    onPositionChange: (Float) -> Unit,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    var sliderSize by remember { mutableStateOf(IntSize.Zero) }
+    val constrainedPosition = position.coerceIn(0f, 1f)
+    Canvas(
+        modifier = modifier
+            .height(96.dp)
+            .onSizeChanged { sliderSize = it }
+            .pointerInput(enabled, sliderSize.width) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    val width = sliderSize.width.toFloat()
+                    if (!enabled || width <= 0f) return@awaitEachGesture
+                    val thumbRadius = 30.dp.toPx()
+                    val startX = thumbRadius
+                    val endX = width - thumbRadius
+                    val thumbX = startX + (endX - startX) * position.coerceIn(0f, 1f)
+                    val hitSlop = 18.dp.toPx()
+                    if (kotlin.math.abs(down.position.x - thumbX) > thumbRadius + hitSlop) {
+                        return@awaitEachGesture
+                    }
+                    down.consume()
+                    val startPosition = position.coerceIn(0f, 1f)
+                    val downX = down.position.x
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        event.changes.forEach { it.consume() }
+                        val active = event.changes.firstOrNull { it.pressed }
+                        if (active == null) break
+                        val dragFraction = (active.position.x - downX) / (endX - startX)
+                        onPositionChange((startPosition + dragFraction).coerceIn(0f, 1f))
+                    }
+                }
+            },
+    ) {
+        val trackHeight = 66.dp.toPx()
+        val thumbRadius = 30.dp.toPx()
+        val centerY = size.height / 2f
+        val startX = thumbRadius
+        val endX = size.width - thumbRadius
+        val thumbX = startX + (endX - startX) * constrainedPosition
+        drawLine(
+            color = if (enabled) Color(0xFFFECACA) else Color(0xFFFEE2E2),
+            start = Offset(startX, centerY),
+            end = Offset(endX, centerY),
+            strokeWidth = trackHeight,
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = Color(0xFFB91C1C),
+            start = Offset(startX, centerY),
+            end = Offset(thumbX, centerY),
+            strokeWidth = trackHeight,
+            cap = StrokeCap.Round,
+        )
+        drawCircle(Color.White, radius = thumbRadius + 3.dp.toPx(), center = Offset(thumbX, centerY))
+        drawCircle(Color(0xFFB91C1C), radius = thumbRadius, center = Offset(thumbX, centerY))
+        val arrowLength = 22.dp.toPx()
+        val arrowHead = 8.dp.toPx()
+        val arrowStart = Offset(thumbX - arrowLength / 2f, centerY)
+        val arrowEnd = Offset(thumbX + arrowLength / 2f, centerY)
+        drawLine(
+            color = Color.White,
+            start = arrowStart,
+            end = arrowEnd,
+            strokeWidth = 4.dp.toPx(),
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = Color.White,
+            start = arrowEnd,
+            end = Offset(arrowEnd.x - arrowHead, arrowEnd.y - arrowHead),
+            strokeWidth = 4.dp.toPx(),
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = Color.White,
+            start = arrowEnd,
+            end = Offset(arrowEnd.x - arrowHead, arrowEnd.y + arrowHead),
+            strokeWidth = 4.dp.toPx(),
+            cap = StrokeCap.Round,
+        )
+    }
+}
+
+@Composable
+private fun ConfettiOverlay(run: Int) {
+    if (run <= 0) return
+    var progress by remember(run) { mutableStateOf(0f) }
+    val confetti = remember(run) {
+        List(72) { index ->
+            ConfettiPiece(
+                startX = ((index * 37) % 100) / 100f,
+                drift = (((index * 17) % 41) - 20) / 100f,
+                spin = ((index % 9) + 2).toFloat(),
+                color = CONFETTI_COLORS[index % CONFETTI_COLORS.size],
+            )
+        }
+    }
+    LaunchedEffect(run) {
+        val startMs = SystemClock.elapsedRealtime()
+        do {
+            progress = ((SystemClock.elapsedRealtime() - startMs) / CONFETTI_DURATION_MS.toFloat()).coerceIn(0f, 1f)
+            delay(16L)
+        } while (progress < 1f)
+    }
+    if (progress >= 1f) return
+    Canvas(
+        modifier = Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.safeDrawing),
+    ) {
+        val eased = 1f - (1f - progress) * (1f - progress)
+        confetti.forEachIndexed { index, piece ->
+            val x = size.width * (
+                piece.startX +
+                    piece.drift * eased +
+                    sin((progress * piece.spin + index) * 2.1f) * 0.025f
+                )
+            val y = size.height * (-0.1f + eased * 1.15f) - ((index % 6) * 22.dp.toPx())
+            if (y < -24.dp.toPx() || y > size.height + 24.dp.toPx()) return@forEachIndexed
+            drawRoundRect(
+                color = piece.color.copy(alpha = (1f - progress).coerceIn(0.2f, 1f)),
+                topLeft = Offset(x, y),
+                size = Size(8.dp.toPx(), 16.dp.toPx()),
+                cornerRadius = CornerRadius(2.dp.toPx(), 2.dp.toPx()),
+            )
+        }
+    }
+}
+
+private data class ConfettiPiece(
+    val startX: Float,
+    val drift: Float,
+    val spin: Float,
+    val color: Color,
+)
+
+private val CONFETTI_COLORS = listOf(
+    Color(0xFF0F766E),
+    Color(0xFF2563EB),
+    Color(0xFFB45309),
+    Color(0xFFDC2626),
+    Color(0xFF7C3AED),
+    Color(0xFF16A34A),
+)
+
+private const val CONFETTI_DURATION_MS = 1_600L
 
 @Composable
 private fun IntersectionViewPage(
@@ -1692,6 +2058,8 @@ private fun SettingsPage(
     nodeId: String,
     maxQueueLength: String,
     maxQueueAgeSeconds: String,
+    txApproved: Boolean,
+    onRevokeTxApproval: () -> Unit,
     onSave: (String, String, String, String) -> Unit,
 ) {
     var draftMqttUri by rememberSaveable(mqttUri) { mutableStateOf(mqttUri) }
@@ -1738,6 +2106,15 @@ private fun SettingsPage(
             placeholder = { Text("0.2") },
             suffix = { Text("s") },
         )
+        Button(
+            onClick = onRevokeTxApproval,
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            enabled = txApproved,
+            shape = RoundedCornerShape(8.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB91C1C)),
+        ) {
+            Text(if (txApproved) "Revoke TX Approval" else "TX Approval not active")
+        }
         Button(
             onClick = {
                 onSave(
