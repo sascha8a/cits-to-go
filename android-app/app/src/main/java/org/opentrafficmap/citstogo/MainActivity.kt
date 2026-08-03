@@ -138,6 +138,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var logLine by mutableStateOf("")
     private var intersectionSnapshot by mutableStateOf<IntersectionSnapshot?>(null)
     private var intersectionSnapshots by mutableStateOf<List<IntersectionSnapshot>>(emptyList())
+    private var intersectionSortMode by mutableStateOf(IntersectionSortMode.FirstReceived)
     private var currentPosition by mutableStateOf<DevicePosition?>(null)
     private var camStationType by mutableStateOf(StationType.PEDESTRIAN)
     private var camIntervalMs by mutableStateOf(CitsBridgeService.DEFAULT_CAM_INTERVAL_MS.toString())
@@ -221,6 +222,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         val prefs = getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE)
         txApproved = prefs.getBoolean(CitsBridgeService.PREF_TX_APPROVED, false)
+        intersectionSortMode = IntersectionSortMode.fromPreference(
+            prefs.getString(PREF_INTERSECTION_SORT_MODE, null),
+        )
         mqttUri = prefs.getString(CitsBridgeService.PREF_MQTT_URI, CitsBridgeService.DEFAULT_MQTT_URI).orEmpty()
         nodeId = prefs.getString(CitsBridgeService.PREF_NODE_ID, null) ?: createAndStoreNodeId()
         maxQueueLength = prefs.getInt(
@@ -267,6 +271,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     status = status,
                     logLine = logLine,
                     intersectionSnapshots = intersectionSnapshots.ifEmpty { listOfNotNull(intersectionSnapshot) },
+                    intersectionSortMode = intersectionSortMode,
+                    onIntersectionSortModeChange = ::updateIntersectionSortMode,
                     currentPosition = currentPosition,
                     onRefresh = ::refreshDevices,
                     onStart = ::requestUsbThenStart,
@@ -542,6 +548,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
+    private fun updateIntersectionSortMode(sortMode: IntersectionSortMode) {
+        intersectionSortMode = sortMode
+        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+            .putString(PREF_INTERSECTION_SORT_MODE, sortMode.name)
+            .apply()
+    }
+
     private fun startOrRequestIntersectionLocation() {
         if (!hasLocationPermission()) {
             requestPermissions(
@@ -686,6 +699,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     companion object {
         private const val REQUEST_CREATE_PCAP = 1001
         private const val REQUEST_LOCATION = 1002
+        private const val PREF_INTERSECTION_SORT_MODE = "intersection_sort_mode"
         private const val INTERSECTION_LOCATION_MIN_TIME_MS = 500L
         private const val TX_SHAKE_THRESHOLD_G = 2.7f
         private const val TX_SHAKE_COOLDOWN_MS = 1_200L
@@ -747,6 +761,8 @@ private fun CitsApp(
     status: BridgeStatus,
     logLine: String,
     intersectionSnapshots: List<IntersectionSnapshot>,
+    intersectionSortMode: IntersectionSortMode,
+    onIntersectionSortModeChange: (IntersectionSortMode) -> Unit,
     currentPosition: DevicePosition?,
     onRefresh: () -> Unit,
     onStart: () -> Unit,
@@ -873,6 +889,8 @@ private fun CitsApp(
                         )
                         AppPage.IntersectionView -> IntersectionViewPage(
                             snapshots = intersectionSnapshots,
+                            sortMode = intersectionSortMode,
+                            onSortModeChange = onIntersectionSortModeChange,
                             status = status,
                             currentPosition = currentPosition,
                             txApproved = txApproved,
@@ -934,6 +952,12 @@ private enum class AppPage(val title: String) {
 private enum class IntersectionSortMode(val label: String) {
     FirstReceived("first received"),
     Distance("distance"),
+    ;
+
+    companion object {
+        fun fromPreference(value: String?): IntersectionSortMode =
+            entries.firstOrNull { it.name == value } ?: FirstReceived
+    }
 }
 
 @Composable
@@ -1286,13 +1310,14 @@ private const val CONFETTI_DURATION_MS = 1_600L
 @Composable
 private fun IntersectionViewPage(
     snapshots: List<IntersectionSnapshot>,
+    sortMode: IntersectionSortMode,
+    onSortModeChange: (IntersectionSortMode) -> Unit,
     status: BridgeStatus,
     currentPosition: DevicePosition?,
     txApproved: Boolean,
     onSendSrem: (IntersectionSnapshot, Int, Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    var sortMode by rememberSaveable { mutableStateOf(IntersectionSortMode.FirstReceived) }
     if (snapshots.isEmpty()) {
         Column(
             modifier = modifier
@@ -1344,10 +1369,10 @@ private fun IntersectionViewPage(
             )
             Button(
                 onClick = {
-                    sortMode = when (sortMode) {
+                    onSortModeChange(when (sortMode) {
                         IntersectionSortMode.FirstReceived -> IntersectionSortMode.Distance
                         IntersectionSortMode.Distance -> IntersectionSortMode.FirstReceived
-                    }
+                    })
                 },
                 shape = RoundedCornerShape(8.dp),
             ) {
