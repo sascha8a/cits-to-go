@@ -1,0 +1,340 @@
+{
+  "seq": 2555162,
+  "source_subject": "its.node339.packet",
+  "received_ts": "2026-07-28T12:41:50.349Z",
+  "published_ts": "2026-07-28T12:41:50.350Z",
+  "raw_len": 161,
+  "incl_len": 161,
+  "decoded": {
+    "timestamp": "1785242510349",
+    "layers": {
+      "llc": {
+        "llc_llc_ssap_cr": false,
+        "llc_llc_oui": "0",
+        "llc_llc_ssap": "170",
+        "llc_llc_control": "3",
+        "llc_llc_dsap_sap": "85",
+        "llc_llc_dsap_ig": false,
+        "llc_llc_ssap_sap": "85",
+        "llc_llc_control_u_modifier_cmd": "0",
+        "llc_llc_dsap": "170",
+        "llc_llc_control_ftype": "3",
+        "llc_llc_type": "35143"
+      },
+      "its": {
+        "its_dsrc_TransitVehicleStatus_loading": false,
+        "per_per_sequence_of_length": "2",
+        "per_per_small_number_bit": false,
+        "its_its_stationId": "11948324",
+        "its_dsrc_inBoundLane": [
+          "0",
+          "0"
+        ],
+        "its_dsrc_srpRequest_element": [
+          null,
+          null
+        ],
+        "its_dsrc_requestType": [
+          "1",
+          "1"
+        ],
+        "its_dsrc_rdType_element": null,
+        "its_dsrc_rdId": "1",
+        "its_dsrc_lat": "482024036",
+        "its_dsrc_second": [
+          "50231",
+          "54417",
+          "22424"
+        ],
+        "its_dsrc_SignalRequestMessage_element": null,
+        "its_dsrc_TransitVehicleStatus_anADAuse": false,
+        "its_dsrc_TransitVehicleStatus_charging": false,
+        "its_dsrc_rdPosition_element": null,
+        "its_dsrc_long": "163691773",
+        "its_dsrc_irId": [
+          "1039",
+          "1038"
+        ],
+        "per_per_enum_extension_index": "0",
+        "text": [
+          "Item 0",
+          "Item 1"
+        ],
+        "its_dsrc_TransitVehicleStatus_aBikeLoad": false,
+        "its_dsrc_TransitVehicleStatus_atStopLine": false,
+        "its_dsrc_outBoundLane": [
+          "0",
+          "0"
+        ],
+        "its_dsrc_srmTimeStamp": "300281",
+        "its_dsrc_region": [
+          "43",
+          "43"
+        ],
+        "its_dsrc_requests": "2",
+        "its_dsrc_stationID": "11948324",
+        "its_its_ItsPduHeader_element": null,
+        "per_per_enum_index": [
+          "1",
+          "1"
+        ],
+        "per_per_extension_present_bit": [
+          false,
+          false,
+          true
+        ],
+        "its_dsrc_TransitVehicleStatus_doorOpen": false,
+        "per_per_choice_index": [
+          "0",
+          "0",
+          "0",
+          "0",
+          "1"
+        ],
+        "its_dsrc_lane": [
+          "31",
+          "16",
+          "31",
+          "16"
+        ],
+        "its_dsrc_role": "23",
+        "per_per_optional_field_bit": [
+          true,
+          true,
+          true,
+          false,
+          true,
+          true,
+          false,
+          false,
+          true,
+          false,
+          true,
+          true,
+          true,
+          false,
+          false,
+          true,
+          false,
+          true,
+          true,
+          true,
+          false,
+          false,
+          true,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          true,
+          false,
+          false,
+          false
+        ],
+        "its_its_protocolVersion": "2",
+        "per_per_extension_bit": [
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false,
+          false
+        ],
+        "its_its_messageId": "9",
+        "its_dsrc_transitStatus": "00",
+        "its_dsrc_requestID": [
+          "5",
+          "4"
+        ],
+        "its_dsrc_srId_element": [
+          null,
+          null
+        ],
+        "its_dsrc_sequenceNumber": "27",
+        "its_dsrc_rpvPosition_element": null,
+        "its_dsrc_SignalRequestPackage_element": [
+          null,
+          null
+        ],
+        "its_dsrc_rpvHeading": "1090",
+        "its_dsrc_requestor_element": null,
+        "its_dsrc_srpMinute": [
+          "300281",
+          "300282"
+        ]
+      },
+      "wlan": {
+        "wlan_wlan_bssid_lg": true,
+        "wlan_wlan_qos": "33",
+        "wlan_wlan_qos_amsdupresent": false,
+        "wlan_wlan_qos_priority": "1",
+        "wlan_wlan_ra_lg": true,
+        "wlan_wlan_flags_str": "........",
+        "wlan_wlan_addr_resolved": [
+          "ff:ff:ff:ff:ff:ff",
+          "00:0d:41:12:3b:74",
+          "ff:ff:ff:ff:ff:ff"
+        ],
+        "wlan_wlan_oui_resolved": "Siemens AG ICM MP UC RD IT KLF1",
+        "wlan_wlan_qos_tid": "1",
+        "wlan_wlan_fc_type_subtype": "40",
+        "wlan_wlan_qos_txop_dur_req": "0",
+        "wlan_wlan_ra_ig": true,
+        "wlan_wlan_fc_ds": "0",
+        "wlan_wlan_addr": [
+          "ff:ff:ff:ff:ff:ff",
+          "00:0d:41:12:3b:74",
+          "ff:ff:ff:ff:ff:ff"
+        ],
+        "wlan_wlan_ta_lg": false,
+        "wlan_wlan_flags": "0",
+        "wlan_wlan_ta_resolved": "00:0d:41:12:3b:74",
+        "wlan_wlan_da_oui": "16777215",
+        "wlan_wlan_fc_pwrmgt": false,
+        "wlan_wlan_fc_type": "2",
+        "wlan_wlan_bssid_resolved": "ff:ff:ff:ff:ff:ff",
+        "wlan_wlan_fc_retry": false,
+        "wlan_wlan_fc_version": "0",
+        "wlan_wlan_ta_ig": false,
+        "wlan_wlan_seq": "1916",
+        "wlan_wlan_oui": [
+          "16777215",
+          "3393",
+          "16777215"
+        ],
+        "wlan_wlan_ra_resolved": "ff:ff:ff:ff:ff:ff",
+        "wlan_wlan_da_resolved": "ff:ff:ff:ff:ff:ff",
+        "wlan_wlan_qos_ack": "1",
+        "wlan_wlan_fc_protected": false,
+        "wlan_wlan_ta_oui_resolved": "Siemens AG ICM MP UC RD IT KLF1",
+        "wlan_wlan_fc_order": false,
+        "wlan_wlan_ra_oui": "16777215",
+        "wlan_wlan_fc_frag": false,
+        "wlan_wlan_fc_moredata": false,
+        "wlan_wlan_fc_subtype": "8",
+        "wlan_wlan_fc_fromds": false,
+        "wlan_wlan_da": "ff:ff:ff:ff:ff:ff",
+        "wlan_wlan_ta_oui": "3393",
+        "wlan_wlan_fc_tods": false,
+        "wlan_wlan_da_lg": true,
+        "wlan_wlan_bssid_oui": "16777215",
+        "wlan_wlan_addr_lg": [
+          true,
+          false,
+          true
+        ],
+        "wlan_wlan_sa_oui": "3393",
+        "wlan_wlan_ta": "00:0d:41:12:3b:74",
+        "wlan_wlan_duration": "0",
+        "wlan_wlan_sa_lg": false,
+        "wlan_wlan_fc": "34816",
+        "wlan_wlan_sa": "00:0d:41:12:3b:74",
+        "wlan_wlan_da_ig": true,
+        "wlan_wlan_ra": "ff:ff:ff:ff:ff:ff",
+        "wlan_wlan_addr_ig": [
+          true,
+          false,
+          true
+        ],
+        "wlan_wlan_frag": "0",
+        "wlan_wlan_sa_oui_resolved": "Siemens AG ICM MP UC RD IT KLF1",
+        "wlan_wlan_sa_resolved": "00:0d:41:12:3b:74",
+        "wlan_wlan_sa_ig": false,
+        "wlan_wlan_bssid": "ff:ff:ff:ff:ff:ff",
+        "wlan_wlan_bssid_ig": true,
+        "wlan_wlan_qos_bit4": false
+      },
+      "btpb": {
+        "btpb_btpb_dstportinf": "0",
+        "btpb_btpb_dstport": "2007"
+      },
+      "frame": {
+        "frame_frame_ignored": false,
+        "frame_frame_interface_id": "0",
+        "frame_frame_offset_shift": "0.000000000",
+        "frame_frame_len": "161",
+        "frame_frame_cap_len": "161",
+        "frame_frame_encap_type": "20",
+        "frame_frame_time_utc": "2026-07-28T12:41:50.349000000Z",
+        "frame_frame_number": "2555162",
+        "frame_frame_encoding": "0",
+        "frame_frame_time_relative": "42049.670000000",
+        "frame_frame_marked": false,
+        "frame_frame_time_epoch": "2026-07-28T12:41:50.349000000Z",
+        "frame_frame_time_delta_displayed": "0.001000000",
+        "frame_frame_interface_description": "Standard input",
+        "frame_frame_time": "2026-07-28T12:41:50.349000000Z",
+        "frame_frame_section_number": "1",
+        "frame_frame_protocols": "wlan:llc:gnw:btpb:its",
+        "frame_frame_time_delta": "0.001000000",
+        "frame_frame_interface_name": "-"
+      },
+      "gnw": {
+        "gnw_geonw_src_pos_addr": "2c:00:00:30:e7:00:06:44",
+        "gnw_geonw_ch_tclass": "2",
+        "gnw_geonw_src_pos_addr_mid": "00:30:e7:00:06:44",
+        "gnw_geonw_ch_tc_id": "2",
+        "gnw_geonw_src_pos_addr_type": "11",
+        "gnw_geonw_bh_rhl": "3",
+        "gnw_geonw_src_pos_addr_country": "0",
+        "gnw_geonw_ch_flags_reserved": "0",
+        "gnw_geonw_src_pos_lat": "482024036",
+        "gnw_geonw_bh_nh": "1",
+        "gnw_geonw_ch_mhl": "4",
+        "gnw_geonw_src_pos_hdg": "1090",
+        "gnw_geonw_bh_version": "1",
+        "gnw_geonw_ch_reserved1": "0",
+        "gnw_geonw_ch_htype": "64",
+        "gnw_geonw_src_pos_tst": "3657711392",
+        "gnw_geonw_reserved": "0",
+        "gnw_geonw_src_pos_speed": "0",
+        "gnw_geonw_bh_lt_base": "2",
+        "gnw_geonw_ch_tc_buffer": "0",
+        "gnw_geonw_ch_reserved2": "0",
+        "gnw_geonw_bh_reserved": "0",
+        "gnw_geonw_bh_lt": "26",
+        "gnw_geonw_ch_tc_offload": "0",
+        "gnw_geonw_ch_plength": "63",
+        "gnw_geonw_ch_flags": null,
+        "gnw_geonw_src_pos_long": "163691773",
+        "gnw_geonw_gxc_radius": "1000",
+        "gnw_geonw_gxc_distanceb": "0",
+        "_ws_expert": {
+          "_ws_expert__ws_expert_severity": "4194304",
+          "gnw_geonw_rhl_too_small": null,
+          "_ws_expert__ws_expert_message": "\"Remain Hop Limit\" only 3",
+          "_ws_expert__ws_expert_group": "33554432"
+        },
+        "gnw_geonw_gxc_reserved": "0",
+        "gnw_geonw_src_pos": "2c:00:00:30:e7:00:06:44:da:04:3f:20:1c:bb:1a:64:09:c1:bc:fd:80:00:04:42",
+        "gnw_geonw_gbc": null,
+        "gnw_geonw_src_pos_pai": "1",
+        "gnw_geonw_gxc_latitude": "482024036",
+        "gnw_geonw_gxc_angle": "0",
+        "gnw_geonw_ch": null,
+        "gnw_geonw_seq_num": "280",
+        "gnw_geonw_bh": null,
+        "gnw_geonw_ch_nh": "2",
+        "gnw_geonw_src_pos_addr_manual": "0",
+        "gnw_geonw_bh_lt_mult": "6",
+        "gnw_geonw_ch_flags_mob": "1",
+        "gnw_geonw_gxc_longitude": "163691773"
+      }
+    }
+  },
+  "_otm_meta": {
+    "remainingHops": 3,
+    "maxHops": 4
+  }
+}

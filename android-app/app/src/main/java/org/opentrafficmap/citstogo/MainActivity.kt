@@ -111,6 +111,9 @@ import org.opentrafficmap.citstogo.intersection.MapLane
 import org.opentrafficmap.citstogo.intersection.MovementPhaseState
 import org.opentrafficmap.citstogo.intersection.SignalEvent
 import org.opentrafficmap.citstogo.intersection.SpatIntersection
+import org.opentrafficmap.citstogo.intersection.countdownSideOffset
+import org.opentrafficmap.citstogo.intersection.intersectionConnectionSelectionAlpha
+import org.opentrafficmap.citstogo.intersection.intersectionLaneSelectionAlpha
 import org.opentrafficmap.citstogo.intersection.secondsUntilChange
 import java.security.SecureRandom
 import java.util.Locale
@@ -1486,7 +1489,7 @@ private enum class SremRequestUiState(
     val color: Color,
 ) {
     SelectFirst("Select first pedestrian lane", "Tap a crosswalk lane in the intersection view.", Color(0xFF475569)),
-    SelectSecond("Select connected lane", "Non-connected crosswalk lanes are dimmed.", Color(0xFF0F766E)),
+    SelectSecond("Select connected lane", "Unavailable lanes are dimmed.", Color(0xFF0F766E)),
     NotReady("Cannot request yet", "Start capture, approve TX, and wait for a fresh location.", Color(0xFFD97706)),
     Ready("Slide left to request green", "The request will be sent as an SREM.", Color(0xFF0F766E)),
     Queued("Request queued", "Waiting for firmware transmit acknowledgement.", Color(0xFF2563EB)),
@@ -2168,18 +2171,52 @@ private fun IntersectionRenderer(
         }
 
         fun laneSelectionAlpha(lane: MapLane): Float {
-            if (lane.laneType != LaneType.Crosswalk) return 1f
-            if (lane.id in selectedCrosswalkLaneIds) return 1f
-            val firstId = firstSelectedLaneId ?: return 1f
-            return if (lane.id in selectableSecondLaneIds || lane.id == firstId) 1f else 0.2f
+            return intersectionLaneSelectionAlpha(
+                laneId = lane.id,
+                selectedLaneIds = selectedCrosswalkLaneIds,
+                selectableLaneIds = selectableSecondLaneIds,
+            )
         }
 
-        fun laneLabelPoint(lane: MapLane): Offset {
-            val start = lane.nodes.first()
-            val end = lane.nodes.last()
-            val startPoint = point(start.xCm, start.yCm)
-            val endPoint = point(end.xCm, end.yCm)
-            return Offset((startPoint.x + endPoint.x) / 2f, (startPoint.y + endPoint.y) / 2f)
+        fun laneLabelPoint(
+            lane: MapLane,
+            labelWidth: Float,
+            labelHeight: Float,
+            laneWidth: Float,
+        ): Offset {
+            val lanePoints = lane.nodes.map { node -> point(node.xCm, node.yCm) }
+            val startPoint = lanePoints.first()
+            val endPoint = lanePoints.last()
+            val center = Offset((startPoint.x + endPoint.x) / 2f, (startPoint.y + endPoint.y) / 2f)
+            if (lane.laneType != LaneType.Crosswalk) return center
+
+            val laneLength = lanePoints.zipWithNext().sumOf { (start, end) ->
+                hypot((end.x - start.x).toDouble(), (end.y - start.y).toDouble())
+            }.toFloat()
+            val sideOffset = countdownSideOffset(
+                directionX = endPoint.x - startPoint.x,
+                directionY = endPoint.y - startPoint.y,
+                laneLength = laneLength,
+                labelWidth = labelWidth,
+                labelHeight = labelHeight,
+                laneWidth = laneWidth,
+                gap = 5.dp.toPx(),
+            )
+            if (sideOffset.first == 0f && sideOffset.second == 0f) return center
+
+            val firstSide = center + Offset(sideOffset.first, sideOffset.second)
+            val secondSide = center - Offset(sideOffset.first, sideOffset.second)
+            fun viewportOverflow(labelCenter: Offset): Float {
+                val left = labelCenter.x - labelWidth / 2f
+                val right = labelCenter.x + labelWidth / 2f
+                val top = labelCenter.y - labelHeight / 2f
+                val bottom = labelCenter.y + labelHeight / 2f
+                return (-left).coerceAtLeast(0f) +
+                    (right - size.width).coerceAtLeast(0f) +
+                    (-top).coerceAtLeast(0f) +
+                    (bottom - size.height).coerceAtLeast(0f)
+            }
+            return if (viewportOverflow(firstSide) <= viewportOverflow(secondSide)) firstSide else secondSide
         }
 
         fun lanePath(lane: MapLane): Path = Path().apply {
@@ -2358,9 +2395,14 @@ private fun IntersectionRenderer(
                 val connectedLane = lanesById[connection.laneId]
                 if (connectedLane?.laneType != LaneType.Crosswalk || lane.id > connectedLane.id) return@forEach
                 val (start, end) = closestEndpointPair(lane, connectedLane)
+                val selectionAlpha = intersectionConnectionSelectionAlpha(
+                    laneId = lane.id,
+                    connectedLaneId = connectedLane.id,
+                    selectedLaneIds = selectedCrosswalkLaneIds,
+                )
                 style.backingWidth?.let { backingWidth ->
                     drawLine(
-                        color = style.backingColor,
+                        color = style.backingColor.copy(alpha = style.backingColor.alpha * selectionAlpha),
                         start = start,
                         end = end,
                         strokeWidth = backingWidth,
@@ -2369,7 +2411,7 @@ private fun IntersectionRenderer(
                     )
                 }
                 drawLine(
-                    color = signalColorFor(lane, connection).copy(alpha = 0.92f),
+                    color = signalColorFor(lane, connection).copy(alpha = 0.92f * selectionAlpha),
                     start = start,
                     end = end,
                     strokeWidth = style.width,
@@ -2393,14 +2435,18 @@ private fun IntersectionRenderer(
                 if (lane.nodes.size < 2) return@forEach
                 val event = eventFor(lane) ?: return@forEach
                 val seconds = event.secondsUntilChange(spat, nowMs) ?: return@forEach
-                val labelPoint = laneLabelPoint(lane)
-                if (labelPoint.x < -horizontalViewportPadding || labelPoint.x > size.width + horizontalViewportPadding) return@forEach
-                if (labelPoint.y < -verticalViewportPadding || labelPoint.y > size.height + verticalViewportPadding) return@forEach
-
                 val label = "${seconds}s"
                 val textWidth = textPaint.measureText(label)
                 val labelWidth = textWidth + horizontalPadding * 2
                 val labelHeight = textPaint.textSize + verticalPadding * 2
+                val labelPoint = laneLabelPoint(
+                    lane = lane,
+                    labelWidth = labelWidth,
+                    labelHeight = labelHeight,
+                    laneWidth = styleFor(lane.laneType).width,
+                )
+                if (labelPoint.x < -horizontalViewportPadding || labelPoint.x > size.width + horizontalViewportPadding) return@forEach
+                if (labelPoint.y < -verticalViewportPadding || labelPoint.y > size.height + verticalViewportPadding) return@forEach
                 val topLeft = Offset(labelPoint.x - labelWidth / 2f, labelPoint.y - labelHeight / 2f)
                 drawRoundRect(
                     color = event.state.phaseColor().copy(alpha = 0.94f),
