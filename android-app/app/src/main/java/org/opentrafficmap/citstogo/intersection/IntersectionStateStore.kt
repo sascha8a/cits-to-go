@@ -18,7 +18,10 @@ class IntersectionStateStore {
             }
             MapSpatDecoder.MESSAGE_ID_SPATEM -> MapSpatDecoder.decodeSpat(its, receivedAtMs).map { spat ->
                 firstReceivedAtMs.putIfAbsent(spat.key, receivedAtMs)
-                spats[spat.key] = spat
+                val existing = spats[spat.key]
+                if (existing == null || spat.isAtLeastAsRecentAs(existing)) {
+                    spats[spat.key] = spat
+                }
                 spat.key
             }
             else -> emptyList()

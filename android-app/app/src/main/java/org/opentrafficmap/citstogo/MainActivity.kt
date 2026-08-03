@@ -111,6 +111,7 @@ import org.opentrafficmap.citstogo.intersection.MapLane
 import org.opentrafficmap.citstogo.intersection.MovementPhaseState
 import org.opentrafficmap.citstogo.intersection.SignalEvent
 import org.opentrafficmap.citstogo.intersection.SpatIntersection
+import org.opentrafficmap.citstogo.intersection.secondsUntilChange
 import java.security.SecureRandom
 import java.util.Locale
 import kotlin.math.cos
@@ -1808,9 +1809,6 @@ private fun DevicePosition.toIntersectionOffsetCm(map: MapIntersection): Offset 
 private const val INTERSECTION_MAX_ZOOM = 6f
 private const val LANE_TIMING_ZOOM_THRESHOLD = 2.2f
 private const val E7_DEGREE_TO_CM = 1.1132f
-private const val TIME_MARK_UNKNOWN = 36_001
-private const val TENTHS_PER_HOUR = 36_000
-private const val TENTHS_PER_MINUTE = 600
 private const val DOUBLE_TAP_TIMEOUT_MS = 300L
 private const val TAP_TIMEOUT_MS = 220L
 private const val QUICK_SCALE_SENSITIVITY = 0.006f
@@ -2475,23 +2473,6 @@ private fun SignalTimingPanel(snapshot: IntersectionSnapshot?) {
             }
         }
     }
-}
-
-private fun SignalEvent.secondsUntilChange(spat: SpatIntersection?, nowMs: Long): Long? {
-    val targetTenths = listOfNotNull(likelyTime, minEndTime, maxEndTime)
-        .firstOrNull { it in 0 until TIME_MARK_UNKNOWN }
-        ?: return null
-    val moy = spat?.moy ?: return null
-    val timestampMs = spat.timestampMs?.takeIf { it in 0 until 61_000 } ?: return null
-    val messageTenths = (moy % 60) * TENTHS_PER_MINUTE + (timestampMs / 100).coerceAtMost(TENTHS_PER_MINUTE - 1)
-    val elapsedTenths = ((nowMs - spat.receivedAtMs).coerceAtLeast(0L) / 100L).toInt()
-    val currentTenths = (messageTenths + elapsedTenths) % TENTHS_PER_HOUR
-    val remainingTenths = if (targetTenths >= currentTenths) {
-        targetTenths - currentTenths
-    } else {
-        TENTHS_PER_HOUR - currentTenths + targetTenths
-    }
-    return (remainingTenths / 10.0).roundToLong()
 }
 
 private fun MovementPhaseState.phaseColor(): Color = when (this) {

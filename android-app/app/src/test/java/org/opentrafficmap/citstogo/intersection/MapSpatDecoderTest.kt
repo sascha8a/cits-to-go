@@ -8,6 +8,42 @@ import org.junit.Test
 
 class MapSpatDecoderTest {
     @Test
+    fun reportedCapturesDoNotProduceHourLongCountdowns() {
+        var specialTimeMarkCount = 0
+        listOf("cits-1785740418797.pcap", "cits-1785741343912.pcap").forEach { fileName ->
+            pcapFrames(fileName).forEach { frame ->
+                val packet = ItsFrameExtractor.extract(frame)
+                    ?.takeIf { it.destinationPort == MapSpatDecoder.BTP_PORT_SPATEM }
+                    ?: return@forEach
+                MapSpatDecoder.decodeSpat(packet, 1_000L).forEach { spat ->
+                    spat.movements.mapNotNull { it.currentEvent }.forEach { event ->
+                        specialTimeMarkCount += listOfNotNull(event.minEndTime, event.likelyTime, event.maxEndTime)
+                            .count { it >= 36_000 }
+                        event.secondsUntilChange(spat, 1_000L)?.let { seconds ->
+                            assertTrue("Unexpected countdown $seconds in $fileName", seconds in 0 until 600)
+                        }
+                    }
+                }
+            }
+        }
+        assertEquals(6, specialTimeMarkCount)
+    }
+
+    @Test
+    fun ignoresOutOfOrderSpatemFromReportedCapture() {
+        val frames = pcapFrames("cits-1785740418797.pcap")
+        val store = IntersectionStateStore()
+
+        store.accept(frames[23], 1_000L)
+        assertEquals(18_885, store.closest(null)?.spat?.timestampMs)
+
+        store.accept(frames[45], 2_000L)
+        val retained = requireNotNull(store.closest(null)?.spat)
+        assertEquals(18_885, retained.timestampMs)
+        assertEquals(1_000L, retained.receivedAtMs)
+    }
+
+    @Test
     fun extractsItsPacketFromSampleSpatemFrame() {
         val frame = pcapFrames().first()
         val packet = ItsFrameExtractor.extract(frame)
