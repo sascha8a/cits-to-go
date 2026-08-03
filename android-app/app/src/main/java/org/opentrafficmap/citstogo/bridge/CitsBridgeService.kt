@@ -107,6 +107,7 @@ class CitsBridgeService : Service() {
     private var txSuccessful = 0L
     private var txFailed = 0L
     private var camSent = 0L
+    private var nextStationNotificationId = STATION_NOTIFICATION_ID_BASE
     private val discoveredMacAddresses = mutableSetOf<String>()
 
     private val usbReceiver = object : BroadcastReceiver() {
@@ -391,6 +392,7 @@ class CitsBridgeService : Service() {
         if (discoveredMacAddress != null && discoveredMacAddresses.add(discoveredMacAddress)) {
             discoveredDevices = discoveredMacAddresses.size.toLong()
             storeDiscoveredMacAddresses()
+            sendStationDiscoveryNotification(discoveredMacAddress)
         }
         val summary = "#${packet.sequence} ${packet.payload.size}B ${packet.frequencyMhz}MHz ${packet.rssiDbm}dBm"
         queueMqttPacket(packet.payload)
@@ -993,7 +995,6 @@ class CitsBridgeService : Service() {
     private fun handleDiscoveredDevice(device: UsbDevice) {
         if (!device.isCitsDevice()) return
         val message = "C-ITS device discovered: ${device.discoveryLabel()}"
-        sendDiscoveryNotification(device, message)
         publishStatus(message)
     }
 
@@ -1075,11 +1076,11 @@ class CitsBridgeService : Service() {
         manager.notify(NOTIFICATION_ID, buildNotification(status.summary()))
     }
 
-    private fun sendDiscoveryNotification(device: UsbDevice, message: String) {
+    private fun sendStationDiscoveryNotification(macAddress: String) {
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(
-            DISCOVERY_NOTIFICATION_ID_BASE + device.deviceName.hashCode().mod(1_000),
-            buildDiscoveryNotification(message),
+            nextStationNotificationId++,
+            buildStationDiscoveryNotification(macAddress),
         )
     }
 
@@ -1140,7 +1141,7 @@ class CitsBridgeService : Service() {
             .build()
     }
 
-    private fun buildDiscoveryNotification(content: String): Notification {
+    private fun buildStationDiscoveryNotification(macAddress: String): Notification {
         val openIntent = Intent(this, MainActivity::class.java)
         val openPi = PendingIntent.getActivity(
             this,
@@ -1148,9 +1149,10 @@ class CitsBridgeService : Service() {
             openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        return Notification.Builder(this, DISCOVERY_CHANNEL_ID)
+        val content = "C-ITS station discovered: $macAddress"
+        return Notification.Builder(this, STATION_DISCOVERY_CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
-            .setContentTitle("C-ITS device discovered")
+            .setContentTitle("New C-ITS station")
             .setContentText(content)
             .setStyle(Notification.BigTextStyle().bigText(content))
             .setAutoCancel(true)
@@ -1167,13 +1169,14 @@ class CitsBridgeService : Service() {
         )
         channel.description = "Keeps USB serial capture and MQTT forwarding active while the phone is locked."
         manager.createNotificationChannel(channel)
-        val discoveryChannel = NotificationChannel(
-            DISCOVERY_CHANNEL_ID,
-            "C-ITS device discovery",
+        manager.deleteNotificationChannel(LEGACY_DEVICE_DISCOVERY_CHANNEL_ID)
+        val stationDiscoveryChannel = NotificationChannel(
+            STATION_DISCOVERY_CHANNEL_ID,
+            "C-ITS station discovery",
             NotificationManager.IMPORTANCE_DEFAULT,
         )
-        discoveryChannel.description = "Alerts when a C-ITS USB device is discovered."
-        manager.createNotificationChannel(discoveryChannel)
+        stationDiscoveryChannel.description = "Alerts when a new C-ITS station is discovered."
+        manager.createNotificationChannel(stationDiscoveryChannel)
     }
 
     private fun acquireWakeLock() {
@@ -1359,9 +1362,10 @@ class CitsBridgeService : Service() {
         const val INTERSECTION_MAX_AGE_MS = 30_000L
 
         private const val CHANNEL_ID = "cits_bridge"
-        private const val DISCOVERY_CHANNEL_ID = "cits_device_discovery"
+        private const val STATION_DISCOVERY_CHANNEL_ID = "cits_station_discovery"
+        private const val LEGACY_DEVICE_DISCOVERY_CHANNEL_ID = "cits_device_discovery"
         private const val NOTIFICATION_ID = 2301
-        private const val DISCOVERY_NOTIFICATION_ID_BASE = 2400
+        private const val STATION_NOTIFICATION_ID_BASE = 2400
         private const val USB_READ_TIMEOUT_MS = 5_000
         private const val USB_WRITE_TIMEOUT_MS = 2_000
         private const val MAX_TX_QUEUE = 64
