@@ -104,6 +104,7 @@ import org.opentrafficmap.citstogo.cam.StationType
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
 import org.opentrafficmap.citstogo.intersection.LaneConnection
+import org.opentrafficmap.citstogo.intersection.LaneNode
 import org.opentrafficmap.citstogo.intersection.LaneType
 import org.opentrafficmap.citstogo.intersection.MapIntersection
 import org.opentrafficmap.citstogo.intersection.MapLane
@@ -188,6 +189,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 txFailed = intent.getLongExtra(CitsBridgeService.EXTRA_TX_FAILED, 0),
                 camEnabled = intent.getBooleanExtra(CitsBridgeService.EXTRA_CAM_ENABLED, false),
                 camSent = intent.getLongExtra(CitsBridgeService.EXTRA_CAM_SENT, 0),
+                lastSremState = intent.getStringExtra(CitsBridgeService.EXTRA_SREM_STATE).orEmpty(),
+                lastSremSummary = intent.getStringExtra(CitsBridgeService.EXTRA_SREM_SUMMARY).orEmpty(),
+                lastSremRequestId = intent.getIntExtra(CitsBridgeService.EXTRA_SREM_REQUEST_ID, -1),
+                lastSremIntersectionId = intent.getIntExtra(CitsBridgeService.EXTRA_SREM_INTERSECTION_ID, -1),
+                lastSremInboundLaneId = intent.getIntExtra(CitsBridgeService.EXTRA_SREM_INBOUND_LANE_ID, -1),
+                lastSremOutboundLaneId = intent.getIntExtra(CitsBridgeService.EXTRA_SREM_OUTBOUND_LANE_ID, -1),
+                lastSremUpdatedAtMs = intent.getLongExtra(CitsBridgeService.EXTRA_SREM_UPDATED_AT_MS, 0L),
                 lastTxSummary = intent.getStringExtra(CitsBridgeService.EXTRA_LAST_TX).orEmpty(),
                 lastPacketSummary = intent.getStringExtra(CitsBridgeService.EXTRA_LAST_PACKET).orEmpty(),
                 lastError = intent.getStringExtra(CitsBridgeService.EXTRA_LAST_ERROR).orEmpty(),
@@ -275,6 +283,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     onDismissTxApproval = { txApprovalPromptState = TxApprovalPromptState.Hidden },
                     onFinishTxApproval = { txApprovalPromptState = TxApprovalPromptState.Hidden },
                     onRevokeTxApproval = ::revokeTxApproval,
+                    onSendSrem = ::sendSrem,
                     onIntersectionLocationActiveChange = ::setIntersectionLocationActive,
                     onSaveSettings = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds ->
                         mqttUri = updatedMqttUri
@@ -454,6 +463,36 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             putExtra(CitsBridgeService.EXTRA_CAM_STATION_TYPE, camStationType.code)
             putExtra(CitsBridgeService.EXTRA_CAM_INTERVAL_MS, interval)
         }
+    }
+
+    private fun sendSrem(snapshot: IntersectionSnapshot, inboundLaneId: Int, outboundLaneId: Int) {
+        if (!txApproved) {
+            logLine = "TX approval is required before SREM"
+            return
+        }
+        val map = snapshot.map ?: run {
+            logLine = "SREM requires MAPEM geometry"
+            return
+        }
+        val position = currentPosition ?: run {
+            logLine = "SREM requires a fresh location"
+            return
+        }
+        val nowMs = System.currentTimeMillis()
+        if (position.timeMs !in (nowMs - SREM_MAX_LOCATION_AGE_MS)..(nowMs + 1_000L)) {
+            logLine = "SREM requires a fresh location"
+            return
+        }
+        sendServiceIntent(CitsBridgeService.ACTION_SEND_SREM) {
+            map.key.region?.let { putExtra(CitsBridgeService.EXTRA_SREM_REGION, it) }
+            putExtra(CitsBridgeService.EXTRA_SREM_INTERSECTION_ID, map.key.id)
+            putExtra(CitsBridgeService.EXTRA_SREM_INBOUND_LANE_ID, inboundLaneId)
+            putExtra(CitsBridgeService.EXTRA_SREM_OUTBOUND_LANE_ID, outboundLaneId)
+            putExtra(CitsBridgeService.EXTRA_SREM_LATITUDE_E7, position.latitudeE7)
+            putExtra(CitsBridgeService.EXTRA_SREM_LONGITUDE_E7, position.longitudeE7)
+            putExtra(CitsBridgeService.EXTRA_SREM_POSITION_TIME_MS, position.timeMs)
+        }
+        logLine = "SREM request submitted"
     }
 
     private fun grantTxApproval() {
@@ -724,6 +763,7 @@ private fun CitsApp(
     onDismissTxApproval: () -> Unit,
     onFinishTxApproval: () -> Unit,
     onRevokeTxApproval: () -> Unit,
+    onSendSrem: (IntersectionSnapshot, Int, Int) -> Unit,
     onIntersectionLocationActiveChange: (Boolean) -> Unit,
     onSaveSettings: (String, String, String, String) -> Unit,
 ) {
@@ -834,6 +874,8 @@ private fun CitsApp(
                             snapshots = intersectionSnapshots,
                             status = status,
                             currentPosition = currentPosition,
+                            txApproved = txApproved,
+                            onSendSrem = onSendSrem,
                             modifier = Modifier.weight(1f),
                         )
                         AppPage.Settings -> SettingsPage(
@@ -1245,6 +1287,8 @@ private fun IntersectionViewPage(
     snapshots: List<IntersectionSnapshot>,
     status: BridgeStatus,
     currentPosition: DevicePosition?,
+    txApproved: Boolean,
+    onSendSrem: (IntersectionSnapshot, Int, Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var sortMode by rememberSaveable { mutableStateOf(IntersectionSortMode.FirstReceived) }
@@ -1254,7 +1298,7 @@ private fun IntersectionViewPage(
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState()),
         ) {
-            IntersectionPageContent(null, status, currentPosition)
+            IntersectionPageContent(null, status, currentPosition, txApproved, onSendSrem)
         }
         return
     }
@@ -1328,7 +1372,7 @@ private fun IntersectionViewPage(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 2.dp),
             ) {
-                IntersectionPageContent(sortedSnapshots[page], status, currentPosition)
+                IntersectionPageContent(sortedSnapshots[page], status, currentPosition, txApproved, onSendSrem)
             }
         }
     }
@@ -1339,9 +1383,16 @@ private fun IntersectionPageContent(
     snapshot: IntersectionSnapshot?,
     status: BridgeStatus,
     currentPosition: DevicePosition?,
+    txApproved: Boolean,
+    onSendSrem: (IntersectionSnapshot, Int, Int) -> Unit,
 ) {
     val map = snapshot?.map
     val spat = snapshot?.spat
+    var selectedCrosswalkLaneIds by rememberSaveable(map?.key.toString(), map?.revision) {
+        mutableStateOf<List<Int>>(emptyList())
+    }
+    val selectedPair = selectedCrosswalkLaneIds.takeIf { it.size == 2 }
+    val sremUiState = sremUiState(status, snapshot, selectedCrosswalkLaneIds, spat)
     Column(
         Modifier
             .fillMaxWidth()
@@ -1371,16 +1422,364 @@ private fun IntersectionPageContent(
         if (map == null) {
             Text("SPATEM received; waiting for matching MAPEM geometry.", color = MaterialTheme.colorScheme.secondary)
         } else {
-            IntersectionRenderer(map, spat, currentPosition)
+            IntersectionRenderer(
+                map = map,
+                spat = spat,
+                currentPosition = currentPosition,
+                selectedCrosswalkLaneIds = selectedCrosswalkLaneIds,
+                onCrosswalkLaneTap = { lane ->
+                    selectedCrosswalkLaneIds = nextCrosswalkSelection(map, selectedCrosswalkLaneIds, lane.id)
+                },
+            )
             Text(
                 "${map.lanes.size} lanes • ${map.lanes.count { it.connections.isNotEmpty() }} signalized lane links",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.secondary,
             )
+            SremRequestPanel(
+                snapshot = snapshot,
+                selectedLaneIds = selectedCrosswalkLaneIds,
+                state = sremUiState,
+                txApproved = txApproved,
+                status = status,
+                currentPosition = currentPosition,
+                onClear = { selectedCrosswalkLaneIds = emptyList() },
+                onSend = {
+                    val pair = selectedPair ?: return@SremRequestPanel
+                    onSendSrem(snapshot, pair[0], pair[1])
+                },
+            )
         }
     }
     SignalTimingPanel(snapshot)
 }
+
+private enum class SremRequestUiState(
+    val label: String,
+    val detail: String,
+    val color: Color,
+) {
+    SelectFirst("Select first pedestrian lane", "Tap a crosswalk lane in the intersection view.", Color(0xFF475569)),
+    SelectSecond("Select connected lane", "Non-connected crosswalk lanes are dimmed.", Color(0xFF0F766E)),
+    NotReady("Cannot request yet", "Start capture, approve TX, and wait for a fresh location.", Color(0xFFD97706)),
+    Ready("Slide left to request green", "The request will be sent as an SREM.", Color(0xFF0F766E)),
+    Queued("Request queued", "Waiting for firmware transmit acknowledgement.", Color(0xFF2563EB)),
+    Transmitted("SREM transmitted", "Waiting for response or signal change.", Color(0xFF2563EB)),
+    Acknowledged("Request acknowledged", "The controller reported that it received the request.", Color(0xFF2563EB)),
+    Processing("Controller processing", "The controller is processing the request.", Color(0xFF2563EB)),
+    WatchOtherTraffic("Watch other traffic", "The controller granted limited priority with caution.", Color(0xFFD97706)),
+    Granted("Request granted", "Waiting for the walk phase to become active.", Color(0xFF16A34A)),
+    WalkActive("Walk phase active", "SPATEM reports a permitted crossing phase.", Color(0xFF16A34A)),
+    Rejected("Request rejected", "The controller rejected this request.", Color(0xFFB91C1C)),
+    UnknownResponse("Response unclear", "The controller response could not be classified.", Color(0xFFD97706)),
+    Failed("Request failed", "The SREM could not be transmitted.", Color(0xFFB91C1C)),
+    TimedOut("No response observed", "No matching signal change was seen in time.", Color(0xFFD97706)),
+}
+
+@Composable
+private fun SremRequestPanel(
+    snapshot: IntersectionSnapshot,
+    selectedLaneIds: List<Int>,
+    state: SremRequestUiState,
+    txApproved: Boolean,
+    status: BridgeStatus,
+    currentPosition: DevicePosition?,
+    onClear: () -> Unit,
+    onSend: () -> Unit,
+) {
+    val selectedPair = selectedLaneIds.takeIf { it.size == 2 }
+    val sliderEnabled = selectedPair != null &&
+        state == SremRequestUiState.Ready &&
+        txApproved &&
+        status.running &&
+        currentPosition?.isFreshForSrem() == true
+    val displayState = if (selectedPair != null && state == SremRequestUiState.Ready && !sliderEnabled) {
+        SremRequestUiState.NotReady
+    } else {
+        state
+    }
+    if (selectedLaneIds.isEmpty()) {
+        Text(
+            state.detail,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        return
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFFF8FAFC), RoundedCornerShape(8.dp))
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                selectedPair?.let { "Lane ${it[0]} -> ${it[1]}" } ?: "Lane ${selectedLaneIds.first()} selected",
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            TextButton(onClick = onClear) {
+                Text("Clear")
+            }
+        }
+        Text(
+            displayState.label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = displayState.color,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            requestDetailText(displayState, status, snapshot, selectedPair),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        if (selectedPair != null) {
+            SremRequestSlider(
+                state = displayState,
+                enabled = sliderEnabled,
+                onSubmit = onSend,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+private fun requestDetailText(
+    state: SremRequestUiState,
+    status: BridgeStatus,
+    snapshot: IntersectionSnapshot,
+    selectedPair: List<Int>?,
+): String {
+    if (selectedPair == null) return state.detail
+    val requestId = status.lastSremRequestId.takeIf { it >= 0 }?.let { "request $it" }
+    val updated = status.lastSremUpdatedAtMs.takeIf { it > 0L }?.let { "last ${formatIntersectionAge(it)}" }
+    val sremDetail = listOfNotNull(requestId, updated).joinToString(" • ")
+    val base = when (state) {
+        SremRequestUiState.Queued,
+        SremRequestUiState.Transmitted,
+        SremRequestUiState.Acknowledged,
+        SremRequestUiState.Processing,
+        SremRequestUiState.WatchOtherTraffic,
+        SremRequestUiState.Granted,
+        SremRequestUiState.Rejected,
+        SremRequestUiState.UnknownResponse,
+        SremRequestUiState.Failed,
+        SremRequestUiState.TimedOut -> status.lastSremSummary.ifBlank { state.detail }
+        else -> state.detail
+    }
+    val id = snapshot.map?.key?.let { "intersection $it" }
+    return listOfNotNull(base, sremDetail, id).filter { it.isNotBlank() }.joinToString(" • ")
+}
+
+@Composable
+private fun SremRequestSlider(
+    state: SremRequestUiState,
+    enabled: Boolean,
+    onSubmit: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var sliderPosition by rememberSaveable(state, enabled) {
+        mutableStateOf(
+            if (state in setOf(
+                    SremRequestUiState.Queued,
+                    SremRequestUiState.Transmitted,
+                    SremRequestUiState.Acknowledged,
+                    SremRequestUiState.Processing,
+                    SremRequestUiState.WatchOtherTraffic,
+                    SremRequestUiState.Granted,
+                    SremRequestUiState.Rejected,
+                    SremRequestUiState.UnknownResponse,
+                    SremRequestUiState.WalkActive,
+                )
+            ) {
+                1f
+            } else {
+                0f
+            },
+        )
+    }
+    var submitted by rememberSaveable(state) { mutableStateOf(false) }
+    val constrainedPosition = sliderPosition.coerceIn(0f, 1f)
+    var sliderSize by remember { mutableStateOf(IntSize.Zero) }
+    Canvas(
+        modifier = modifier
+            .height(96.dp)
+            .onSizeChanged { sliderSize = it }
+            .pointerInput(enabled, sliderSize.width, state) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                    val width = sliderSize.width.toFloat()
+                    if (!enabled || width <= 0f) return@awaitEachGesture
+                    val thumbRadius = 30.dp.toPx()
+                    val startX = thumbRadius
+                    val endX = width - thumbRadius
+                    val thumbX = endX - (endX - startX) * constrainedPosition
+                    val hitSlop = 18.dp.toPx()
+                    if (kotlin.math.abs(down.position.x - thumbX) > thumbRadius + hitSlop) {
+                        return@awaitEachGesture
+                    }
+                    down.consume()
+                    val startPosition = constrainedPosition
+                    val downX = down.position.x
+                    while (true) {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        event.changes.forEach { it.consume() }
+                        val active = event.changes.firstOrNull { it.pressed }
+                        if (active == null) break
+                        val dragFraction = (downX - active.position.x) / (endX - startX)
+                        val nextPosition = (startPosition + dragFraction).coerceIn(0f, 1f)
+                        sliderPosition = nextPosition
+                        if (!submitted && nextPosition >= 0.995f) {
+                            submitted = true
+                            sliderPosition = 1f
+                            onSubmit()
+                        }
+                    }
+                    if (!submitted && state == SremRequestUiState.Ready) sliderPosition = 0f
+                }
+            },
+    ) {
+        val trackHeight = 66.dp.toPx()
+        val thumbRadius = 30.dp.toPx()
+        val centerY = size.height / 2f
+        val startX = thumbRadius
+        val endX = size.width - thumbRadius
+        val thumbX = endX - (endX - startX) * constrainedPosition
+        val trackColor = if (enabled) state.color.copy(alpha = 0.22f) else Color(0xFFE2E8F0)
+        val fillColor = if (enabled || constrainedPosition > 0f) state.color else Color(0xFF94A3B8)
+        drawLine(
+            color = trackColor,
+            start = Offset(startX, centerY),
+            end = Offset(endX, centerY),
+            strokeWidth = trackHeight,
+            cap = StrokeCap.Round,
+        )
+        drawLine(
+            color = fillColor,
+            start = Offset(thumbX, centerY),
+            end = Offset(endX, centerY),
+            strokeWidth = trackHeight,
+            cap = StrokeCap.Round,
+        )
+        drawCircle(Color.White, radius = thumbRadius + 3.dp.toPx(), center = Offset(thumbX, centerY))
+        drawCircle(fillColor, radius = thumbRadius, center = Offset(thumbX, centerY))
+        drawSremSliderIcon(state, Offset(thumbX, centerY), thumbRadius)
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSremSliderIcon(
+    state: SremRequestUiState,
+    center: Offset,
+    radius: Float,
+) {
+    val white = Color.White
+    val strokeWidth = 4.dp.toPx()
+    when (state) {
+        SremRequestUiState.WalkActive,
+        SremRequestUiState.Granted -> {
+            drawLine(white, center + Offset(-10.dp.toPx(), 0f), center + Offset(-2.dp.toPx(), 9.dp.toPx()), strokeWidth, cap = StrokeCap.Round)
+            drawLine(white, center + Offset(-2.dp.toPx(), 9.dp.toPx()), center + Offset(13.dp.toPx(), -10.dp.toPx()), strokeWidth, cap = StrokeCap.Round)
+        }
+        SremRequestUiState.Failed,
+        SremRequestUiState.Rejected -> {
+            drawLine(white, center + Offset(-10.dp.toPx(), -10.dp.toPx()), center + Offset(10.dp.toPx(), 10.dp.toPx()), strokeWidth, cap = StrokeCap.Round)
+            drawLine(white, center + Offset(10.dp.toPx(), -10.dp.toPx()), center + Offset(-10.dp.toPx(), 10.dp.toPx()), strokeWidth, cap = StrokeCap.Round)
+        }
+        SremRequestUiState.Queued,
+        SremRequestUiState.Transmitted,
+        SremRequestUiState.Acknowledged,
+        SremRequestUiState.Processing,
+        SremRequestUiState.WatchOtherTraffic,
+        SremRequestUiState.UnknownResponse,
+        SremRequestUiState.TimedOut -> {
+            drawCircle(white, radius = radius * 0.34f, center = center, style = Stroke(width = strokeWidth))
+            drawLine(white, center, center + Offset(0f, -12.dp.toPx()), strokeWidth, cap = StrokeCap.Round)
+            drawLine(white, center, center + Offset(10.dp.toPx(), 4.dp.toPx()), strokeWidth, cap = StrokeCap.Round)
+        }
+        else -> {
+            val arrowLength = 22.dp.toPx()
+            val arrowHead = 8.dp.toPx()
+            val arrowStart = Offset(center.x + arrowLength / 2f, center.y)
+            val arrowEnd = Offset(center.x - arrowLength / 2f, center.y)
+            drawLine(white, arrowStart, arrowEnd, strokeWidth, cap = StrokeCap.Round)
+            drawLine(white, arrowEnd, Offset(arrowEnd.x + arrowHead, arrowEnd.y - arrowHead), strokeWidth, cap = StrokeCap.Round)
+            drawLine(white, arrowEnd, Offset(arrowEnd.x + arrowHead, arrowEnd.y + arrowHead), strokeWidth, cap = StrokeCap.Round)
+        }
+    }
+}
+
+private fun sremUiState(
+    status: BridgeStatus,
+    snapshot: IntersectionSnapshot?,
+    selectedLaneIds: List<Int>,
+    spat: SpatIntersection?,
+): SremRequestUiState {
+    val selectedPair = selectedLaneIds.takeIf { it.size == 2 }
+    if (selectedPair == null) {
+        return if (selectedLaneIds.size == 1) SremRequestUiState.SelectSecond else SremRequestUiState.SelectFirst
+    }
+    val map = snapshot?.map
+    val matchingStatus = map != null &&
+        status.lastSremIntersectionId == map.key.id &&
+        status.lastSremInboundLaneId == selectedPair[0] &&
+        status.lastSremOutboundLaneId == selectedPair[1]
+    if (matchingStatus) {
+        when (status.lastSremState) {
+            CitsBridgeService.SREM_STATE_FAILED -> return SremRequestUiState.Failed
+            CitsBridgeService.SREM_STATE_REJECTED -> return SremRequestUiState.Rejected
+            CitsBridgeService.SREM_STATE_GRANTED -> {
+                return if (isSelectedCrossingWalkActive(map, selectedPair, spat)) {
+                    SremRequestUiState.WalkActive
+                } else {
+                    SremRequestUiState.Granted
+                }
+            }
+            CitsBridgeService.SREM_STATE_ACKNOWLEDGED -> return SremRequestUiState.Acknowledged
+            CitsBridgeService.SREM_STATE_PROCESSING -> return SremRequestUiState.Processing
+            CitsBridgeService.SREM_STATE_WATCH_OTHER_TRAFFIC -> return SremRequestUiState.WatchOtherTraffic
+            CitsBridgeService.SREM_STATE_UNKNOWN_RESPONSE -> return SremRequestUiState.UnknownResponse
+            CitsBridgeService.SREM_STATE_QUEUED -> return SremRequestUiState.Queued
+            CitsBridgeService.SREM_STATE_TRANSMITTED -> {
+                val ageMs = System.currentTimeMillis() - status.lastSremUpdatedAtMs
+                return if (ageMs > SREM_RESPONSE_TIMEOUT_MS) {
+                    SremRequestUiState.TimedOut
+                } else {
+                    SremRequestUiState.Transmitted
+                }
+            }
+        }
+    }
+    if (isSelectedCrossingWalkActive(snapshot?.map, selectedPair, spat)) return SremRequestUiState.WalkActive
+    return if (status.running) SremRequestUiState.Ready else SremRequestUiState.NotReady
+}
+
+private fun isSelectedCrossingWalkActive(
+    map: MapIntersection?,
+    selectedPair: List<Int>,
+    spat: SpatIntersection?,
+): Boolean {
+    val lanesById = map?.lanes?.associateBy { it.id } ?: return false
+    val first = lanesById[selectedPair[0]] ?: return false
+    val second = lanesById[selectedPair[1]] ?: return false
+    val signalGroups = spat?.movementsBySignalGroup.orEmpty()
+    val signalGroup = first.connections.firstOrNull { it.laneId == second.id }?.signalGroup
+        ?: second.connections.firstOrNull { it.laneId == first.id }?.signalGroup
+        ?: first.connections.firstNotNullOfOrNull { it.signalGroup }
+        ?: return false
+    return signalGroups[signalGroup]?.currentEvent?.state in setOf(
+        MovementPhaseState.PermissiveAllowed,
+        MovementPhaseState.ProtectedAllowed,
+    )
+}
+
+private fun DevicePosition.isFreshForSrem(nowMs: Long = System.currentTimeMillis()): Boolean =
+    timeMs in (nowMs - SREM_MAX_LOCATION_AGE_MS)..(nowMs + 1_000L)
 
 private fun formatIntersectionAge(updatedAtMs: Long, nowMs: Long = System.currentTimeMillis()): String {
     val ageSeconds = ((nowMs - updatedAtMs).coerceAtLeast(0L) / 1_000L)
@@ -1415,6 +1814,8 @@ private const val TENTHS_PER_MINUTE = 600
 private const val DOUBLE_TAP_TIMEOUT_MS = 300L
 private const val TAP_TIMEOUT_MS = 220L
 private const val QUICK_SCALE_SENSITIVITY = 0.006f
+private const val SREM_MAX_LOCATION_AGE_MS = 5_000L
+private const val SREM_RESPONSE_TIMEOUT_MS = 15_000L
 
 private fun clampIntersectionPan(
     pan: Offset,
@@ -1429,11 +1830,101 @@ private fun clampIntersectionPan(
     )
 }
 
+private fun nextCrosswalkSelection(
+    map: MapIntersection,
+    selectedLaneIds: List<Int>,
+    tappedLaneId: Int,
+): List<Int> {
+    val tappedLane = map.lanes.firstOrNull { it.id == tappedLaneId && it.laneType == LaneType.Crosswalk }
+        ?: return selectedLaneIds
+    if (selectedLaneIds.isEmpty()) return listOf(tappedLane.id)
+    val firstLaneId = selectedLaneIds.first()
+    if (tappedLane.id == firstLaneId) return emptyList()
+    if (selectedLaneIds.size == 1) {
+        return if (tappedLane.id in connectedCrosswalkLaneIds(map, firstLaneId)) {
+            listOf(firstLaneId, tappedLane.id)
+        } else {
+            listOf(tappedLane.id)
+        }
+    }
+    return listOf(tappedLane.id)
+}
+
+private fun connectedCrosswalkLaneIds(map: MapIntersection, laneId: Int): Set<Int> {
+    val lanesById = map.lanes.associateBy { it.id }
+    val lane = lanesById[laneId] ?: return emptySet()
+    return map.lanes.asSequence()
+        .filter { it.laneType == LaneType.Crosswalk && it.id != laneId }
+        .filter { candidate ->
+            lane.connections.any { it.laneId == candidate.id } ||
+                candidate.connections.any { it.laneId == laneId }
+        }
+        .map { it.id }
+        .toSet()
+}
+
+private fun hitTestCrosswalkLane(
+    map: MapIntersection,
+    canvasSize: IntSize,
+    zoomScale: Float,
+    pan: Offset,
+    tap: Offset,
+    paddingPx: Float,
+    hitSlopPx: Float,
+): MapLane? {
+    if (canvasSize.width <= 0 || canvasSize.height <= 0) return null
+    val allNodes = map.lanes.flatMap { it.nodes }
+    if (allNodes.isEmpty()) return null
+    val minX = allNodes.minOf { it.xCm }.toFloat()
+    val maxX = allNodes.maxOf { it.xCm }.toFloat()
+    val minY = allNodes.minOf { it.yCm }.toFloat()
+    val maxY = allNodes.maxOf { it.yCm }.toFloat()
+    val width = (maxX - minX).coerceAtLeast(1f)
+    val height = (maxY - minY).coerceAtLeast(1f)
+    val scale = minOf((canvasSize.width - paddingPx * 2) / width, (canvasSize.height - paddingPx * 2) / height)
+
+    fun point(node: LaneNode): Offset {
+        val base = Offset(
+            x = paddingPx + (node.xCm - minX) * scale,
+            y = canvasSize.height - paddingPx - (node.yCm - minY) * scale,
+        )
+        return Offset(
+            x = base.x * zoomScale + pan.x,
+            y = base.y * zoomScale + pan.y,
+        )
+    }
+
+    return map.lanes
+        .filter { it.laneType == LaneType.Crosswalk && it.nodes.size >= 2 }
+        .mapNotNull { lane ->
+            val distance = lane.nodes.zipWithNext().minOf { (start, end) ->
+                distanceToSegment(tap, point(start), point(end)).toDouble()
+            }.toFloat()
+            if (distance <= hitSlopPx) lane to distance else null
+        }
+        .minByOrNull { it.second }
+        ?.first
+}
+
+private fun distanceToSegment(point: Offset, start: Offset, end: Offset): Float {
+    val dx = end.x - start.x
+    val dy = end.y - start.y
+    val lengthSquared = dx * dx + dy * dy
+    if (lengthSquared <= 0.0001f) {
+        return hypot((point.x - start.x).toDouble(), (point.y - start.y).toDouble()).toFloat()
+    }
+    val t = (((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared).coerceIn(0f, 1f)
+    val projection = Offset(start.x + dx * t, start.y + dy * t)
+    return hypot((point.x - projection.x).toDouble(), (point.y - projection.y).toDouble()).toFloat()
+}
+
 @Composable
 private fun IntersectionRenderer(
     map: MapIntersection,
     spat: SpatIntersection?,
     currentPosition: DevicePosition?,
+    selectedCrosswalkLaneIds: List<Int>,
+    onCrosswalkLaneTap: (MapLane) -> Unit,
 ) {
     val signalGroups = spat?.movementsBySignalGroup.orEmpty()
     val canvasBackground = Color(0xFFF8FAFC)
@@ -1444,6 +1935,10 @@ private fun IntersectionRenderer(
     var lastTapUpMs by remember { mutableStateOf<Long?>(null) }
     var lastTapPosition by remember { mutableStateOf<Offset?>(null) }
     var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    val firstSelectedLaneId = selectedCrosswalkLaneIds.firstOrNull()
+    val selectableSecondLaneIds = remember(map, firstSelectedLaneId) {
+        firstSelectedLaneId?.let { connectedCrosswalkLaneIds(map, it) }.orEmpty()
+    }
     fun updateTransform(nextScale: Float, nextPan: Offset) {
         val constrainedScale = nextScale.coerceIn(1f, INTERSECTION_MAX_ZOOM)
         val constrainedPan = clampIntersectionPan(
@@ -1502,6 +1997,17 @@ private fun IntersectionRenderer(
                             if (!isQuickScale && movedDistance <= tapSlop && event.changes.any { !it.pressed }) {
                                 val upTimeMs = event.changes.maxOf { it.uptimeMillis }
                                 if (upTimeMs - downTimeMs <= TAP_TIMEOUT_MS) {
+                                    hitTestCrosswalkLane(
+                                        map = map,
+                                        canvasSize = canvasSize,
+                                        zoomScale = zoomScale,
+                                        pan = Offset(panX, panY),
+                                        tap = downPosition,
+                                        paddingPx = 28.dp.toPx(),
+                                        hitSlopPx = 18.dp.toPx(),
+                                    )?.let { lane ->
+                                        onCrosswalkLaneTap(lane)
+                                    }
                                     lastTapUpMs = upTimeMs
                                     lastTapPosition = downPosition
                                 }
@@ -1638,6 +2144,13 @@ private fun IntersectionRenderer(
             return phase?.phaseColor() ?: lane.laneType.baseColor()
         }
 
+        fun laneSelectionAlpha(lane: MapLane): Float {
+            if (lane.laneType != LaneType.Crosswalk) return 1f
+            if (lane.id in selectedCrosswalkLaneIds) return 1f
+            val firstId = firstSelectedLaneId ?: return 1f
+            return if (lane.id in selectableSecondLaneIds || lane.id == firstId) 1f else 0.2f
+        }
+
         fun laneLabelPoint(lane: MapLane): Offset {
             val start = lane.nodes.first()
             val end = lane.nodes.last()
@@ -1750,10 +2263,11 @@ private fun IntersectionRenderer(
             val color = signalColorFor(lane)
             val path = lanePath(lane)
             val style = styleFor(lane.laneType)
+            val selectionAlpha = laneSelectionAlpha(lane)
             style.backingWidth?.let { backingWidth ->
                 drawPath(
                     path = path,
-                    color = style.backingColor,
+                    color = style.backingColor.copy(alpha = style.backingColor.alpha * selectionAlpha),
                     style = Stroke(
                         width = backingWidth,
                         cap = StrokeCap.Round,
@@ -1764,7 +2278,7 @@ private fun IntersectionRenderer(
             }
             drawPath(
                 path = path,
-                color = color.copy(alpha = if (phase == null) style.unsignalizedAlpha else 0.92f),
+                color = color.copy(alpha = (if (phase == null) style.unsignalizedAlpha else 0.92f) * selectionAlpha),
                 style = Stroke(
                     width = style.width,
                     cap = StrokeCap.Round,
@@ -1772,6 +2286,36 @@ private fun IntersectionRenderer(
                     pathEffect = style.pathEffect,
                 ),
             )
+            if (lane.id in selectedCrosswalkLaneIds) {
+                drawPath(
+                    path = path,
+                    color = Color(0xFF0F766E),
+                    style = Stroke(
+                        width = style.width + 7.dp.toPx(),
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                    ),
+                )
+                drawPath(
+                    path = path,
+                    color = Color.White,
+                    style = Stroke(
+                        width = style.width + 3.dp.toPx(),
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                    ),
+                )
+                drawPath(
+                    path = path,
+                    color = color,
+                    style = Stroke(
+                        width = style.width,
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                        pathEffect = style.pathEffect,
+                    ),
+                )
+            }
             style.centerGapWidth?.let { centerGapWidth ->
                 drawPath(
                     path = path,

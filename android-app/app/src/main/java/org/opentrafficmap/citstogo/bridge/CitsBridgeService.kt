@@ -32,11 +32,16 @@ import org.opentrafficmap.citstogo.cam.StationType
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
 import org.opentrafficmap.citstogo.intersection.IntersectionStateStore
+import org.opentrafficmap.citstogo.intersection.SsemDecoder
+import org.opentrafficmap.citstogo.intersection.SsemResponseStatus
+import org.opentrafficmap.citstogo.intersection.SsemStatus
 import org.opentrafficmap.citstogo.protocol.CitsPacket
 import org.opentrafficmap.citstogo.protocol.CtgFrameEncoder
 import org.opentrafficmap.citstogo.protocol.CtgInboundFrame
 import org.opentrafficmap.citstogo.protocol.Ieee80211Mac
 import org.opentrafficmap.citstogo.protocol.SerialPacketReader
+import org.opentrafficmap.citstogo.srem.SremPosition
+import org.opentrafficmap.citstogo.srem.SremRequest
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
@@ -76,7 +81,10 @@ class CitsBridgeService : Service() {
     private var lastPacketStatusPackets = 0L
     private val txQueue = LinkedBlockingQueue<TxEnvelope>(MAX_TX_QUEUE)
     private val nextTxRequestId = AtomicLong(1)
+    private val nextSremRequestId = AtomicLong(1)
+    private val nextSremSequenceNumber = AtomicLong(1)
     private val pendingTx = ConcurrentHashMap<Long, PendingTx>()
+    private val pendingSremRequests = ConcurrentHashMap<Int, PendingSremRequest>()
     private lateinit var camIdentity: CamIdentity
     @Volatile private var lastLocation: Location? = null
     private var camEnabled = false
@@ -155,7 +163,7 @@ class CitsBridgeService : Service() {
                 CamPosition.fromLocation(sampledLocation),
                 referenceTimeMs,
             )
-            if (queueTransmit(packet, isCam = true)) {
+            if (queueTransmit(packet, TxKind.Cam)) {
                 lastCamGeneratedElapsedMs = elapsedMs
                 lastCamLocation = sampledLocation
             }
@@ -237,6 +245,7 @@ class CitsBridgeService : Service() {
                 StationType.selectableFromCode(intent.getIntExtra(EXTRA_CAM_STATION_TYPE, StationType.PEDESTRIAN.code)),
                 intent.getIntExtra(EXTRA_CAM_INTERVAL_MS, DEFAULT_CAM_INTERVAL_MS),
             )
+            ACTION_SEND_SREM -> sendSrem(intent)
             ACTION_REVOKE_TX_APPROVAL -> revokeTxApproval()
             else -> publishStatus(null)
         }
@@ -357,8 +366,17 @@ class CitsBridgeService : Service() {
         serialWriteThread = null
         txQueue.clear()
         if (pendingTx.isNotEmpty()) {
+            val pendingSrem = pendingTx.values.firstOrNull { it.kind == TxKind.Srem && it.sremRequestId != null }
             txFailed += pendingTx.size
             pendingTx.clear()
+            if (pendingSrem?.sremRequestId != null) {
+                pendingSremRequests.remove(pendingSrem.sremRequestId)
+                status = status.copy(
+                    lastSremState = SREM_STATE_FAILED,
+                    lastSremSummary = "SREM transmit canceled: USB disconnected",
+                    lastSremUpdatedAtMs = System.currentTimeMillis(),
+                )
+            }
         }
         if (message != null) {
             status = status.copy(usbState = if (usbWanted) "Waiting for USB device" else "Stopped")
@@ -378,6 +396,7 @@ class CitsBridgeService : Service() {
         queueMqttPacket(packet.payload)
         writePcap(packet)
         updateIntersection(packet.payload)
+        updateSsem(packet.payload)
         status = status.copy(
             running = true,
             packets = packets,
@@ -404,7 +423,66 @@ class CitsBridgeService : Service() {
         }
     }
 
-    private fun queueTransmit(packet: ByteArray, isCam: Boolean): Boolean {
+    private fun updateSsem(packet: ByteArray) {
+        try {
+            val its = org.opentrafficmap.citstogo.intersection.ItsFrameExtractor.extract(packet) ?: return
+            if (its.messageId != SsemDecoder.MESSAGE_ID_SSEM) return
+            SsemDecoder.decode(its, System.currentTimeMillis()).forEach { ssem ->
+                handleSsemStatus(ssem)
+            }
+        } catch (_: Exception) {
+            // SSEM decoding is best-effort; unsupported optional branches should not affect capture.
+        }
+    }
+
+    private fun handleSsemStatus(ssem: SsemStatus) {
+        prunePendingSremRequests()
+        val pending = matchingSremRequest(ssem) ?: return
+        val state = when (ssem.responseStatus) {
+            SsemResponseStatus.Granted -> SREM_STATE_GRANTED
+            SsemResponseStatus.Rejected,
+            SsemResponseStatus.MaxPresence,
+            SsemResponseStatus.ReserviceLocked -> SREM_STATE_REJECTED
+            SsemResponseStatus.Processing -> SREM_STATE_PROCESSING
+            SsemResponseStatus.Requested -> SREM_STATE_ACKNOWLEDGED
+            SsemResponseStatus.WatchOtherTraffic -> SREM_STATE_WATCH_OTHER_TRAFFIC
+            SsemResponseStatus.Unknown,
+            SsemResponseStatus.Unsupported -> SREM_STATE_UNKNOWN_RESPONSE
+        }
+        status = status.copy(
+            lastSremState = state,
+            lastSremSummary = "SSEM ${ssem.responseStatus.label.lowercase()} for request ${pending.requestId}",
+            lastSremRequestId = pending.requestId,
+            lastSremIntersectionId = pending.intersectionId,
+            lastSremInboundLaneId = pending.inboundLaneId,
+            lastSremOutboundLaneId = pending.outboundLaneId,
+            lastSremUpdatedAtMs = ssem.receivedAtMs,
+            lastError = if (state == SREM_STATE_REJECTED) ssem.responseStatus.label else status.lastError,
+        )
+        if (state in setOf(SREM_STATE_GRANTED, SREM_STATE_REJECTED)) {
+            pendingSremRequests.remove(pending.requestId)
+        }
+        publishStatus(status.lastSremSummary)
+    }
+
+    private fun matchingSremRequest(ssem: SsemStatus): PendingSremRequest? {
+        ssem.requestId?.let { requestId ->
+            pendingSremRequests[requestId]?.takeIf { it.matches(ssem, requireLaneMatch = false) }?.let {
+                return it
+            }
+        }
+        return pendingSremRequests.values
+            .filter { it.matches(ssem, requireLaneMatch = true) }
+            .maxByOrNull { it.sentAtMs }
+    }
+
+    private fun prunePendingSremRequests(nowMs: Long = System.currentTimeMillis()) {
+        pendingSremRequests.entries.removeAll { (_, request) ->
+            nowMs - request.sentAtMs > PENDING_SREM_MAX_AGE_MS
+        }
+    }
+
+    private fun queueTransmit(packet: ByteArray, kind: TxKind, sremRequestId: Int? = null): Boolean {
         if (!hasTxApproval()) {
             txFailed += 1
             status = status.copy(lastError = "TX approval is required before transmitting")
@@ -426,7 +504,7 @@ class CitsBridgeService : Service() {
         val requestId = nextTxRequestId.getAndIncrement() and 0xffff_ffffL
         val packetCopy = packet.copyOf()
         val envelope = TxEnvelope(requestId, packetCopy)
-        pendingTx[requestId] = PendingTx(packetCopy, isCam)
+        pendingTx[requestId] = PendingTx(packetCopy, kind, sremRequestId)
         if (!txQueue.offer(envelope)) {
             pendingTx.remove(requestId)
             txFailed += 1
@@ -440,20 +518,142 @@ class CitsBridgeService : Service() {
 
     private fun handleTxResult(result: CtgInboundFrame.TxResult) {
         val pending = pendingTx.remove(result.requestId)
-        val isCam = pending?.isCam == true
+        val isCam = pending?.kind == TxKind.Cam
+        val sremRequestId = pending?.sremRequestId
         val summary = "#${result.requestId} ${result.packetLength}B " +
             if (result.successful) "sent" else "failed (ESP 0x${result.status.toString(16)})"
         if (result.successful) {
             txSuccessful += 1
             if (isCam) camSent += 1
+            if (sremRequestId != null) {
+                status = status.copy(
+                    lastSremState = SREM_STATE_TRANSMITTED,
+                    lastSremSummary = "SREM transmitted for request $sremRequestId",
+                    lastSremUpdatedAtMs = System.currentTimeMillis(),
+                )
+            }
             val packet = result.packet ?: pending?.packet
             queueMqttPacket(packet)
             writePcapPacket(packet)
         } else {
             txFailed += 1
+            if (sremRequestId != null) {
+                pendingSremRequests.remove(sremRequestId)
+                status = status.copy(
+                    lastSremState = SREM_STATE_FAILED,
+                    lastSremSummary = "SREM transmit failed for request $sremRequestId",
+                    lastSremUpdatedAtMs = System.currentTimeMillis(),
+                )
+            }
         }
         status = status.copy(lastTxSummary = summary, lastError = if (result.successful) "" else summary)
         publishStatus("TX $summary")
+    }
+
+    private fun sendSrem(intent: Intent) {
+        val nowMs = System.currentTimeMillis()
+        if (!hasTxApproval()) {
+            status = status.copy(
+                lastError = "TX approval is required before SREM",
+                lastSremState = SREM_STATE_FAILED,
+                lastSremSummary = "SREM blocked: TX approval required",
+                lastSremUpdatedAtMs = nowMs,
+            )
+            publishStatus(status.lastError)
+            return
+        }
+        if (serial == null) {
+            status = status.copy(
+                lastError = "SREM requires a connected USB device",
+                lastSremState = SREM_STATE_FAILED,
+                lastSremSummary = "SREM blocked: USB disconnected",
+                lastSremUpdatedAtMs = nowMs,
+            )
+            publishStatus(status.lastError)
+            return
+        }
+
+        val intersectionId = intent.getIntExtra(EXTRA_SREM_INTERSECTION_ID, -1)
+        val inboundLaneId = intent.getIntExtra(EXTRA_SREM_INBOUND_LANE_ID, -1)
+        val outboundLaneId = intent.getIntExtra(EXTRA_SREM_OUTBOUND_LANE_ID, -1)
+        val latitude = intent.getIntExtra(EXTRA_SREM_LATITUDE_E7, 900_000_001)
+        val longitude = intent.getIntExtra(EXTRA_SREM_LONGITUDE_E7, 1_800_000_001)
+        val positionTimeMs = intent.getLongExtra(EXTRA_SREM_POSITION_TIME_MS, 0L)
+        val region = intent.getIntExtra(EXTRA_SREM_REGION, -1).takeIf { it >= 0 }
+        if (
+            intersectionId !in 0..65_535 ||
+            inboundLaneId !in 0..255 ||
+            outboundLaneId !in 0..255 ||
+            latitude !in -900_000_000..900_000_000 ||
+            longitude !in -1_800_000_000..1_800_000_000 ||
+            positionTimeMs !in (nowMs - MAX_LOCATION_AGE_MS)..(nowMs + 1_000L)
+        ) {
+            status = status.copy(
+                lastError = "SREM requires a valid intersection, lane pair, and fresh location",
+                lastSremState = SREM_STATE_FAILED,
+                lastSremSummary = "SREM blocked: invalid request context",
+                lastSremUpdatedAtMs = nowMs,
+            )
+            publishStatus(status.lastError)
+            return
+        }
+
+        val requestId = ((nextSremRequestId.getAndIncrement() - 1) % 255 + 1).toInt()
+        val sequenceNumber = (nextSremSequenceNumber.getAndIncrement() % 128).toInt()
+        val request = SremRequest(
+            region = region,
+            intersectionId = intersectionId,
+            requestId = requestId,
+            sequenceNumber = sequenceNumber,
+            inboundLaneId = inboundLaneId,
+            outboundLaneId = outboundLaneId,
+            position = SremPosition(latitude, longitude),
+            nowUnixMs = nowMs,
+        )
+        val packet = try {
+            ItsG5FrameBuilder.sremFrame(camIdentity, request)
+        } catch (e: Exception) {
+            status = status.copy(
+                lastError = "SREM encode failed: ${e.message}",
+                lastSremState = SREM_STATE_FAILED,
+                lastSremSummary = "SREM encode failed",
+                lastSremUpdatedAtMs = nowMs,
+            )
+            publishStatus(status.lastError)
+            return
+        }
+
+        status = status.copy(
+            lastSremState = SREM_STATE_QUEUED,
+            lastSremSummary = "SREM queued for lane $inboundLaneId -> $outboundLaneId",
+            lastSremRequestId = requestId,
+            lastSremIntersectionId = intersectionId,
+            lastSremInboundLaneId = inboundLaneId,
+            lastSremOutboundLaneId = outboundLaneId,
+            lastSremUpdatedAtMs = nowMs,
+            lastError = "",
+        )
+        pendingSremRequests[requestId] = PendingSremRequest(
+            requestId = requestId,
+            sequenceNumber = sequenceNumber,
+            stationId = camIdentity.stationId,
+            region = region,
+            intersectionId = intersectionId,
+            inboundLaneId = inboundLaneId,
+            outboundLaneId = outboundLaneId,
+            sentAtMs = nowMs,
+        )
+        if (queueTransmit(packet, TxKind.Srem, requestId)) {
+            publishStatus("SREM queued")
+        } else {
+            pendingSremRequests.remove(requestId)
+            status = status.copy(
+                lastSremState = SREM_STATE_FAILED,
+                lastSremSummary = status.lastError.ifBlank { "SREM queue failed" },
+                lastSremUpdatedAtMs = System.currentTimeMillis(),
+            )
+            publishStatus(status.lastError)
+        }
     }
 
     private fun configureCam(enabled: Boolean, stationType: StationType, requestedIntervalMs: Int) {
@@ -502,6 +702,7 @@ class CitsBridgeService : Service() {
         camEnabled = false
         txQueue.clear()
         if (pendingTx.isNotEmpty()) {
+            pendingTx.values.mapNotNull { it.sremRequestId }.forEach { pendingSremRequests.remove(it) }
             txFailed += pendingTx.size
             pendingTx.clear()
         }
@@ -848,6 +1049,13 @@ class CitsBridgeService : Service() {
         intent.putExtra(EXTRA_TX_FAILED, status.txFailed)
         intent.putExtra(EXTRA_CAM_ENABLED, status.camEnabled)
         intent.putExtra(EXTRA_CAM_SENT, status.camSent)
+        intent.putExtra(EXTRA_SREM_STATE, status.lastSremState)
+        intent.putExtra(EXTRA_SREM_SUMMARY, status.lastSremSummary)
+        intent.putExtra(EXTRA_SREM_REQUEST_ID, status.lastSremRequestId)
+        intent.putExtra(EXTRA_SREM_INTERSECTION_ID, status.lastSremIntersectionId)
+        intent.putExtra(EXTRA_SREM_INBOUND_LANE_ID, status.lastSremInboundLaneId)
+        intent.putExtra(EXTRA_SREM_OUTBOUND_LANE_ID, status.lastSremOutboundLaneId)
+        intent.putExtra(EXTRA_SREM_UPDATED_AT_MS, status.lastSremUpdatedAtMs)
         intent.putExtra(EXTRA_LAST_TX, status.lastTxSummary)
         intent.putExtra(EXTRA_LAST_PACKET, status.lastPacketSummary)
         intent.putExtra(EXTRA_LAST_ERROR, status.lastError)
@@ -1073,6 +1281,7 @@ class CitsBridgeService : Service() {
         const val ACTION_STOP_PCAP = "org.opentrafficmap.citstogo.action.STOP_PCAP"
         const val ACTION_REQUEST_STATUS = "org.opentrafficmap.citstogo.action.REQUEST_STATUS"
         const val ACTION_CONFIGURE_CAM = "org.opentrafficmap.citstogo.action.CONFIGURE_CAM"
+        const val ACTION_SEND_SREM = "org.opentrafficmap.citstogo.action.SEND_SREM"
         const val ACTION_REVOKE_TX_APPROVAL = "org.opentrafficmap.citstogo.action.REVOKE_TX_APPROVAL"
         const val ACTION_STATUS = "org.opentrafficmap.citstogo.action.STATUS"
         const val ACTION_USB_PERMISSION = "org.opentrafficmap.citstogo.action.USB_PERMISSION"
@@ -1106,8 +1315,28 @@ class CitsBridgeService : Service() {
         const val EXTRA_CAM_SENT = "camSent"
         const val EXTRA_CAM_STATION_TYPE = "camStationType"
         const val EXTRA_CAM_INTERVAL_MS = "camIntervalMs"
+        const val EXTRA_SREM_STATE = "sremState"
+        const val EXTRA_SREM_SUMMARY = "sremSummary"
+        const val EXTRA_SREM_REQUEST_ID = "sremRequestId"
+        const val EXTRA_SREM_REGION = "sremRegion"
+        const val EXTRA_SREM_INTERSECTION_ID = "sremIntersectionId"
+        const val EXTRA_SREM_INBOUND_LANE_ID = "sremInboundLaneId"
+        const val EXTRA_SREM_OUTBOUND_LANE_ID = "sremOutboundLaneId"
+        const val EXTRA_SREM_LATITUDE_E7 = "sremLatitudeE7"
+        const val EXTRA_SREM_LONGITUDE_E7 = "sremLongitudeE7"
+        const val EXTRA_SREM_POSITION_TIME_MS = "sremPositionTimeMs"
+        const val EXTRA_SREM_UPDATED_AT_MS = "sremUpdatedAtMs"
         const val EXTRA_INTERSECTION_SNAPSHOT = "intersectionSnapshot"
         const val EXTRA_INTERSECTION_SNAPSHOTS = "intersectionSnapshots"
+        const val SREM_STATE_QUEUED = "queued"
+        const val SREM_STATE_TRANSMITTED = "transmitted"
+        const val SREM_STATE_ACKNOWLEDGED = "acknowledged"
+        const val SREM_STATE_PROCESSING = "processing"
+        const val SREM_STATE_WATCH_OTHER_TRAFFIC = "watchOtherTraffic"
+        const val SREM_STATE_GRANTED = "granted"
+        const val SREM_STATE_REJECTED = "rejected"
+        const val SREM_STATE_UNKNOWN_RESPONSE = "unknownResponse"
+        const val SREM_STATE_FAILED = "failed"
 
         const val PREFS = "cits_to_go"
         const val PREF_NODE_ID = "node_id"
@@ -1137,6 +1366,7 @@ class CitsBridgeService : Service() {
         private const val USB_WRITE_TIMEOUT_MS = 2_000
         private const val MAX_TX_QUEUE = 64
         private const val MAX_LOCATION_AGE_MS = 5_000L
+        private const val PENDING_SREM_MAX_AGE_MS = 60_000L
         private const val CAM_TRIGGER_CHECK_MS = 100L
         private const val MAINTENANCE_INTERVAL_MS = 2_000L
         private const val PACKET_STATUS_INTERVAL_MS = 100L
@@ -1146,5 +1376,35 @@ class CitsBridgeService : Service() {
     }
 
     private data class TxEnvelope(val requestId: Long, val packet: ByteArray)
-    private data class PendingTx(val packet: ByteArray, val isCam: Boolean)
+    private data class PendingTx(val packet: ByteArray, val kind: TxKind, val sremRequestId: Int?)
+    private data class PendingSremRequest(
+        val requestId: Int,
+        val sequenceNumber: Int,
+        val stationId: Long,
+        val region: Int?,
+        val intersectionId: Int,
+        val inboundLaneId: Int,
+        val outboundLaneId: Int,
+        val sentAtMs: Long,
+    ) {
+        fun matches(ssem: SsemStatus, requireLaneMatch: Boolean): Boolean {
+            if (ssem.requesterStationId != null && ssem.requesterStationId != stationId) return false
+            if (ssem.requestId != null && ssem.requestId != requestId) return false
+            if (ssem.requestSequenceNumber != null && ssem.requestSequenceNumber != sequenceNumber) return false
+            if (ssem.intersectionKey.id != intersectionId) return false
+            if (ssem.intersectionKey.region != null && region != null && ssem.intersectionKey.region != region) return false
+            if (requireLaneMatch || ssem.inboundLaneId != null) {
+                if (ssem.inboundLaneId != null && ssem.inboundLaneId != inboundLaneId) return false
+            }
+            if (requireLaneMatch || ssem.outboundLaneId != null) {
+                if (ssem.outboundLaneId != null && ssem.outboundLaneId != outboundLaneId) return false
+            }
+            return true
+        }
+    }
+
+    private enum class TxKind {
+        Cam,
+        Srem,
+    }
 }
