@@ -56,6 +56,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
@@ -69,6 +70,8 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -100,7 +103,12 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.opentrafficmap.citstogo.bridge.BridgeStatus
 import org.opentrafficmap.citstogo.bridge.CitsBridgeService
+import org.opentrafficmap.citstogo.bridge.UsbCdcSerial
 import org.opentrafficmap.citstogo.cam.StationType
+import org.opentrafficmap.citstogo.flashing.CodebergReleaseClient
+import org.opentrafficmap.citstogo.flashing.Esp32RomFlasher
+import org.opentrafficmap.citstogo.flashing.EspFlashTransport
+import org.opentrafficmap.citstogo.flashing.FirmwareRelease
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
 import org.opentrafficmap.citstogo.intersection.LaneConnection
@@ -151,6 +159,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var wantsIntersectionLocation = false
     private var intersectionLocationActive = false
     private var lastShakeElapsedMs = 0L
+    private var firmwareRelease: FirmwareRelease? = null
+    private var releaseLookupRunning = false
+    private var flashAfterPermission = false
+    private var flashingState by mutableStateOf(FirmwareFlashingState.initial(BuildConfig.VERSION_NAME))
 
     private val intersectionLocationListener = LocationListener { location ->
         updateCurrentPosition(location)
@@ -164,11 +176,33 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             refreshDevices()
             if (granted) {
                 selectedDeviceName = device?.deviceName ?: selectedDeviceName
-                startBridge()
+                if (flashAfterPermission && device != null) {
+                    startFirmwareFlash(device)
+                } else {
+                    startBridge()
+                }
             } else {
-                logLine = "USB permission denied"
+                if (flashAfterPermission) {
+                    flashingState = flashingState.copy(
+                        phase = FirmwareFlashingPhase.Error,
+                        message = "USB permission denied",
+                    )
+                } else {
+                    logLine = "USB permission denied"
+                }
             }
+            flashAfterPermission = false
             startAfterPermission = null
+        }
+    }
+
+    private val usbDeviceReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != UsbManager.ACTION_USB_DEVICE_ATTACHED &&
+                intent.action != UsbManager.ACTION_USB_DEVICE_DETACHED
+            ) return
+            refreshDevices()
+            updateFlashingDeviceState()
         }
     }
 
@@ -254,6 +288,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         )
         registerReceiverCompat(usbPermissionReceiver, IntentFilter(CitsBridgeService.ACTION_USB_PERMISSION))
         registerReceiverCompat(statusReceiver, IntentFilter(CitsBridgeService.ACTION_STATUS))
+        registerReceiverCompat(usbDeviceReceiver, IntentFilter().apply {
+            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+        })
         requestNotificationPermission()
         refreshDevices()
         selectedDeviceName = selectedDeviceName ?: devices.firstOrNull()?.deviceName
@@ -295,6 +333,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     onRevokeTxApproval = ::revokeTxApproval,
                     onSendSrem = ::sendSrem,
                     onIntersectionLocationActiveChange = ::setIntersectionLocationActive,
+                    flashingState = flashingState,
+                    onFlashingPageActive = ::setFlashingPageActive,
+                    onRetryFirmwareRelease = { loadFirmwareRelease(force = true) },
+                    onFlashFirmware = ::requestFirmwareFlash,
                     onSaveSettings = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds ->
                         mqttUri = updatedMqttUri
                         nodeId = updatedNodeId
@@ -331,6 +373,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         stopIntersectionLocationUpdates()
         runCatching { unregisterReceiver(usbPermissionReceiver) }
         runCatching { unregisterReceiver(statusReceiver) }
+        runCatching { unregisterReceiver(usbDeviceReceiver) }
         super.onDestroy()
     }
 
@@ -406,6 +449,144 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val pendingIntent = PendingIntent.getBroadcast(this, 20, intent, flags)
         usbManager.requestPermission(device, pendingIntent)
         logLine = "Requesting USB permission"
+    }
+
+    private fun setFlashingPageActive(active: Boolean) {
+        if (!active) return
+        refreshDevices()
+        updateFlashingDeviceState()
+        if (firmwareRelease == null && !releaseLookupRunning) loadFirmwareRelease()
+    }
+
+    private fun loadFirmwareRelease(force: Boolean = false) {
+        if (releaseLookupRunning || (!force && firmwareRelease != null)) return
+        releaseLookupRunning = true
+        firmwareRelease = null
+        flashingState = FirmwareFlashingState.initial(BuildConfig.VERSION_NAME)
+        Thread {
+            runCatching { CodebergReleaseClient().findFirmware(BuildConfig.VERSION_NAME) }
+                .onSuccess { release ->
+                    runOnUiThread {
+                        releaseLookupRunning = false
+                        firmwareRelease = release
+                        flashingState = flashingState.copy(
+                            releaseTag = release.tag,
+                            firmwareName = release.firmwareName,
+                            phase = FirmwareFlashingPhase.WaitingForDevice,
+                            message = "Firmware release found. Connect an ESP32-C5 over USB.",
+                        )
+                        updateFlashingDeviceState()
+                    }
+                }
+                .onFailure { error ->
+                    runOnUiThread {
+                        releaseLookupRunning = false
+                        flashingState = flashingState.copy(
+                            phase = FirmwareFlashingPhase.Error,
+                            message = error.message ?: "Unable to load the matching Codeberg release",
+                        )
+                    }
+                }
+        }.start()
+    }
+
+    private fun updateFlashingDeviceState() {
+        if (flashingState.busy || firmwareRelease == null) return
+        val device = connectedEspressifDevice()
+        flashingState = if (device == null) {
+            flashingState.copy(
+                deviceName = null,
+                phase = FirmwareFlashingPhase.WaitingForDevice,
+                message = "Firmware release found. Connect an ESP32-C5 over USB.",
+                progress = 0f,
+            )
+        } else {
+            flashingState.copy(
+                deviceName = device.productName ?: device.deviceName,
+                phase = FirmwareFlashingPhase.Ready,
+                message = "ESP32-C5 USB interface detected. Pull the slider fully to flash.",
+                progress = 0f,
+            )
+        }
+    }
+
+    private fun requestFirmwareFlash() {
+        val device = connectedEspressifDevice() ?: run {
+            updateFlashingDeviceState()
+            return
+        }
+        if (status.running) {
+            flashingState = flashingState.copy(
+                phase = FirmwareFlashingPhase.Error,
+                message = "Stop the receiver on the Home page before flashing.",
+            )
+            return
+        }
+        if (!usbManager.hasPermission(device)) {
+            flashAfterPermission = true
+            val intent = Intent(CitsBridgeService.ACTION_USB_PERMISSION).setPackage(packageName)
+            val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+            usbManager.requestPermission(device, PendingIntent.getBroadcast(this, 21, intent, flags))
+            flashingState = flashingState.copy(message = "Grant USB permission to continue flashing.")
+            return
+        }
+        startFirmwareFlash(device)
+    }
+
+    private fun startFirmwareFlash(device: UsbDevice) {
+        val release = firmwareRelease ?: return
+        if (flashingState.busy) return
+        flashingState = flashingState.copy(
+            phase = FirmwareFlashingPhase.Downloading,
+            message = "Downloading and verifying ${release.firmwareName}…",
+            progress = 0f,
+        )
+        Thread {
+            runCatching {
+                val client = CodebergReleaseClient()
+                val firmware = client.downloadAndVerify(release) { progress ->
+                    runOnUiThread { flashingState = flashingState.copy(progress = progress * 0.2f) }
+                }
+                runOnUiThread {
+                    flashingState = flashingState.copy(
+                        phase = FirmwareFlashingPhase.Flashing,
+                        message = "Flashing ESP32-C5. Keep the cable connected…",
+                        progress = 0.2f,
+                    )
+                }
+                UsbCdcSerial(usbManager, device).use { serial ->
+                    serial.open(115_200)
+                    val transport = object : EspFlashTransport {
+                        override fun write(data: ByteArray) = serial.writeAll(data, 10_000)
+                        override fun read(buffer: ByteArray, timeoutMs: Int): Int = serial.read(buffer, timeoutMs)
+                        override fun setControlLines(dtr: Boolean, rts: Boolean) = serial.setControlLines(dtr, rts)
+                    }
+                    Esp32RomFlasher(transport).flash(firmware) { progress ->
+                        runOnUiThread { flashingState = flashingState.copy(progress = 0.2f + progress * 0.8f) }
+                    }
+                }
+            }.onSuccess {
+                runOnUiThread {
+                    flashingState = flashingState.copy(
+                        phase = FirmwareFlashingPhase.Complete,
+                        message = "Firmware flashed and verified successfully.",
+                        progress = 1f,
+                    )
+                }
+            }.onFailure { error ->
+                runOnUiThread {
+                    flashingState = flashingState.copy(
+                        phase = FirmwareFlashingPhase.Error,
+                        message = error.message ?: "Firmware flashing failed",
+                    )
+                }
+            }
+        }.start()
+    }
+
+    private fun connectedEspressifDevice(): UsbDevice? = devices.firstOrNull {
+        it.vendorId == ESPRESSIF_USB_VENDOR_ID && it.productId == ESPRESSIF_USB_JTAG_SERIAL_PRODUCT_ID
     }
 
     private fun startBridge() {
@@ -706,6 +887,34 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         private const val INTERSECTION_LOCATION_MIN_TIME_MS = 500L
         private const val TX_SHAKE_THRESHOLD_G = 2.7f
         private const val TX_SHAKE_COOLDOWN_MS = 1_200L
+        private const val ESPRESSIF_USB_VENDOR_ID = 0x303a
+        private const val ESPRESSIF_USB_JTAG_SERIAL_PRODUCT_ID = 0x1001
+    }
+}
+
+private enum class FirmwareFlashingPhase {
+    LoadingRelease,
+    WaitingForDevice,
+    Ready,
+    Downloading,
+    Flashing,
+    Complete,
+    Error,
+}
+
+private data class FirmwareFlashingState(
+    val appVersion: String,
+    val releaseTag: String? = null,
+    val firmwareName: String? = null,
+    val deviceName: String? = null,
+    val phase: FirmwareFlashingPhase = FirmwareFlashingPhase.LoadingRelease,
+    val message: String = "Looking for a matching Codeberg release…",
+    val progress: Float = 0f,
+) {
+    val busy: Boolean get() = phase == FirmwareFlashingPhase.Downloading || phase == FirmwareFlashingPhase.Flashing
+
+    companion object {
+        fun initial(appVersion: String) = FirmwareFlashingState(appVersion = appVersion)
     }
 }
 
@@ -785,10 +994,15 @@ private fun CitsApp(
     onRevokeTxApproval: () -> Unit,
     onSendSrem: (IntersectionSnapshot, Int, Int) -> Unit,
     onIntersectionLocationActiveChange: (Boolean) -> Unit,
+    flashingState: FirmwareFlashingState,
+    onFlashingPageActive: (Boolean) -> Unit,
+    onRetryFirmwareRelease: () -> Unit,
+    onFlashFirmware: () -> Unit,
     onSaveSettings: (String, String, String, String) -> Unit,
 ) {
     var selectedPage by rememberSaveable { mutableStateOf(AppPage.Home) }
     var confettiRun by rememberSaveable { mutableStateOf(0) }
+    var sliderDragging by remember { mutableStateOf(false) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val visiblePages = remember(txApproved) {
@@ -799,6 +1013,7 @@ private fun CitsApp(
     }
     LaunchedEffect(selectedPage) {
         onIntersectionLocationActiveChange(selectedPage == AppPage.IntersectionView)
+        onFlashingPageActive(selectedPage == AppPage.Flashing)
     }
     LaunchedEffect(txApprovalPromptState) {
         if (txApprovalPromptState != TxApprovalPromptState.Hidden) {
@@ -812,10 +1027,12 @@ private fun CitsApp(
         }
     }
 
-    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Box(Modifier.fillMaxSize()) {
-            ModalNavigationDrawer(
+    CompositionLocalProvider(LocalSliderDragStateChange provides { sliderDragging = it }) {
+        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+            Box(Modifier.fillMaxSize()) {
+                ModalNavigationDrawer(
                 drawerState = drawerState,
+                gesturesEnabled = !sliderDragging && txApprovalPromptState == TxApprovalPromptState.Hidden,
                 drawerContent = {
                     ModalDrawerSheet(
                         drawerContainerColor = MaterialTheme.colorScheme.surface,
@@ -900,6 +1117,12 @@ private fun CitsApp(
                             onSendSrem = onSendSrem,
                             modifier = Modifier.weight(1f),
                         )
+                        AppPage.Flashing -> FlashingPage(
+                            state = flashingState,
+                            bridgeRunning = status.running,
+                            onRetryRelease = onRetryFirmwareRelease,
+                            onFlash = onFlashFirmware,
+                        )
                         AppPage.Settings -> SettingsPage(
                             mqttUri = mqttUri,
                             nodeId = nodeId,
@@ -923,15 +1146,18 @@ private fun CitsApp(
                     }
                 }
             }
-            TxApprovalOverlay(
-                state = txApprovalPromptState,
-                onGrantApproval = onGrantTxApproval,
-                onDismiss = onDismissTxApproval,
-            )
-            ConfettiOverlay(run = confettiRun)
+                TxApprovalOverlay(
+                    state = txApprovalPromptState,
+                    onGrantApproval = onGrantTxApproval,
+                    onDismiss = onDismissTxApproval,
+                )
+                ConfettiOverlay(run = confettiRun)
+            }
         }
     }
 }
+
+private val LocalSliderDragStateChange = compositionLocalOf<(Boolean) -> Unit> { {} }
 
 private enum class TxApprovalPromptState {
     Hidden,
@@ -943,12 +1169,99 @@ private enum class AppPage(val title: String) {
     Home("Home"),
     CamBroadcast("CAM Broadcast"),
     IntersectionView("Intersection View"),
+    Flashing("Flashing"),
     Settings("Settings"),
     ;
 
     fun visibleWithTxApproval(txApproved: Boolean): Boolean = when (this) {
         CamBroadcast -> txApproved
         else -> true
+    }
+}
+
+@Composable
+private fun FlashingPage(
+    state: FirmwareFlashingState,
+    bridgeRunning: Boolean,
+    onRetryRelease: () -> Unit,
+    onFlash: () -> Unit,
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Color.White, RoundedCornerShape(8.dp))
+            .padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text("ESP32-C5 firmware", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "The app installs the firmware artifact from the Codeberg release matching this app version.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        FlashingDetail("App version", state.appVersion)
+        FlashingDetail("Release", state.releaseTag ?: "Checking…")
+        FlashingDetail("Firmware", state.firmwareName ?: "Checking…")
+        FlashingDetail("Device", state.deviceName ?: "Waiting for ESP32-C5…")
+        Text(
+            if (bridgeRunning && state.phase == FirmwareFlashingPhase.Ready) {
+                "Stop the receiver on the Home page before flashing."
+            } else {
+                state.message
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            color = when (state.phase) {
+                FirmwareFlashingPhase.Error -> Color(0xFFB91C1C)
+                FirmwareFlashingPhase.Complete -> Color(0xFF047857)
+                else -> MaterialTheme.colorScheme.secondary
+            },
+        )
+        if (state.busy || state.phase == FirmwareFlashingPhase.Complete) {
+            LinearProgressIndicator(
+                progress = { state.progress.coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text("${(state.progress * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+        }
+        if (state.phase == FirmwareFlashingPhase.Error && state.releaseTag == null) {
+            Button(onClick = onRetryRelease, modifier = Modifier.fillMaxWidth()) {
+                Text("Retry release lookup")
+            }
+        }
+    }
+    if (state.phase == FirmwareFlashingPhase.Ready ||
+        (state.phase == FirmwareFlashingPhase.Error && state.releaseTag != null && state.deviceName != null)
+    ) {
+        var position by remember(state.deviceName, state.message) { mutableStateOf(0f) }
+        var submitted by remember(state.deviceName, state.message) { mutableStateOf(false) }
+        Text(
+            "Put the ESP32-C5 into boot mode before flashing: hold the BOOT button while connecting or resetting the board, and keep it held until flashing starts. Keep USB connected until verification finishes.",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFFB45309),
+            fontWeight = FontWeight.SemiBold,
+        )
+        TxApprovalSlider(
+            position = position,
+            onPositionChange = {
+                position = it
+                if (!submitted && it >= 0.995f) {
+                    submitted = true
+                    position = 1f
+                    onFlash()
+                }
+            },
+            enabled = !bridgeRunning,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text("Slide fully to flash", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable
+private fun FlashingDetail(label: String, value: String) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(label, modifier = Modifier.width(88.dp), fontWeight = FontWeight.SemiBold)
+        Text(value, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
     }
 }
 
@@ -1164,6 +1477,7 @@ private fun TxApprovalSlider(
     modifier: Modifier = Modifier,
 ) {
     var sliderSize by remember { mutableStateOf(IntSize.Zero) }
+    val onDragStateChange = LocalSliderDragStateChange.current
     val constrainedPosition = position.coerceIn(0f, 1f)
     Canvas(
         modifier = modifier
@@ -1183,15 +1497,20 @@ private fun TxApprovalSlider(
                         return@awaitEachGesture
                     }
                     down.consume()
-                    val startPosition = position.coerceIn(0f, 1f)
-                    val downX = down.position.x
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        event.changes.forEach { it.consume() }
-                        val active = event.changes.firstOrNull { it.pressed }
-                        if (active == null) break
-                        val dragFraction = (active.position.x - downX) / (endX - startX)
-                        onPositionChange((startPosition + dragFraction).coerceIn(0f, 1f))
+                    onDragStateChange(true)
+                    try {
+                        val startPosition = position.coerceIn(0f, 1f)
+                        val downX = down.position.x
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            event.changes.forEach { it.consume() }
+                            val active = event.changes.firstOrNull { it.pressed }
+                            if (active == null) break
+                            val dragFraction = (active.position.x - downX) / (endX - startX)
+                            onPositionChange((startPosition + dragFraction).coerceIn(0f, 1f))
+                        }
+                    } finally {
+                        onDragStateChange(false)
                     }
                 }
             },
@@ -1636,6 +1955,7 @@ private fun SremRequestSlider(
     var submitted by rememberSaveable(state) { mutableStateOf(false) }
     val constrainedPosition = sliderPosition.coerceIn(0f, 1f)
     var sliderSize by remember { mutableStateOf(IntSize.Zero) }
+    val onDragStateChange = LocalSliderDragStateChange.current
     Canvas(
         modifier = modifier
             .height(96.dp)
@@ -1654,23 +1974,28 @@ private fun SremRequestSlider(
                         return@awaitEachGesture
                     }
                     down.consume()
-                    val startPosition = constrainedPosition
-                    val downX = down.position.x
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        event.changes.forEach { it.consume() }
-                        val active = event.changes.firstOrNull { it.pressed }
-                        if (active == null) break
-                        val dragFraction = (downX - active.position.x) / (endX - startX)
-                        val nextPosition = (startPosition + dragFraction).coerceIn(0f, 1f)
-                        sliderPosition = nextPosition
-                        if (!submitted && nextPosition >= 0.995f) {
-                            submitted = true
-                            sliderPosition = 1f
-                            onSubmit()
+                    onDragStateChange(true)
+                    try {
+                        val startPosition = constrainedPosition
+                        val downX = down.position.x
+                        while (true) {
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
+                            event.changes.forEach { it.consume() }
+                            val active = event.changes.firstOrNull { it.pressed }
+                            if (active == null) break
+                            val dragFraction = (downX - active.position.x) / (endX - startX)
+                            val nextPosition = (startPosition + dragFraction).coerceIn(0f, 1f)
+                            sliderPosition = nextPosition
+                            if (!submitted && nextPosition >= 0.995f) {
+                                submitted = true
+                                sliderPosition = 1f
+                                onSubmit()
+                            }
                         }
+                        if (!submitted && state == SremRequestUiState.Ready) sliderPosition = 0f
+                    } finally {
+                        onDragStateChange(false)
                     }
-                    if (!submitted && state == SremRequestUiState.Ready) sliderPosition = 0f
                 }
             },
     ) {

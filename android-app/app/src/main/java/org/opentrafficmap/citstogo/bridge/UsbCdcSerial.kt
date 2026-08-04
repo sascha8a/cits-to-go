@@ -16,6 +16,7 @@ class UsbCdcSerial(
     private var connection: UsbDeviceConnection? = null
     private var inEndpoint: UsbEndpoint? = null
     private var outEndpoint: UsbEndpoint? = null
+    private var controlInterfaceId: Int? = null
     private val claimedInterfaces = mutableListOf<UsbInterface>()
 
     fun description(): String = "${device.deviceName} vid=%04x pid=%04x".format(device.vendorId, device.productId)
@@ -56,7 +57,10 @@ class UsbCdcSerial(
             close()
             throw IOException("USB serial requires bulk IN and OUT endpoints")
         }
-        controlInterface?.let { configureCdcAcm(conn, it.id, baudRate) }
+        controlInterface?.let {
+            controlInterfaceId = it.id
+            configureCdcAcm(conn, it.id, baudRate)
+        }
     }
 
     fun read(buffer: ByteArray, timeoutMs: Int): Int {
@@ -76,6 +80,15 @@ class UsbCdcSerial(
             if (written <= 0) throw IOException("USB serial write timed out at $offset/${buffer.size}")
             offset += written
         }
+    }
+
+    @Synchronized
+    fun setControlLines(dtr: Boolean, rts: Boolean) {
+        val conn = connection ?: throw IOException("USB serial is not open")
+        val interfaceId = controlInterfaceId ?: throw IOException("USB serial has no control interface")
+        val value = (if (dtr) 1 else 0) or (if (rts) 2 else 0)
+        val result = conn.controlTransfer(0x21, 0x22, value, interfaceId, null, 0, 1_000)
+        if (result < 0) throw IOException("Unable to set USB serial control lines")
     }
 
     private fun configureCdcAcm(conn: UsbDeviceConnection, interfaceId: Int, baudRate: Int) {
@@ -102,5 +115,6 @@ class UsbCdcSerial(
         connection = null
         inEndpoint = null
         outEndpoint = null
+        controlInterfaceId = null
     }
 }

@@ -14,6 +14,14 @@ The latest debug APK can be downloaded from the releases page:
 
 <https://codeberg.org/sascha8a/cits-to-go/releases>
 
+The app's **Flashing** navigation item looks up the Codeberg release whose tag
+matches the installed app version, verifies the merged ESP32-C5 firmware
+artifact against `SHA256sum.txt`, and flashes a connected XIAO ESP32-C5 over
+USB. Stop the receiver first, connect the board directly to the Android USB
+host, and put the ESP32-C5 into boot mode: hold **BOOT** while connecting or
+resetting the board, and keep it held until flashing starts. Then pull the
+confirmation slider fully to the right.
+
 ---
 
 ## Running the app
