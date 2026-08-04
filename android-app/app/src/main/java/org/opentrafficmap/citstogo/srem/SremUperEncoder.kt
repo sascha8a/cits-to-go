@@ -18,6 +18,8 @@ object SremUperEncoder {
         request.region?.let { require(it in 0..65_535) }
         require(request.inboundLaneId in 0..255)
         require(request.outboundLaneId in 0..255)
+        require(request.position.latitude in -900_000_000..900_000_000)
+        require(request.position.longitude in -1_800_000_000..1_800_000_000)
 
         val out = UperBitWriter()
         writeItsPduHeader(out, identity.stationId)
@@ -32,8 +34,7 @@ object SremUperEncoder {
     }
 
     private fun writeSignalRequestMessage(out: UperBitWriter, stationId: Long, request: SremRequest) {
-        // SignalRequestMessage extension marker and optionals:
-        // timeStamp, second, sequenceNumber present; regional absent.
+        // Extension marker, then timeStamp, sequenceNumber, requests and regional presence.
         out.bit(false)
         out.bit(true)
         out.bit(true)
@@ -60,9 +61,8 @@ object SremUperEncoder {
     }
 
     private fun writeSignalRequest(out: UperBitWriter, request: SremRequest) {
-        // SignalRequest extension marker and optionals: inbound/outbound lanes present.
+        // Extension marker, then outBoundLane and regional presence.
         out.bit(false)
-        out.bit(true)
         out.bit(true)
         out.bit(false)
         writeIntersectionReferenceId(out, request.region, request.intersectionId)
@@ -110,14 +110,16 @@ object SremUperEncoder {
     private fun writeRequestorPositionVector(out: UperBitWriter, position: SremPosition) {
         out.bit(false)
         out.bit(false)
+        out.bit(false)
         writePosition3D(out, position)
     }
 
     private fun writePosition3D(out: UperBitWriter, position: SremPosition) {
         out.bit(false)
         out.bit(false)
+        out.bit(false)
         out.constrained(position.latitude.toLong(), -900_000_000, 900_000_001)
-        out.constrained(position.longitude.toLong(), -1_799_999_999, 1_800_000_001)
+        out.constrained(position.longitude.toLong(), -1_800_000_000, 1_800_000_001)
     }
 
     private fun writeRootEnum(out: UperBitWriter, value: Int, rootValues: Int) {

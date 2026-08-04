@@ -48,7 +48,7 @@ object ItsG5FrameBuilder {
             positionLatitude = request.position.latitude,
             positionLongitude = request.position.longitude,
             speedCms = 0,
-            heading = 3_601,
+            heading = 0,
             positionAccurate = true,
             nowUnixMs = request.nowUnixMs,
             qosTid = 1,
@@ -74,6 +74,9 @@ object ItsG5FrameBuilder {
             write(payload)
         }.toByteArray()
         val geo = ByteArrayOutputStream().apply {
+            val geoPositionAvailable =
+                positionLatitude in GEONETWORKING_LATITUDE_RANGE &&
+                    positionLongitude in GEONETWORKING_LONGITUDE_RANGE
             // Basic: version 1, next-header common, lifetime 1 s, one hop.
             write(0x11)
             write(0)
@@ -89,12 +92,12 @@ object ItsG5FrameBuilder {
             write(0)
             write(gnAddress(stationType, macAddress))
             putU32(CamUperEncoder.timestampIts(nowUnixMs) and 0xffff_ffffL)
-            putI32(positionLatitude)
-            putI32(positionLongitude)
+            putI32(if (geoPositionAvailable) positionLatitude else 0)
+            putI32(if (geoPositionAvailable) positionLongitude else 0)
             val speedAndPai = speedCms.coerceIn(0, 16_383) or
-                if (positionAccurate) 0x8000 else 0
+                if (positionAccurate && geoPositionAvailable) 0x8000 else 0
             putU16(speedAndPai)
-            putU16(heading.coerceIn(0, 3_601))
+            putU16(heading.coerceIn(0, 3_600))
             putU32(0) // SHB reserved/DCC-MCO unavailable.
             write(btp)
         }.toByteArray()
@@ -131,4 +134,6 @@ object ItsG5FrameBuilder {
     private fun ByteArrayOutputStream.putI32(value: Int) = putU32(value.toLong() and 0xffff_ffffL)
 
     private val BROADCAST = ByteArray(6) { 0xff.toByte() }
+    private val GEONETWORKING_LATITUDE_RANGE = -899_999_999..899_999_999
+    private val GEONETWORKING_LONGITUDE_RANGE = -1_799_999_999..1_799_999_999
 }

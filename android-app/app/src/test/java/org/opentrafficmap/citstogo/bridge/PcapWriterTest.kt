@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import org.opentrafficmap.citstogo.protocol.CitsPacket
 
 class PcapWriterTest {
     @Test
@@ -26,6 +27,52 @@ class PcapWriterTest {
         assertEquals(payload.size, intLE(bytes, 36))
         assertArrayEquals(payload, bytes.copyOfRange(40, 40 + payload.size))
     }
+
+    @Test
+    fun captureClockIsMappedToUnixTimeAndPreservesIntervals() {
+        val output = ByteArrayOutputStream()
+        val unixNowUs = 1_785_788_000_000_000L
+
+        PcapWriter(output) { unixNowUs }.use {
+            it.writePacket(packet(timestampUs = 13_000_000L, payload = byteArrayOf(1)))
+            it.writePacket(packet(timestampUs = 13_125_000L, payload = byteArrayOf(2)))
+        }
+
+        val bytes = output.toByteArray()
+        assertEquals(unixNowUs, recordTimestampUs(bytes, 24))
+        assertEquals(unixNowUs + 125_000L, recordTimestampUs(bytes, 41))
+    }
+
+    @Test
+    fun captureClockWrapIsUnwrapped() {
+        val output = ByteArrayOutputStream()
+        val unixNowUs = 1_785_788_000_000_000L
+
+        PcapWriter(output) { unixNowUs }.use {
+            it.writePacket(packet(timestampUs = 0xffff_ff00L, payload = byteArrayOf(1)))
+            it.writePacket(packet(timestampUs = 0x0000_0100L, payload = byteArrayOf(2)))
+        }
+
+        val bytes = output.toByteArray()
+        assertEquals(unixNowUs, recordTimestampUs(bytes, 24))
+        assertEquals(unixNowUs + 512L, recordTimestampUs(bytes, 41))
+    }
+
+    private fun packet(timestampUs: Long, payload: ByteArray) = CitsPacket(
+        sequence = 1,
+        timestampUs = timestampUs,
+        frequencyMhz = 5_900,
+        rssiDbm = -50,
+        wifiType = 0,
+        rxState = 0,
+        flags = 0,
+        originalLength = payload.size,
+        capturedLength = payload.size,
+        payload = payload,
+    )
+
+    private fun recordTimestampUs(bytes: ByteArray, offset: Int): Long =
+        intLE(bytes, offset).toLong() * 1_000_000L + intLE(bytes, offset + 4)
 
     private fun intLE(bytes: ByteArray, offset: Int): Int =
         (bytes[offset].toInt() and 0xff) or

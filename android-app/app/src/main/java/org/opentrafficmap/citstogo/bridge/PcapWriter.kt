@@ -5,11 +5,18 @@ import java.io.BufferedOutputStream
 import java.io.Closeable
 import java.io.OutputStream
 
-class PcapWriter(output: OutputStream) : Closeable {
+class PcapWriter(
+    output: OutputStream,
+    private val currentTimeUs: () -> Long = { System.currentTimeMillis() * 1_000L },
+) : Closeable {
     private val out = BufferedOutputStream(output, 64 * 1024)
     private var closed = false
     private var packetsSinceFlush = 0
     private var lastFlushMs = System.currentTimeMillis()
+    private var captureEpochUs: Long? = null
+    private var captureDeviceUs: Long? = null
+    private var previousDeviceUs: Long? = null
+    private var deviceWrapOffsetUs = 0L
 
     init {
         writeGlobalHeader()
@@ -17,7 +24,7 @@ class PcapWriter(output: OutputStream) : Closeable {
 
     @Synchronized
     fun writePacket(packet: CitsPacket) {
-        writeRawPacket(packet.payload, packet.timestampUs)
+        writeRawPacket(packet.payload, captureTimestampToUnixUs(packet.timestampUs))
     }
 
     @Synchronized
@@ -66,6 +73,28 @@ class PcapWriter(output: OutputStream) : Closeable {
         }
     }
 
+    private fun captureTimestampToUnixUs(timestampUs: Long): Long {
+        val rawDeviceUs = timestampUs and DEVICE_TIMESTAMP_MASK
+        val previous = previousDeviceUs
+        if (previous != null && rawDeviceUs < previous) {
+            if (previous - rawDeviceUs > DEVICE_TIMESTAMP_HALF_RANGE_US) {
+                deviceWrapOffsetUs += DEVICE_TIMESTAMP_RANGE_US
+            } else {
+                captureEpochUs = null
+                captureDeviceUs = null
+                deviceWrapOffsetUs = 0L
+            }
+        }
+        previousDeviceUs = rawDeviceUs
+
+        val extendedDeviceUs = rawDeviceUs + deviceWrapOffsetUs
+        val baseDeviceUs = captureDeviceUs ?: extendedDeviceUs.also {
+            captureDeviceUs = it
+            captureEpochUs = currentTimeUs()
+        }
+        return requireNotNull(captureEpochUs) + extendedDeviceUs - baseDeviceUs
+    }
+
     private fun writeShortLE(value: Int) {
         out.write(value and 0xff)
         out.write((value ushr 8) and 0xff)
@@ -83,5 +112,8 @@ class PcapWriter(output: OutputStream) : Closeable {
         private const val DLT_IEEE802_11 = 105
         private const val FLUSH_EVERY_PACKETS = 128
         private const val FLUSH_EVERY_MS = 2_000L
+        private const val DEVICE_TIMESTAMP_RANGE_US = 1L shl 32
+        private const val DEVICE_TIMESTAMP_HALF_RANGE_US = DEVICE_TIMESTAMP_RANGE_US / 2
+        private const val DEVICE_TIMESTAMP_MASK = DEVICE_TIMESTAMP_RANGE_US - 1
     }
 }
