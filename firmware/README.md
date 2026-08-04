@@ -115,6 +115,20 @@ The easiest way to build without installing ESP-IDF locally is to use the Espres
 
 Run these commands from the `firmware/` directory.
 
+### Flash a release image
+
+Tagged Codeberg releases contain a merged image named
+`CITS-to-go-firmware-vX.Y.Z.bin`. Flash it from any directory with a local
+`esptool` installation:
+
+```bash
+esptool.py --chip esp32c5 -p /dev/ttyACM0 -b 921600 \
+  write_flash 0x0 CITS-to-go-firmware-vX.Y.Z.bin
+```
+
+Replace the serial device as needed. The merged image contains the bootloader,
+partition table, and application at their required offsets.
+
 ### Build
 
 ```bash

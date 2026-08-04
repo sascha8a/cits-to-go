@@ -115,6 +115,32 @@ Retain:  false
 
 A detailed step-by-step how-to build this project can be found in the relevant folders.
 
+## Releases
+
+Pushing a version tag such as `v2.15.0` runs the Woodpecker release pipeline
+in [`.woodpecker/release.yml`](.woodpecker/release.yml). The tag must match the
+Android `versionName`. A successful pipeline creates a Codeberg release with:
+
+- a production APK signed with the project release key;
+- a merged ESP32-C5 firmware image that can be flashed at address `0x0`; and
+- `SHA256sum.txt` covering both downloads.
+
+Before creating the first tag, activate this repository at
+<https://ci.codeberg.org> and add these repository secrets in Woodpecker:
+
+| Secret | Value |
+| --- | --- |
+| `android_keystore_base64` | The release keystore encoded with `base64 -w0 release.jks` |
+| `android_keystore_password` | Keystore password |
+| `android_key_alias` | Signing-key alias |
+| `android_key_password` | Signing-key password |
+| `codeberg_release_token` | Codeberg access token with `write:repository` and `read:misc` scopes |
+
+Enable the repository's Releases unit in Codeberg before pushing a tag. Keep
+all signing secrets limited to tag events. The pipeline tests the Android app,
+validates the APK signature, builds the firmware with ESP-IDF, and only then
+publishes the release.
+
 ---
 
 ## Troubleshooting

@@ -10,7 +10,7 @@ received packets to PCAP, forwards captures to MQTT, sends arbitrary raw
 
 ## Downloading the app
 
-The latest debug APK can be downloaded from the releases page:
+The latest signed production APK can be downloaded from the releases page:
 
 <https://codeberg.org/sascha8a/cits-to-go/releases>
 
