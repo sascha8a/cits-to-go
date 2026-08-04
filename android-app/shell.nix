@@ -30,6 +30,7 @@ pkgs.mkShell {
     fastlane
     gradle
     jdk17
+    wireshark-cli
   ];
 
   ANDROID_HOME = "${androidSdk}/libexec/android-sdk";

@@ -115,6 +115,22 @@ Retain:  false
 
 A detailed step-by-step how-to build this project can be found in the relevant folders.
 
+## Build release artifacts locally
+
+The local release script tests the Android app, builds and verifies the signed
+production APK, builds a merged ESP32-C5 firmware image, and writes checksums.
+It reads the existing Android signing configuration from
+`android-app/.env.release` and requires Docker.
+
+Run it from the repository root with the provided Nix environment:
+
+```bash
+nix-shell android-app/shell.nix --run './scripts/build-release.sh'
+```
+
+The upload-ready files are written to `dist/CITS-to-go-vX.Y.Z/`. You can also
+pass a different output directory as the first argument.
+
 ---
 
 ## Troubleshooting

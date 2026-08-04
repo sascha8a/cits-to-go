@@ -115,6 +115,16 @@ The easiest way to build without installing ESP-IDF locally is to use the Espres
 
 Run these commands from the `firmware/` directory.
 
+Tagged local release builds can be produced from the repository root with
+`scripts/build-release.sh`. Its merged firmware image contains the bootloader,
+partition table, and application at their required offsets. Flash it at address
+`0x0`:
+
+```bash
+esptool.py --chip esp32c5 -p /dev/ttyACM0 -b 921600 \
+  write_flash 0x0 CITS-to-go-firmware-vX.Y.Z.bin
+```
+
 ### Build
 
 ```bash
