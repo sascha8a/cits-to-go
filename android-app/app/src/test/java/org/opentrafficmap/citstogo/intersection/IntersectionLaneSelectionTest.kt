@@ -33,4 +33,65 @@ class IntersectionLaneSelectionTest {
     fun connectionsNotFromSelectedLanesAreDimmed() {
         assertEquals(0.2f, intersectionConnectionSelectionAlpha(20, 21, listOf(10)))
     }
+
+    @Test
+    fun everyGenericLaneTypeCanBeSelectedWhenConnected() {
+        val targetLanes = LaneType.entries.mapIndexed { index, type -> lane(index + 2, type) }
+        val source = lane(
+            id = 1,
+            type = LaneType.Vehicle,
+            connections = targetLanes.map { LaneConnection(it.id, null, null, null) },
+        )
+        val map = map(listOf(source) + targetLanes)
+
+        assertEquals(targetLanes.map { it.id }.toSet(), connectedSremLaneIds(map, source.id))
+    }
+
+    @Test
+    fun remoteIntersectionConnectionsAreNotSelectable() {
+        val source = lane(
+            id = 1,
+            connections = listOf(LaneConnection(2, null, null, IntersectionKey(43, 99))),
+        )
+        val map = map(listOf(source, lane(2)))
+
+        assertEquals(emptySet<Int>(), connectedSremLaneIds(map, source.id))
+    }
+
+    @Test
+    fun directedConnectionDeterminesInboundLaneRegardlessOfTapOrder() {
+        val inbound = lane(1, ingress = true, connections = listOf(LaneConnection(2, 7, null, null)))
+        val outbound = lane(2, egress = true)
+        val map = map(listOf(inbound, outbound))
+
+        assertEquals(listOf(1, 2), resolveSremLaneDirection(map, 2, 1))
+    }
+
+    private fun map(lanes: List<MapLane>) = MapIntersection(
+        key = IntersectionKey(43, 1_039),
+        name = null,
+        revision = 1,
+        latitude = 0,
+        longitude = 0,
+        laneWidthCm = null,
+        lanes = lanes,
+        receivedAtMs = 0,
+    )
+
+    private fun lane(
+        id: Int,
+        type: LaneType = LaneType.Vehicle,
+        ingress: Boolean = false,
+        egress: Boolean = false,
+        connections: List<LaneConnection> = emptyList(),
+    ) = MapLane(
+        id = id,
+        ingressApproach = null,
+        egressApproach = null,
+        laneType = type,
+        ingress = ingress,
+        egress = egress,
+        nodes = listOf(LaneNode(0, 0), LaneNode(1, 1)),
+        connections = connections,
+    )
 }

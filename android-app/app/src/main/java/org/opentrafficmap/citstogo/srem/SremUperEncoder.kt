@@ -8,7 +8,6 @@ object SremUperEncoder {
     private const val MESSAGE_ID_SREM = 9
     private const val PROTOCOL_VERSION = 2
     private const val REQUEST_TYPE_PRIORITY = 1
-    private const val REQUESTOR_ROLE_PEDESTRIAN = 20
     private val UTC: TimeZone = TimeZone.getTimeZone("UTC")
 
     fun encode(identity: SremIdentity, request: SremRequest): ByteArray {
@@ -20,6 +19,7 @@ object SremUperEncoder {
         require(request.outboundLaneId in 0..255)
         require(request.position.latitude in -900_000_000..900_000_000)
         require(request.position.longitude in -1_800_000_000..1_800_000_000)
+        require(request.position.heading in 0..3_600)
 
         val out = UperBitWriter()
         writeItsPduHeader(out, identity.stationId)
@@ -45,7 +45,7 @@ object SremUperEncoder {
         out.constrained(request.sequenceNumber.toLong(), 0, 127)
         out.constrained(1, 1, 32)
         writeSignalRequestPackage(out, request)
-        writeRequestorDescription(out, stationId, request.position)
+        writeRequestorDescription(out, stationId, request)
     }
 
     private fun writeSignalRequestPackage(out: UperBitWriter, request: SremRequest) {
@@ -56,8 +56,8 @@ object SremUperEncoder {
         out.bit(false)
         out.bit(false)
         writeSignalRequest(out, request)
-        out.constrained(minuteOfYear(request.nowUnixMs).toLong(), 0, 527_040)
-        out.constrained(dSecond(request.nowUnixMs).toLong(), 0, 65_535)
+        out.constrained(minuteOfYear(request.packageRequestUnixMs).toLong(), 0, 527_040)
+        out.constrained(dSecond(request.packageRequestUnixMs).toLong(), 0, 65_535)
     }
 
     private fun writeSignalRequest(out: UperBitWriter, request: SremRequest) {
@@ -84,16 +84,21 @@ object SremUperEncoder {
         out.constrained(laneId.toLong(), 0, 255)
     }
 
-    private fun writeRequestorDescription(out: UperBitWriter, stationId: Long, position: SremPosition) {
+    private fun writeRequestorDescription(out: UperBitWriter, stationId: Long, request: SremRequest) {
         // RequestorDescription extension marker and optionals: type and position present.
         out.bit(false)
         out.bit(true)
         out.bit(true)
-        repeat(5) { out.bit(false) }
+        out.bit(false) // name
+        out.bit(false) // routeName
+        out.bit(request.profile.hasTransitStatus)
+        out.bit(false) // transitOccupancy
+        out.bit(false) // transitSchedule
         out.bit(false)
         writeVehicleIdStationId(out, stationId)
-        writeRequestorType(out)
-        writeRequestorPositionVector(out, position)
+        writeRequestorType(out, request.profile.basicVehicleRole)
+        writeRequestorPositionVector(out, request.position)
+        if (request.profile.hasTransitStatus) repeat(8) { out.bit(false) }
     }
 
     private fun writeVehicleIdStationId(out: UperBitWriter, stationId: Long) {
@@ -101,17 +106,24 @@ object SremUperEncoder {
         out.constrained(stationId, 0, 0xffff_ffffL)
     }
 
-    private fun writeRequestorType(out: UperBitWriter) {
+    private fun writeRequestorType(out: UperBitWriter, role: BasicVehicleRole) {
         out.bit(false)
         repeat(5) { out.bit(false) }
-        writeRootEnum(out, REQUESTOR_ROLE_PEDESTRIAN, 32)
+        out.bit(role.isExtension)
+        if (role.isExtension) {
+            writeNormallySmallNonNegativeWholeNumber(out, role.value)
+        } else {
+            out.constrained(role.value.toLong(), 0, 22)
+        }
     }
 
     private fun writeRequestorPositionVector(out: UperBitWriter, position: SremPosition) {
         out.bit(false)
-        out.bit(false)
+        out.bit(true)
         out.bit(false)
         writePosition3D(out, position)
+        // Preserve the working transmitter's raw heading behavior across GN and SREM.
+        out.constrained(position.heading.toLong(), 0, 28_800)
     }
 
     private fun writePosition3D(out: UperBitWriter, position: SremPosition) {
@@ -125,6 +137,12 @@ object SremUperEncoder {
     private fun writeRootEnum(out: UperBitWriter, value: Int, rootValues: Int) {
         out.bit(false)
         out.constrained(value.toLong(), 0, (rootValues - 1).toLong())
+    }
+
+    private fun writeNormallySmallNonNegativeWholeNumber(out: UperBitWriter, value: Int) {
+        require(value in 0..63)
+        out.bit(false)
+        out.bits(value.toLong(), 6)
     }
 
     private fun minuteOfYear(unixMs: Long): Int {

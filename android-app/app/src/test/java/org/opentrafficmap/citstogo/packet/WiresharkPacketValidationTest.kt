@@ -14,6 +14,7 @@ import org.opentrafficmap.citstogo.cam.ItsG5FrameBuilder
 import org.opentrafficmap.citstogo.cam.StationType
 import org.opentrafficmap.citstogo.srem.SremRequest
 import org.opentrafficmap.citstogo.srem.SremPosition
+import org.opentrafficmap.citstogo.srem.SremProfile
 
 class WiresharkPacketValidationTest {
     private val identity = CamIdentity(
@@ -68,25 +69,36 @@ class WiresharkPacketValidationTest {
     }
 
     @Test
-    fun sremFrameIsWellFormed() {
-        val request = SremRequest(
-            region = 43,
-            intersectionId = 1_039,
-            requestId = 5,
-            sequenceNumber = 27,
-            inboundLaneId = 31,
-            outboundLaneId = 16,
-            position = SremPosition(availablePosition.latitude, availablePosition.longitude),
-            nowUnixMs = timestamp,
-        )
+    fun sremFramesForEveryProfileAreWellFormed() {
+        SremProfile.entries.forEach { profile ->
+            val request = SremRequest(
+                region = 43,
+                intersectionId = 1_039,
+                requestId = 5,
+                sequenceNumber = 27,
+                inboundLaneId = 31,
+                outboundLaneId = 16,
+                position = SremPosition(
+                    availablePosition.latitude,
+                    availablePosition.longitude,
+                    availablePosition.heading,
+                    true,
+                ),
+                nowUnixMs = timestamp,
+                profile = profile,
+                packageRequestUnixMs = timestamp + 1_000,
+            )
 
-        assertWellFormed(
-            label = "SREM",
-            frame = ItsG5FrameBuilder.sremFrame(identity, request),
-            expectedProtocol = "SREM",
-            expectedMessageId = 9,
-            expectedBtpPort = 2_007,
-        )
+            assertWellFormed(
+                label = "SREM ${profile.name}",
+                frame = ItsG5FrameBuilder.sremFrame(identity, request),
+                expectedProtocol = "SREM",
+                expectedMessageId = 9,
+                expectedBtpPort = 2_007,
+                expectedStationType = profile.stationType.code,
+                expectedRole = if (profile.basicVehicleRole.isExtension) 23 else profile.basicVehicleRole.value,
+            )
+        }
     }
 
     private fun assertWellFormed(
@@ -95,6 +107,8 @@ class WiresharkPacketValidationTest {
         expectedProtocol: String,
         expectedMessageId: Int,
         expectedBtpPort: Int,
+        expectedStationType: Int? = null,
+        expectedRole: Int? = null,
     ) {
         val pcap = Files.createTempFile("cits-to-go-packet-", ".pcap")
         try {
@@ -109,12 +123,18 @@ class WiresharkPacketValidationTest {
                 "-e", "_ws.col.Protocol",
                 "-e", "its.messageId",
                 "-e", "btpb.dstport",
+                "-e", "geonw.src_pos.addr.type",
+                "-e", "dsrc.role",
                 "-e", "_ws.col.Info",
             ).trim().split('\t')
             assertTrue("$label was not decoded by tshark: $decoded", decoded.size >= 5)
             assertEquals("$label protocol", expectedProtocol, decoded[1])
             assertEquals("$label ITS message ID", expectedMessageId.toString(), decoded[2])
             assertEquals("$label BTP port", expectedBtpPort.toString(), decoded[3])
+            expectedStationType?.let {
+                assertEquals("$label GN station type", it.toString(), decoded[4])
+            }
+            expectedRole?.let { assertEquals("$label requestor role", it.toString(), decoded[5]) }
 
             val malformed = tshark(
                 "-r", pcap.toString(),

@@ -322,11 +322,11 @@ object MapSpatDecoder {
         val hasManeuver = bit()
         val lane = constrained(0, 255).toInt()
         if (hasManeuver) skipBits(12)
-        if (hasRemote) intersectionReferenceId()
+        val remoteIntersection = if (hasRemote) intersectionReferenceId() else null
         val signalGroup = if (hasSignalGroup) constrained(0, 255).toInt() else null
         if (hasUserClass) constrained(0, 255)
         val connectionId = if (hasConnectionId) constrained(0, 255).toInt() else null
-        return LaneConnection(lane, signalGroup, connectionId)
+        return LaneConnection(lane, signalGroup, connectionId, remoteIntersection)
     }
 
     private fun UperBitReader.connectionManeuverAssist(): Int {

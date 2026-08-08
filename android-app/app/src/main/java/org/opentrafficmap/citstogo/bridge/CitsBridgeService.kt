@@ -41,6 +41,7 @@ import org.opentrafficmap.citstogo.protocol.CtgInboundFrame
 import org.opentrafficmap.citstogo.protocol.Ieee80211Mac
 import org.opentrafficmap.citstogo.protocol.SerialPacketReader
 import org.opentrafficmap.citstogo.srem.SremPosition
+import org.opentrafficmap.citstogo.srem.SremProfile
 import org.opentrafficmap.citstogo.srem.SremRequest
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
@@ -581,6 +582,11 @@ class CitsBridgeService : Service() {
         val latitude = intent.getIntExtra(EXTRA_SREM_LATITUDE_E7, 900_000_001)
         val longitude = intent.getIntExtra(EXTRA_SREM_LONGITUDE_E7, 1_800_000_001)
         val positionTimeMs = intent.getLongExtra(EXTRA_SREM_POSITION_TIME_MS, 0L)
+        val packageRequestTimeMs = intent.getLongExtra(EXTRA_SREM_PACKAGE_REQUEST_TIME_MS, 0L)
+        val heading = intent.getIntExtra(EXTRA_SREM_HEADING, -1)
+        val positionAccurate = intent.getBooleanExtra(EXTRA_SREM_POSITION_ACCURATE, false)
+        val profileCode = intent.getIntExtra(EXTRA_SREM_PROFILE, -1)
+        val profile = SremProfile.entries.firstOrNull { it.preferenceCode == profileCode }
         val region = intent.getIntExtra(EXTRA_SREM_REGION, -1).takeIf { it >= 0 }
         if (
             intersectionId !in 0..65_535 ||
@@ -588,7 +594,10 @@ class CitsBridgeService : Service() {
             outboundLaneId !in 0..255 ||
             latitude !in -900_000_000..900_000_000 ||
             longitude !in -1_800_000_000..1_800_000_000 ||
-            positionTimeMs !in (nowMs - MAX_LOCATION_AGE_MS)..(nowMs + 1_000L)
+            heading !in 0..3_600 ||
+            profile == null ||
+            positionTimeMs !in (nowMs - MAX_LOCATION_AGE_MS)..(nowMs + 1_000L) ||
+            packageRequestTimeMs !in (nowMs - 1_000L)..(nowMs + MAX_SREM_ETA_MS + 1_000L)
         ) {
             status = status.copy(
                 lastError = "SREM requires a valid intersection, lane pair, and fresh location",
@@ -609,8 +618,10 @@ class CitsBridgeService : Service() {
             sequenceNumber = sequenceNumber,
             inboundLaneId = inboundLaneId,
             outboundLaneId = outboundLaneId,
-            position = SremPosition(latitude, longitude),
+            position = SremPosition(latitude, longitude, heading, positionAccurate),
             nowUnixMs = nowMs,
+            profile = profile,
+            packageRequestUnixMs = packageRequestTimeMs,
         )
         val packet = try {
             ItsG5FrameBuilder.sremFrame(camIdentity, request)
@@ -1328,6 +1339,10 @@ class CitsBridgeService : Service() {
         const val EXTRA_SREM_LATITUDE_E7 = "sremLatitudeE7"
         const val EXTRA_SREM_LONGITUDE_E7 = "sremLongitudeE7"
         const val EXTRA_SREM_POSITION_TIME_MS = "sremPositionTimeMs"
+        const val EXTRA_SREM_PACKAGE_REQUEST_TIME_MS = "sremPackageRequestTimeMs"
+        const val EXTRA_SREM_HEADING = "sremHeading"
+        const val EXTRA_SREM_POSITION_ACCURATE = "sremPositionAccurate"
+        const val EXTRA_SREM_PROFILE = "sremProfile"
         const val EXTRA_SREM_UPDATED_AT_MS = "sremUpdatedAtMs"
         const val EXTRA_INTERSECTION_SNAPSHOT = "intersectionSnapshot"
         const val EXTRA_INTERSECTION_SNAPSHOTS = "intersectionSnapshots"
@@ -1352,6 +1367,7 @@ class CitsBridgeService : Service() {
         const val PREF_CAM_INTERVAL_MS = "cam_interval_ms"
         const val PREF_CAM_STATION_ID = "cam_station_id"
         const val PREF_CAM_MAC = "cam_mac"
+        const val PREF_SREM_PROFILE = "srem_profile"
         const val PREF_TX_APPROVED = "tx_approved"
         const val DEFAULT_MQTT_URI = "mqtts://cits1.opentrafficmap.org"
         const val DEFAULT_MQTT_MAX_QUEUE_LENGTH = 100
@@ -1370,6 +1386,7 @@ class CitsBridgeService : Service() {
         private const val USB_WRITE_TIMEOUT_MS = 2_000
         private const val MAX_TX_QUEUE = 64
         private const val MAX_LOCATION_AGE_MS = 5_000L
+        private const val MAX_SREM_ETA_MS = 60_000L
         private const val PENDING_SREM_MAX_AGE_MS = 60_000L
         private const val CAM_TRIGGER_CHECK_MS = 100L
         private const val MAINTENANCE_INTERVAL_MS = 2_000L

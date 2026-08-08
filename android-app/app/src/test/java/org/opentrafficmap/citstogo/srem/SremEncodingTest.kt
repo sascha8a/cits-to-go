@@ -22,8 +22,10 @@ class SremEncodingTest {
         sequenceNumber = 27,
         inboundLaneId = 31,
         outboundLaneId = 16,
-        position = SremPosition(482_024_036, 163_691_773),
+        position = SremPosition(482_024_036, 163_691_773, 1_357, true),
         nowUnixMs = 1_785_242_510_349L,
+        profile = SremProfile.PEDESTRIAN,
+        packageRequestUnixMs = 1_785_242_511_987L,
     )
 
     @Test
@@ -37,7 +39,17 @@ class SremEncodingTest {
         assertEquals(9, packet.messageId)
         assertEquals(identity.stationId, packet.stationId)
         assertArrayEquals(byteArrayOf(2, 9, 1, 2, 3, 4), packet.payload.copyOfRange(0, 6))
-        assertEquals(0, (frame[68].toInt() and 0xff) shl 8 or (frame[69].toInt() and 0xff))
+        val snapOffset = frame.indexOfSequence(byteArrayOf(0x89.toByte(), 0x47)) + 2
+        assertEquals(0x1a, frame[snapOffset + 2].toInt() and 0xff)
+        assertEquals(4, frame[snapOffset + 3].toInt() and 0xff)
+        assertEquals(0x40, frame[snapOffset + 5].toInt() and 0xf0)
+        assertEquals(request.profile.stationType.code, (frame[snapOffset + 16].toInt() ushr 2) and 0x1f)
+        assertEquals(request.position.heading, u16(frame, snapOffset + 38))
+        assertEquals(request.position.latitude, i32(frame, snapOffset + 40))
+        assertEquals(request.position.longitude, i32(frame, snapOffset + 44))
+        assertEquals(1_000, u16(frame, snapOffset + 48))
+        assertEquals(2_007, u16(frame, snapOffset + 56))
+        assertEquals(0x21, frame[snapOffset - 10].toInt() and 0xff)
     }
 
     @Test
@@ -88,7 +100,7 @@ class SremEncodingTest {
         assertLaneAccessPoint(reader, request.inboundLaneId)
         assertLaneAccessPoint(reader, request.outboundLaneId)
         assertEquals(300_281, reader.constrained(0, 527_040))
-        assertEquals(50_349, reader.constrained(0, 65_535))
+        assertEquals(51_987, reader.constrained(0, 65_535))
 
         assertFalse(reader.bit()) // RequestorDescription extension marker
         assertTrue(reader.bit()) // type
@@ -103,13 +115,14 @@ class SremEncodingTest {
         assertEquals(20, reader.constrained(0, 22))
 
         assertFalse(reader.bit()) // RequestorPositionVector extension marker
-        assertFalse(reader.bit()) // heading
+        assertTrue(reader.bit()) // heading
         assertFalse(reader.bit()) // speed
         assertFalse(reader.bit()) // Position3D extension marker
         assertFalse(reader.bit()) // elevation
         assertFalse(reader.bit()) // regional
         assertEquals(request.position.latitude.toLong(), reader.constrained(-900_000_000, 900_000_001))
         assertEquals(request.position.longitude.toLong(), reader.constrained(-1_800_000_000, 1_800_000_001))
+        assertEquals(request.position.heading.toLong(), reader.constrained(0, 28_800))
 
         assertTrue(reader.remainingBits < 8)
         assertEquals(0, reader.bits(reader.remainingBits))
@@ -120,4 +133,31 @@ class SremEncodingTest {
         assertEquals(0, reader.constrained(0, 2)) // lane choice
         assertEquals(laneId.toLong(), reader.constrained(0, 255))
     }
+
+    @Test
+    fun profilesMapToExpectedStationTypesAndBasicVehicleRoles() {
+        assertEquals(
+            listOf(20, 19, 10, 10, 0, 1, 9, 9, 2),
+            SremProfile.entries.dropLast(1).map { it.basicVehicleRole.value },
+        )
+        assertTrue(SremProfile.TRAM.basicVehicleRole.isExtension)
+        assertEquals(0, SremProfile.TRAM.basicVehicleRole.value)
+        assertEquals(11, SremProfile.TRAM.stationType.code)
+        assertTrue(SremProfile.PUBLIC_TRANSPORT_BUS.hasTransitStatus)
+        assertTrue(SremProfile.TRAM.hasTransitStatus)
+    }
+
+    private fun ByteArray.indexOfSequence(sequence: ByteArray): Int =
+        indices.first { offset ->
+            offset + sequence.size <= size && sequence.indices.all { this[offset + it] == sequence[it] }
+        }
+
+    private fun u16(bytes: ByteArray, offset: Int): Int =
+        ((bytes[offset].toInt() and 0xff) shl 8) or (bytes[offset + 1].toInt() and 0xff)
+
+    private fun i32(bytes: ByteArray, offset: Int): Int =
+        ((bytes[offset].toInt() and 0xff) shl 24) or
+            ((bytes[offset + 1].toInt() and 0xff) shl 16) or
+            ((bytes[offset + 2].toInt() and 0xff) shl 8) or
+            (bytes[offset + 3].toInt() and 0xff)
 }

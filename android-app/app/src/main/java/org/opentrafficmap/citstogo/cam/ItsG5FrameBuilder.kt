@@ -1,6 +1,7 @@
 package org.opentrafficmap.citstogo.cam
 
 import java.io.ByteArrayOutputStream
+import java.util.concurrent.atomic.AtomicInteger
 import org.opentrafficmap.citstogo.srem.SremIdentity
 import org.opentrafficmap.citstogo.srem.SremRequest
 import org.opentrafficmap.citstogo.srem.SremUperEncoder
@@ -40,19 +41,65 @@ object ItsG5FrameBuilder {
             SremIdentity(identity.stationId, identity.macAddress),
             request,
         )
-        return shbFrame(
-            btpDestinationPort = SREM_PORT,
-            payload = srem,
-            stationType = StationType.PEDESTRIAN,
-            macAddress = identity.macAddress,
-            positionLatitude = request.position.latitude,
-            positionLongitude = request.position.longitude,
-            speedCms = 0,
-            heading = 0,
-            positionAccurate = true,
-            nowUnixMs = request.nowUnixMs,
-            qosTid = 1,
-        )
+        return gbcSremFrame(identity, request, srem)
+    }
+
+    private fun gbcSremFrame(identity: CamIdentity, request: SremRequest, payload: ByteArray): ByteArray {
+        val btp = ByteArrayOutputStream().apply {
+            putU16(SREM_PORT)
+            putU16(0)
+            write(payload)
+        }.toByteArray()
+        val position = request.position
+        val geoPositionAvailable = position.latitude in GEONETWORKING_LATITUDE_RANGE &&
+            position.longitude in GEONETWORKING_LONGITUDE_RANGE
+        val latitude = if (geoPositionAvailable) position.latitude else 0
+        val longitude = if (geoPositionAvailable) position.longitude else 0
+        val geo = ByteArrayOutputStream().apply {
+            // Basic header: version 1, common header, 60 seconds, four remaining hops.
+            write(0x11)
+            write(0)
+            write(0x1a)
+            write(4)
+            // Common header: BTP-B, GBC, traffic class 2, mobile, maximum four hops.
+            write(0x20)
+            write(0x40)
+            write(0x02)
+            write(0x80)
+            putU16(btp.size)
+            write(4)
+            write(0)
+            putU16(gbcSequence.getAndIncrement() and 0xffff)
+            putU16(0)
+            write(gnAddress(request.profile.stationType, identity.macAddress))
+            putU32(CamUperEncoder.timestampIts(request.nowUnixMs) and 0xffff_ffffL)
+            putI32(latitude)
+            putI32(longitude)
+            putU16(if (position.positionAccurate && geoPositionAvailable) 0x8000 else 0)
+            putU16(position.heading)
+            putI32(latitude)
+            putI32(longitude)
+            putU16(1_000)
+            putU16(0)
+            putU16(0)
+            putU16(0)
+            write(btp)
+        }.toByteArray()
+
+        return ByteArrayOutputStream().apply {
+            write(byteArrayOf(0x88.toByte(), 0, 0, 0))
+            write(BROADCAST)
+            write(identity.macAddress)
+            write(BROADCAST)
+            val sequenceControl = (wlanSequence.getAndIncrement() and 0x0fff) shl 4
+            write(sequenceControl and 0xff)
+            write((sequenceControl ushr 8) and 0xff)
+            write(0x21) // TID 1, ACK policy 1.
+            write(0)
+            write(byteArrayOf(0xaa.toByte(), 0xaa.toByte(), 0x03, 0, 0, 0))
+            putU16(GEONETWORKING_ETHERTYPE)
+            write(geo)
+        }.toByteArray()
     }
 
     private fun shbFrame(
@@ -136,4 +183,6 @@ object ItsG5FrameBuilder {
     private val BROADCAST = ByteArray(6) { 0xff.toByte() }
     private val GEONETWORKING_LATITUDE_RANGE = -899_999_999..899_999_999
     private val GEONETWORKING_LONGITUDE_RANGE = -1_799_999_999..1_799_999_999
+    private val gbcSequence = AtomicInteger()
+    private val wlanSequence = AtomicInteger()
 }

@@ -69,6 +69,7 @@ data class LaneConnection(
     val laneId: Int,
     val signalGroup: Int?,
     val connectionId: Int?,
+    val remoteIntersection: IntersectionKey?,
 ) : Serializable
 
 enum class LaneType : Serializable {

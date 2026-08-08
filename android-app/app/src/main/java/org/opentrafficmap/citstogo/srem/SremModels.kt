@@ -19,10 +19,13 @@ data class SremRequest(
     val outboundLaneId: Int,
     val position: SremPosition,
     val nowUnixMs: Long,
+    val profile: SremProfile,
+    val packageRequestUnixMs: Long,
 )
 
 data class SremPosition(
     val latitude: Int,
     val longitude: Int,
+    val heading: Int,
+    val positionAccurate: Boolean,
 )
-

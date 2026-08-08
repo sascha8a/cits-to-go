@@ -120,9 +120,13 @@ import org.opentrafficmap.citstogo.intersection.MovementPhaseState
 import org.opentrafficmap.citstogo.intersection.SignalEvent
 import org.opentrafficmap.citstogo.intersection.SpatIntersection
 import org.opentrafficmap.citstogo.intersection.countdownSideOffset
+import org.opentrafficmap.citstogo.intersection.connectedSremLaneIds
 import org.opentrafficmap.citstogo.intersection.intersectionConnectionSelectionAlpha
 import org.opentrafficmap.citstogo.intersection.intersectionLaneSelectionAlpha
 import org.opentrafficmap.citstogo.intersection.secondsUntilChange
+import org.opentrafficmap.citstogo.intersection.resolveSremLaneDirection
+import org.opentrafficmap.citstogo.srem.SremProfile
+import org.opentrafficmap.citstogo.srem.estimateSremRequestTimeMs
 import java.security.SecureRandom
 import java.util.Locale
 import kotlin.math.cos
@@ -152,6 +156,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var intersectionSortMode by mutableStateOf(IntersectionSortMode.FirstReceived)
     private var currentPosition by mutableStateOf<DevicePosition?>(null)
     private var camStationType by mutableStateOf(StationType.PEDESTRIAN)
+    private var sremProfile by mutableStateOf(SremProfile.PEDESTRIAN)
     private var camIntervalMs by mutableStateOf(CitsBridgeService.DEFAULT_CAM_INTERVAL_MS.toString())
     private var txApproved by mutableStateOf(false)
     private var txApprovalPromptState by mutableStateOf(TxApprovalPromptState.Hidden)
@@ -276,6 +281,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         )
         camStationType = StationType.selectableFromCode(
             prefs.getInt(CitsBridgeService.PREF_CAM_STATION_TYPE, StationType.PEDESTRIAN.code))
+        sremProfile = SremProfile.fromPreferenceCode(
+            prefs.getInt(CitsBridgeService.PREF_SREM_PROFILE, SremProfile.PEDESTRIAN.preferenceCode),
+        )
         camIntervalMs = prefs.getInt(
             CitsBridgeService.PREF_CAM_INTERVAL_MS,
             CitsBridgeService.DEFAULT_CAM_INTERVAL_MS,
@@ -325,6 +333,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     camIntervalMs = camIntervalMs,
                     onCamIntervalChange = { camIntervalMs = it },
                     onConfigureCam = ::configureCam,
+                    sremProfile = sremProfile,
+                    onSremProfileChange = { sremProfile = it },
                     txApproved = txApproved,
                     txApprovalPromptState = txApprovalPromptState,
                     onGrantTxApproval = ::grantTxApproval,
@@ -337,16 +347,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     onFlashingPageActive = ::setFlashingPageActive,
                     onRetryFirmwareRelease = { loadFirmwareRelease(force = true) },
                     onFlashFirmware = ::requestFirmwareFlash,
-                    onSaveSettings = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds ->
+                    onSaveSettings = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds, updatedSremProfile ->
                         mqttUri = updatedMqttUri
                         nodeId = updatedNodeId
                         maxQueueLength = updatedMaxQueueLength
                         maxQueueAgeSeconds = updatedMaxQueueAgeSeconds
+                        sremProfile = updatedSremProfile
                         saveSettings(
                             updatedMqttUri,
                             updatedNodeId,
                             updatedMaxQueueLength,
                             updatedMaxQueueAgeSeconds,
+                            updatedSremProfile,
                         )
                     },
                 )
@@ -682,6 +694,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             putExtra(CitsBridgeService.EXTRA_SREM_LATITUDE_E7, position.latitudeE7)
             putExtra(CitsBridgeService.EXTRA_SREM_LONGITUDE_E7, position.longitudeE7)
             putExtra(CitsBridgeService.EXTRA_SREM_POSITION_TIME_MS, position.timeMs)
+            putExtra(CitsBridgeService.EXTRA_SREM_HEADING, position.heading)
+            putExtra(CitsBridgeService.EXTRA_SREM_POSITION_ACCURATE, position.accuracyM != null)
+            putExtra(CitsBridgeService.EXTRA_SREM_PROFILE, sremProfile.preferenceCode)
+            putExtra(
+                CitsBridgeService.EXTRA_SREM_PACKAGE_REQUEST_TIME_MS,
+                sremPackageRequestTimeMs(map, inboundLaneId, position, sremProfile, nowMs),
+            )
         }
         logLine = "SREM request submitted"
     }
@@ -824,6 +843,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         nodeIdValue: String = nodeId,
         maxQueueLengthValue: String = maxQueueLength,
         maxQueueAgeSecondsValue: String = maxQueueAgeSeconds,
+        sremProfileValue: SremProfile = sremProfile,
     ) {
         val parsedMaxQueueLength = parseMaxQueueLength(maxQueueLengthValue)
         val parsedMaxQueueAgeMs = parseMaxQueueAgeMs(maxQueueAgeSecondsValue)
@@ -831,11 +851,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         nodeId = nodeIdValue.trim()
         maxQueueLength = parsedMaxQueueLength.toString()
         maxQueueAgeSeconds = formatQueueAgeSeconds(parsedMaxQueueAgeMs)
+        sremProfile = sremProfileValue
         getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
             .putString(CitsBridgeService.PREF_MQTT_URI, mqttUri)
             .putString(CitsBridgeService.PREF_NODE_ID, nodeId)
             .putInt(CitsBridgeService.PREF_MQTT_MAX_QUEUE_LENGTH, parsedMaxQueueLength)
             .putLong(CitsBridgeService.PREF_MQTT_MAX_QUEUE_AGE_MS, parsedMaxQueueAgeMs)
+            .putInt(CitsBridgeService.PREF_SREM_PROFILE, sremProfile.preferenceCode)
             .apply()
     }
 
@@ -922,6 +944,8 @@ private data class DevicePosition(
     val latitudeE7: Int,
     val longitudeE7: Int,
     val accuracyM: Float?,
+    val speedMetersPerSecond: Float?,
+    val heading: Int,
     val timeMs: Long,
 ) {
     companion object {
@@ -929,6 +953,10 @@ private data class DevicePosition(
             latitudeE7 = (location.latitude * 10_000_000.0).toInt(),
             longitudeE7 = (location.longitude * 10_000_000.0).toInt(),
             accuracyM = location.takeIf { it.hasAccuracy() }?.accuracy,
+            speedMetersPerSecond = location.takeIf { it.hasSpeed() && it.speed >= 0.5f }?.speed,
+            heading = location.takeIf { it.hasBearing() }
+                ?.let { (it.bearing.mod(360f) * 10f).roundToLong().toInt().coerceIn(0, 3_600) }
+                ?: 0,
             timeMs = location.time,
         )
     }
@@ -986,6 +1014,8 @@ private fun CitsApp(
     camIntervalMs: String,
     onCamIntervalChange: (String) -> Unit,
     onConfigureCam: (Boolean) -> Unit,
+    sremProfile: SremProfile,
+    onSremProfileChange: (SremProfile) -> Unit,
     txApproved: Boolean,
     txApprovalPromptState: TxApprovalPromptState,
     onGrantTxApproval: () -> Unit,
@@ -998,7 +1028,7 @@ private fun CitsApp(
     onFlashingPageActive: (Boolean) -> Unit,
     onRetryFirmwareRelease: () -> Unit,
     onFlashFirmware: () -> Unit,
-    onSaveSettings: (String, String, String, String) -> Unit,
+    onSaveSettings: (String, String, String, String, SremProfile) -> Unit,
 ) {
     var selectedPage by rememberSaveable { mutableStateOf(AppPage.Home) }
     var confettiRun by rememberSaveable { mutableStateOf(0) }
@@ -1114,6 +1144,7 @@ private fun CitsApp(
                             status = status,
                             currentPosition = currentPosition,
                             txApproved = txApproved,
+                            sremProfile = sremProfile,
                             onSendSrem = onSendSrem,
                             modifier = Modifier.weight(1f),
                         )
@@ -1129,17 +1160,20 @@ private fun CitsApp(
                             maxQueueLength = maxQueueLength,
                             maxQueueAgeSeconds = maxQueueAgeSeconds,
                             txApproved = txApproved,
+                            sremProfile = sremProfile,
                             onRevokeTxApproval = onRevokeTxApproval,
-                            onSave = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds ->
+                            onSave = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds, updatedSremProfile ->
                                 onMqttUriChange(updatedMqttUri)
                                 onNodeIdChange(updatedNodeId)
                                 onMaxQueueLengthChange(updatedMaxQueueLength)
                                 onMaxQueueAgeSecondsChange(updatedMaxQueueAgeSeconds)
+                                onSremProfileChange(updatedSremProfile)
                                 onSaveSettings(
                                     updatedMqttUri,
                                     updatedNodeId,
                                     updatedMaxQueueLength,
                                     updatedMaxQueueAgeSeconds,
+                                    updatedSremProfile,
                                 )
                             },
                         )
@@ -1637,6 +1671,7 @@ private fun IntersectionViewPage(
     status: BridgeStatus,
     currentPosition: DevicePosition?,
     txApproved: Boolean,
+    sremProfile: SremProfile,
     onSendSrem: (IntersectionSnapshot, Int, Int) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -1646,7 +1681,7 @@ private fun IntersectionViewPage(
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState()),
         ) {
-            IntersectionPageContent(null, status, currentPosition, txApproved, onSendSrem)
+            IntersectionPageContent(null, status, currentPosition, txApproved, sremProfile, onSendSrem)
         }
         return
     }
@@ -1720,7 +1755,7 @@ private fun IntersectionViewPage(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 2.dp),
             ) {
-                IntersectionPageContent(sortedSnapshots[page], status, currentPosition, txApproved, onSendSrem)
+                IntersectionPageContent(sortedSnapshots[page], status, currentPosition, txApproved, sremProfile, onSendSrem)
             }
         }
     }
@@ -1732,6 +1767,7 @@ private fun IntersectionPageContent(
     status: BridgeStatus,
     currentPosition: DevicePosition?,
     txApproved: Boolean,
+    sremProfile: SremProfile,
     onSendSrem: (IntersectionSnapshot, Int, Int) -> Unit,
 ) {
     val map = snapshot?.map
@@ -1759,6 +1795,11 @@ private fun IntersectionPageContent(
         }
         val title = map?.name?.takeIf { it.isNotBlank() } ?: "Intersection ${snapshot.map?.key ?: snapshot.spat?.key}"
         Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        Text(
+            "SREM profile: ${sremProfile.displayName}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.secondary,
+        )
         Text(
             listOfNotNull(
                 map?.key?.let { "id $it" },
@@ -1807,8 +1848,8 @@ private enum class SremRequestUiState(
     val detail: String,
     val color: Color,
 ) {
-    SelectFirst("Select first pedestrian lane", "Tap a crosswalk lane in the intersection view.", Color(0xFF475569)),
-    SelectSecond("Select connected lane", "Unavailable lanes are dimmed.", Color(0xFF0F766E)),
+    SelectFirst("Select inbound lane", "Tap any MAPEM lane in the intersection view.", Color(0xFF475569)),
+    SelectSecond("Select connected outbound lane", "Lanes without a declared local connection are dimmed.", Color(0xFF0F766E)),
     NotReady("Cannot request yet", "Start capture, approve TX, and wait for a fresh location.", Color(0xFFD97706)),
     Ready("Slide left to request green", "The request will be sent as an SREM.", Color(0xFF0F766E)),
     Queued("Request queued", "Waiting for firmware transmit acknowledgement.", Color(0xFF2563EB)),
@@ -1816,8 +1857,8 @@ private enum class SremRequestUiState(
     Acknowledged("Request acknowledged", "The controller reported that it received the request.", Color(0xFF2563EB)),
     Processing("Controller processing", "The controller is processing the request.", Color(0xFF2563EB)),
     WatchOtherTraffic("Watch other traffic", "The controller granted limited priority with caution.", Color(0xFFD97706)),
-    Granted("Request granted", "Waiting for the walk phase to become active.", Color(0xFF16A34A)),
-    WalkActive("Walk phase active", "SPATEM reports a permitted crossing phase.", Color(0xFF16A34A)),
+    Granted("Request granted", "Waiting for the requested movement to become active.", Color(0xFF16A34A)),
+    WalkActive("Requested movement active", "SPATEM reports a permitted movement phase.", Color(0xFF16A34A)),
     Rejected("Request rejected", "The controller rejected this request.", Color(0xFFB91C1C)),
     UnknownResponse("Response unclear", "The controller response could not be classified.", Color(0xFFD97706)),
     Failed("Request failed", "The SREM could not be transmitted.", Color(0xFFB91C1C)),
@@ -2122,9 +2163,12 @@ private fun isSelectedCrossingWalkActive(
     val first = lanesById[selectedPair[0]] ?: return false
     val second = lanesById[selectedPair[1]] ?: return false
     val signalGroups = spat?.movementsBySignalGroup.orEmpty()
-    val signalGroup = first.connections.firstOrNull { it.laneId == second.id }?.signalGroup
-        ?: second.connections.firstOrNull { it.laneId == first.id }?.signalGroup
-        ?: first.connections.firstNotNullOfOrNull { it.signalGroup }
+    val signalGroup = first.connections.firstOrNull {
+        it.remoteIntersection == null && it.laneId == second.id
+    }?.signalGroup
+        ?: second.connections.firstOrNull {
+            it.remoteIntersection == null && it.laneId == first.id
+        }?.signalGroup
         ?: return false
     return signalGroups[signalGroup]?.currentEvent?.state in setOf(
         MovementPhaseState.PermissiveAllowed,
@@ -2159,6 +2203,39 @@ private fun DevicePosition.toIntersectionOffsetCm(map: MapIntersection): Offset 
     )
 }
 
+private fun sremPackageRequestTimeMs(
+    map: MapIntersection,
+    inboundLaneId: Int,
+    position: DevicePosition,
+    profile: SremProfile,
+    nowMs: Long,
+): Long {
+    val lane = map.lanes.firstOrNull { it.id == inboundLaneId }
+    val positionCm = position.toIntersectionOffsetCm(map)
+    val distanceMeters = lane
+        ?.nodes
+        ?.takeIf { it.isNotEmpty() }
+        ?.let { nodes ->
+            val distanceCm = if (nodes.size == 1) {
+                hypot(
+                    (positionCm.x - nodes[0].xCm).toDouble(),
+                    (positionCm.y - nodes[0].yCm).toDouble(),
+                )
+            } else {
+                nodes.zipWithNext().minOf { (start, end) ->
+                    distanceToSegment(
+                        positionCm,
+                        Offset(start.xCm.toFloat(), start.yCm.toFloat()),
+                        Offset(end.xCm.toFloat(), end.yCm.toFloat()),
+                    ).toDouble()
+                }
+            }
+            distanceCm / 100.0
+        }
+        ?: map.distanceTo(position.latitudeE7, position.longitudeE7)
+    return estimateSremRequestTimeMs(nowMs, distanceMeters, position.speedMetersPerSecond, profile)
+}
+
 private const val INTERSECTION_MAX_ZOOM = 6f
 private const val LANE_TIMING_ZOOM_THRESHOLD = 2.2f
 private const val E7_DEGREE_TO_CM = 1.1132f
@@ -2186,14 +2263,14 @@ private fun nextCrosswalkSelection(
     selectedLaneIds: List<Int>,
     tappedLaneId: Int,
 ): List<Int> {
-    val tappedLane = map.lanes.firstOrNull { it.id == tappedLaneId && it.laneType == LaneType.Crosswalk }
+    val tappedLane = map.lanes.firstOrNull { it.id == tappedLaneId }
         ?: return selectedLaneIds
     if (selectedLaneIds.isEmpty()) return listOf(tappedLane.id)
     val firstLaneId = selectedLaneIds.first()
     if (tappedLane.id == firstLaneId) return emptyList()
     if (selectedLaneIds.size == 1) {
-        return if (tappedLane.id in connectedCrosswalkLaneIds(map, firstLaneId)) {
-            listOf(firstLaneId, tappedLane.id)
+        return if (tappedLane.id in connectedSremLaneIds(map, firstLaneId)) {
+            resolveSremLaneDirection(map, firstLaneId, tappedLane.id)
         } else {
             listOf(tappedLane.id)
         }
@@ -2202,16 +2279,7 @@ private fun nextCrosswalkSelection(
 }
 
 private fun connectedCrosswalkLaneIds(map: MapIntersection, laneId: Int): Set<Int> {
-    val lanesById = map.lanes.associateBy { it.id }
-    val lane = lanesById[laneId] ?: return emptySet()
-    return map.lanes.asSequence()
-        .filter { it.laneType == LaneType.Crosswalk && it.id != laneId }
-        .filter { candidate ->
-            lane.connections.any { it.laneId == candidate.id } ||
-                candidate.connections.any { it.laneId == laneId }
-        }
-        .map { it.id }
-        .toSet()
+    return connectedSremLaneIds(map, laneId)
 }
 
 private fun hitTestCrosswalkLane(
@@ -2246,7 +2314,7 @@ private fun hitTestCrosswalkLane(
     }
 
     return map.lanes
-        .filter { it.laneType == LaneType.Crosswalk && it.nodes.size >= 2 }
+        .filter { it.nodes.size >= 2 }
         .mapNotNull { lane ->
             val distance = lane.nodes.zipWithNext().minOf { (start, end) ->
                 distanceToSegment(tap, point(start), point(end)).toDouble()
@@ -2714,11 +2782,12 @@ private fun IntersectionRenderer(
                 )
             }
         }
-        map.lanes.filter { it.laneType == LaneType.Crosswalk }.forEach { lane ->
-            val style = styleFor(LaneType.Crosswalk)
+        map.lanes.forEach { lane ->
+            val style = styleFor(lane.laneType)
             lane.connections.forEach { connection ->
+                if (connection.remoteIntersection != null) return@forEach
                 val connectedLane = lanesById[connection.laneId]
-                if (connectedLane?.laneType != LaneType.Crosswalk || lane.id > connectedLane.id) return@forEach
+                if (connectedLane == null) return@forEach
                 val (start, end) = closestEndpointPair(lane, connectedLane)
                 val selectionAlpha = intersectionConnectionSelectionAlpha(
                     laneId = lane.id,
@@ -2980,13 +3049,15 @@ private fun SettingsPage(
     maxQueueLength: String,
     maxQueueAgeSeconds: String,
     txApproved: Boolean,
+    sremProfile: SremProfile,
     onRevokeTxApproval: () -> Unit,
-    onSave: (String, String, String, String) -> Unit,
+    onSave: (String, String, String, String, SremProfile) -> Unit,
 ) {
     var draftMqttUri by rememberSaveable(mqttUri) { mutableStateOf(mqttUri) }
     var draftNodeId by rememberSaveable(nodeId) { mutableStateOf(nodeId) }
     var draftMaxQueueLength by rememberSaveable(maxQueueLength) { mutableStateOf(maxQueueLength) }
     var draftMaxQueueAgeSeconds by rememberSaveable(maxQueueAgeSeconds) { mutableStateOf(maxQueueAgeSeconds) }
+    var draftSremProfile by rememberSaveable(sremProfile) { mutableStateOf(sremProfile) }
 
     Column(
         Modifier
@@ -3027,6 +3098,22 @@ private fun SettingsPage(
             placeholder = { Text("0.2") },
             suffix = { Text("s") },
         )
+        Text("SREM vehicle profile", style = MaterialTheme.typography.labelLarge)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = {
+                val index = SremProfile.entries.indexOf(draftSremProfile)
+                draftSremProfile = SremProfile.entries[(index - 1 + SremProfile.entries.size) % SremProfile.entries.size]
+            }) { Text("Previous") }
+            Text(draftSremProfile.displayName, fontWeight = FontWeight.SemiBold)
+            TextButton(onClick = {
+                val index = SremProfile.entries.indexOf(draftSremProfile)
+                draftSremProfile = SremProfile.entries[(index + 1) % SremProfile.entries.size]
+            }) { Text("Next") }
+        }
         Button(
             onClick = onRevokeTxApproval,
             modifier = Modifier.fillMaxWidth().height(48.dp),
@@ -3043,6 +3130,7 @@ private fun SettingsPage(
                     draftNodeId,
                     draftMaxQueueLength,
                     draftMaxQueueAgeSeconds,
+                    draftSremProfile,
                 )
             },
             modifier = Modifier.fillMaxWidth().height(48.dp),

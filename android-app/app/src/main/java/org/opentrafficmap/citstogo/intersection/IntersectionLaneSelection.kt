@@ -17,3 +17,30 @@ internal fun intersectionConnectionSelectionAlpha(
     if (selectedLaneIds.isEmpty()) return 1f
     return if (laneId in selectedLaneIds || connectedLaneId in selectedLaneIds) 1f else 0.2f
 }
+
+internal fun connectedSremLaneIds(map: MapIntersection, laneId: Int): Set<Int> {
+    val lane = map.lanes.firstOrNull { it.id == laneId } ?: return emptySet()
+    return map.lanes.asSequence()
+        .filter { it.id != laneId }
+        .filter { candidate ->
+            lane.connections.any { it.remoteIntersection == null && it.laneId == candidate.id } ||
+                candidate.connections.any { it.remoteIntersection == null && it.laneId == laneId }
+        }
+        .map { it.id }
+        .toSet()
+}
+
+internal fun resolveSremLaneDirection(map: MapIntersection, firstLaneId: Int, secondLaneId: Int): List<Int> {
+    val lanes = map.lanes.associateBy { it.id }
+    val first = lanes[firstLaneId] ?: return listOf(firstLaneId, secondLaneId)
+    val second = lanes[secondLaneId] ?: return listOf(firstLaneId, secondLaneId)
+    val firstToSecond = first.connections.any { it.remoteIntersection == null && it.laneId == secondLaneId }
+    val secondToFirst = second.connections.any { it.remoteIntersection == null && it.laneId == firstLaneId }
+    return when {
+        firstToSecond && !secondToFirst -> listOf(firstLaneId, secondLaneId)
+        secondToFirst && !firstToSecond -> listOf(secondLaneId, firstLaneId)
+        first.ingress && !first.egress && second.egress && !second.ingress -> listOf(firstLaneId, secondLaneId)
+        second.ingress && !second.egress && first.egress && !first.ingress -> listOf(secondLaneId, firstLaneId)
+        else -> listOf(firstLaneId, secondLaneId)
+    }
+}
