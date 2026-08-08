@@ -79,6 +79,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -1994,9 +1998,21 @@ private fun SremRequestSlider(
         )
     }
     var submitted by rememberSaveable(state) { mutableStateOf(false) }
-    val constrainedPosition = sliderPosition.coerceIn(0f, 1f)
+    var animateReset by remember { mutableStateOf(false) }
+    val targetPosition by remember(state, sliderPosition, animateReset) {
+        mutableFloatStateOf(
+            if (animateReset && state == SremRequestUiState.Ready) 0f else sliderPosition
+        )
+    }
+    val animatedPosition by animateFloatAsState(
+        targetValue = targetPosition,
+        animationSpec = tween(durationMillis = 300),
+        label = "sliderReset",
+    )
+    val constrainedPosition = animatedPosition.coerceIn(0f, 1f)
     var sliderSize by remember { mutableStateOf(IntSize.Zero) }
     val onDragStateChange = LocalSliderDragStateChange.current
+    val scope = rememberCoroutineScope()
     Canvas(
         modifier = modifier
             .height(96.dp)
@@ -2019,6 +2035,7 @@ private fun SremRequestSlider(
                     try {
                         val startPosition = constrainedPosition
                         val downX = down.position.x
+                        animateReset = false
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
                             event.changes.forEach { it.consume() }
@@ -2033,7 +2050,9 @@ private fun SremRequestSlider(
                                 onSubmit()
                             }
                         }
-                        if (!submitted && state == SremRequestUiState.Ready) sliderPosition = 0f
+                        if (!submitted && state == SremRequestUiState.Ready) {
+                            animateReset = true
+                        }
                     } finally {
                         onDragStateChange(false)
                     }
