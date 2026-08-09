@@ -61,6 +61,8 @@ class CitsBridgeService : Service() {
     private var serialReadThread: Thread? = null
     private var serialWriteThread: Thread? = null
     private var pcapWriter: PcapWriter? = null
+    private var replayThread: Thread? = null
+    @Volatile private var replayWanted = false
     private var mqttClient = MiniMqttClient()
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -101,6 +103,7 @@ class CitsBridgeService : Service() {
     private var packets = 0L
     private var mqttPublished = 0L
     private var pcapPackets = 0L
+    private var replayPackets = 0L
     private var discoveredDevices = 0L
     private var truncated = 0L
     private var protocolErrors = 0L
@@ -241,6 +244,11 @@ class CitsBridgeService : Service() {
             }
             ACTION_START_PCAP -> startPcap(intent.getStringExtra(EXTRA_PCAP_URI).orEmpty())
             ACTION_STOP_PCAP -> stopPcap(log = true)
+            ACTION_START_REPLAY -> startReplay(
+                intent.getStringExtra(EXTRA_PCAP_URI).orEmpty(),
+                intent.getStringExtra(EXTRA_NODE_ID).orEmpty(),
+            )
+            ACTION_STOP_REPLAY -> stopReplay(log = true)
             ACTION_REQUEST_STATUS -> publishStatus(null)
             ACTION_CONFIGURE_CAM -> configureCam(
                 intent.getBooleanExtra(EXTRA_CAM_ENABLED, false),
@@ -272,6 +280,7 @@ class CitsBridgeService : Service() {
         requestedMaxQueueLength: Int,
         requestedMaxQueueAgeMs: Long,
     ) {
+        stopReplay(log = false)
         startElapsedMs = SystemClock.elapsedRealtime()
         selectedDeviceName = deviceName?.takeIf { it.isNotBlank() } ?: selectedDeviceName
         if (requestedNodeId.isNotBlank()) {
@@ -296,6 +305,7 @@ class CitsBridgeService : Service() {
         closeSerial("USB stopped")
         runCatching { mqttClient.close() }
         stopPcap(log = false)
+        stopReplay(log = false)
         releaseWakeLock()
         status = status.copy(running = false, usbState = "Stopped", mqttState = "Disabled")
         publishStatus("Capture stopped")
@@ -386,7 +396,7 @@ class CitsBridgeService : Service() {
         }
     }
 
-    private fun handlePacket(packet: CitsPacket) {
+    private fun handlePacket(packet: CitsPacket, publishToMqtt: Boolean = true) {
         packets += 1
         if (packet.truncated) truncated += 1
         val discoveredMacAddress = Ieee80211Mac.sourceAddress(packet.payload)
@@ -396,7 +406,7 @@ class CitsBridgeService : Service() {
             sendStationDiscoveryNotification(discoveredMacAddress)
         }
         val summary = "#${packet.sequence} ${packet.payload.size}B ${packet.frequencyMhz}MHz ${packet.rssiDbm}dBm"
-        queueMqttPacket(packet.payload)
+        if (publishToMqtt) queueMqttPacket(packet.payload)
         writePcap(packet)
         updateIntersection(packet.payload)
         updateSsem(packet.payload)
@@ -413,6 +423,96 @@ class CitsBridgeService : Service() {
             packetTopic = "its/$nodeId/packet",
         )
         if (shouldPublishPacketStatus()) publishStatus("Packet $summary")
+    }
+
+    private fun startReplay(
+        uriString: String,
+        requestedNodeId: String,
+    ) {
+        if (uriString.isBlank()) {
+            status = status.copy(lastError = "PCAP source missing")
+            publishStatus(status.lastError)
+            return
+        }
+        stopReplay(log = false)
+        usbWanted = false
+        closeSerial(null)
+        stopPcap(log = false)
+        startElapsedMs = SystemClock.elapsedRealtime()
+        if (requestedNodeId.isNotBlank()) nodeId = requestedNodeId.trim()
+        mqttEnabled = false
+        runCatching { mqttClient.close() }
+        replayPackets = 0L
+        replayWanted = true
+        acquireWakeLock()
+        status = status.copy(running = true, usbState = "Replaying PCAP", replaying = true, replayPackets = 0, lastError = "")
+        val uri = Uri.parse(uriString)
+        val thread = Thread({
+            val currentThread = Thread.currentThread()
+            try {
+                contentResolver.openInputStream(uri).use { stream ->
+                    requireNotNull(stream) { "Could not open input stream" }
+                    val reader = PcapReader(stream.buffered())
+                    PcapReplay(
+                        elapsedRealtimeUs = { SystemClock.elapsedRealtimeNanos() / 1_000L },
+                        sleepMs = { Thread.sleep(it) },
+                    ).run(reader, { replayWanted && replayThread === currentThread }) { frame ->
+                        replayPackets += 1
+                        handlePacket(
+                            CitsPacket(
+                                sequence = replayPackets,
+                                timestampUs = frame.timestampUs,
+                                frequencyMhz = 0,
+                                rssiDbm = 0,
+                                wifiType = 0,
+                                rxState = 0,
+                                flags = if (frame.originalLength > frame.payload.size) CitsPacket.FLAG_TRUNCATED else 0,
+                                originalLength = frame.originalLength,
+                                capturedLength = frame.payload.size,
+                                payload = frame.payload,
+                            ),
+                            publishToMqtt = false,
+                        )
+                    }
+                }
+                if (replayWanted && replayThread === currentThread) finishReplay("PCAP replay complete")
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            } catch (e: Exception) {
+                if (replayWanted && replayThread === currentThread) {
+                    finishReplay("PCAP replay failed: ${e.message}", error = true)
+                }
+            }
+        }, "ctg-pcap-replay")
+        replayThread = thread
+        thread.start()
+        publishStatus("PCAP replay started")
+    }
+
+    private fun finishReplay(message: String, error: Boolean = false) {
+        replayWanted = false
+        replayThread = null
+        releaseWakeLock()
+        status = status.copy(
+            running = false,
+            usbState = if (error) "Replay error" else "Replay complete",
+            replaying = false,
+            replayPackets = replayPackets,
+            lastError = if (error) message else "",
+        )
+        publishStatus(message)
+    }
+
+    private fun stopReplay(log: Boolean) {
+        val wasRunning = replayWanted
+        replayWanted = false
+        replayThread?.interrupt()
+        replayThread = null
+        if (wasRunning) {
+            releaseWakeLock()
+            status = status.copy(running = false, usbState = "Stopped", replaying = false, replayPackets = replayPackets)
+            if (log) publishStatus("PCAP replay stopped")
+        }
     }
 
     private fun updateIntersection(packet: ByteArray) {
@@ -1019,7 +1119,7 @@ class CitsBridgeService : Service() {
     private fun publishStatus(log: String?) {
         refreshIntersectionSnapshots()
         status = status.copy(
-            running = usbWanted,
+            running = usbWanted || replayWanted,
             nodeId = nodeId,
             packetTopic = "its/$nodeId/packet",
             mqttQueued = spool.pendingCount(),
@@ -1027,6 +1127,8 @@ class CitsBridgeService : Service() {
             mqttPublished = mqttPublished,
             pcapRecording = pcapWriter != null,
             pcapPackets = pcapPackets,
+            replaying = replayWanted,
+            replayPackets = replayPackets,
             discoveredDevices = discoveredDevices,
             truncated = truncated,
             protocolErrors = protocolErrors,
@@ -1053,6 +1155,8 @@ class CitsBridgeService : Service() {
         intent.putExtra(EXTRA_MQTT_QUEUED, status.mqttQueued)
         intent.putExtra(EXTRA_PCAP_RECORDING, status.pcapRecording)
         intent.putExtra(EXTRA_PCAP_PACKETS, status.pcapPackets)
+        intent.putExtra(EXTRA_REPLAYING, status.replaying)
+        intent.putExtra(EXTRA_REPLAY_PACKETS, status.replayPackets)
         intent.putExtra(EXTRA_DISCOVERED_DEVICES, status.discoveredDevices)
         intent.putExtra(EXTRA_TRUNCATED, status.truncated)
         intent.putExtra(EXTRA_PROTOCOL_ERRORS, status.protocolErrors)
@@ -1293,6 +1397,8 @@ class CitsBridgeService : Service() {
         const val ACTION_STOP = "org.opentrafficmap.citstogo.action.STOP"
         const val ACTION_START_PCAP = "org.opentrafficmap.citstogo.action.START_PCAP"
         const val ACTION_STOP_PCAP = "org.opentrafficmap.citstogo.action.STOP_PCAP"
+        const val ACTION_START_REPLAY = "org.opentrafficmap.citstogo.action.START_REPLAY"
+        const val ACTION_STOP_REPLAY = "org.opentrafficmap.citstogo.action.STOP_REPLAY"
         const val ACTION_REQUEST_STATUS = "org.opentrafficmap.citstogo.action.REQUEST_STATUS"
         const val ACTION_CONFIGURE_CAM = "org.opentrafficmap.citstogo.action.CONFIGURE_CAM"
         const val ACTION_SEND_SREM = "org.opentrafficmap.citstogo.action.SEND_SREM"
@@ -1315,6 +1421,8 @@ class CitsBridgeService : Service() {
         const val EXTRA_MQTT_QUEUED = "mqttQueued"
         const val EXTRA_PCAP_RECORDING = "pcapRecording"
         const val EXTRA_PCAP_PACKETS = "pcapPackets"
+        const val EXTRA_REPLAYING = "replaying"
+        const val EXTRA_REPLAY_PACKETS = "replayPackets"
         const val EXTRA_DISCOVERED_DEVICES = "discoveredDevices"
         const val EXTRA_TRUNCATED = "truncated"
         const val EXTRA_PROTOCOL_ERRORS = "protocolErrors"

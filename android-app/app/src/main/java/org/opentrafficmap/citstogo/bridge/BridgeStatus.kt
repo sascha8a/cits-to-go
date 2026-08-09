@@ -11,6 +11,8 @@ data class BridgeStatus(
     val mqttQueued: Long = 0,
     val pcapRecording: Boolean = false,
     val pcapPackets: Long = 0,
+    val replaying: Boolean = false,
+    val replayPackets: Long = 0,
     val discoveredDevices: Long = 0,
     val truncated: Long = 0,
     val protocolErrors: Long = 0,
@@ -31,7 +33,11 @@ data class BridgeStatus(
     val lastError: String = "",
 ) {
     fun summary(): String {
-        val pcap = if (pcapRecording) " | PCAP recording" else ""
+        val pcap = when {
+            replaying -> " | PCAP replay"
+            pcapRecording -> " | PCAP recording"
+            else -> ""
+        }
         val cam = if (camEnabled) " | CAM active" else ""
         return "$usbState | MQTT $mqttState$pcap$cam"
     }

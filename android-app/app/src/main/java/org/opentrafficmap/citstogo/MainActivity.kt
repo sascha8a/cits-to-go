@@ -229,6 +229,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 mqttQueued = intent.getLongExtra(CitsBridgeService.EXTRA_MQTT_QUEUED, 0),
                 pcapRecording = intent.getBooleanExtra(CitsBridgeService.EXTRA_PCAP_RECORDING, false),
                 pcapPackets = intent.getLongExtra(CitsBridgeService.EXTRA_PCAP_PACKETS, 0),
+                replaying = intent.getBooleanExtra(CitsBridgeService.EXTRA_REPLAYING, false),
+                replayPackets = intent.getLongExtra(CitsBridgeService.EXTRA_REPLAY_PACKETS, 0),
                 discoveredDevices = intent.getLongExtra(CitsBridgeService.EXTRA_DISCOVERED_DEVICES, 0),
                 truncated = intent.getLongExtra(CitsBridgeService.EXTRA_TRUNCATED, 0),
                 protocolErrors = intent.getLongExtra(CitsBridgeService.EXTRA_PROTOCOL_ERRORS, 0),
@@ -332,6 +334,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     onStop = ::stopBridge,
                     onStartPcap = ::choosePcapFile,
                     onStopPcap = ::stopPcap,
+                    onStartReplay = ::chooseReplayFile,
+                    onStopReplay = ::stopReplay,
                     camStationType = camStationType,
                     onCamStationTypeChange = { camStationType = it },
                     camIntervalMs = camIntervalMs,
@@ -438,12 +442,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     @Deprecated("Deprecated Android callback kept to avoid an activity dependency.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != REQUEST_CREATE_PCAP || resultCode != RESULT_OK) return
+        if (requestCode !in setOf(REQUEST_CREATE_PCAP, REQUEST_OPEN_PCAP) || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         val flags = data.flags and
             (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         runCatching { contentResolver.takePersistableUriPermission(uri, flags) }
-        startPcap(uri)
+        if (requestCode == REQUEST_CREATE_PCAP) startPcap(uri) else startReplay(uri)
     }
 
     private fun requestUsbThenStart() {
@@ -640,6 +644,30 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     private fun stopPcap() {
         sendServiceIntent(CitsBridgeService.ACTION_STOP_PCAP)
+    }
+
+    private fun chooseReplayFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("*/*")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        startActivityForResult(intent, REQUEST_OPEN_PCAP)
+    }
+
+    private fun startReplay(uri: Uri) {
+        saveSettings()
+        val intent = Intent(this, CitsBridgeService::class.java)
+            .setAction(CitsBridgeService.ACTION_START_REPLAY)
+            .putExtra(CitsBridgeService.EXTRA_PCAP_URI, uri.toString())
+            .putExtra(CitsBridgeService.EXTRA_MQTT_URI, mqttUri)
+            .putExtra(CitsBridgeService.EXTRA_NODE_ID, nodeId)
+            .putExtra(CitsBridgeService.EXTRA_MQTT_MAX_QUEUE_LENGTH, parseMaxQueueLength(maxQueueLength))
+            .putExtra(CitsBridgeService.EXTRA_MQTT_MAX_QUEUE_AGE_MS, parseMaxQueueAgeMs(maxQueueAgeSeconds))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
+    }
+
+    private fun stopReplay() {
+        sendServiceIntent(CitsBridgeService.ACTION_STOP_REPLAY)
     }
 
     private fun configureCam(enabled: Boolean) {
@@ -908,6 +936,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     companion object {
         private const val REQUEST_CREATE_PCAP = 1001
+        private const val REQUEST_OPEN_PCAP = 1002
         private const val REQUEST_LOCATION = 1002
         private const val PREF_INTERSECTION_SORT_MODE = "intersection_sort_mode"
         private const val INTERSECTION_LOCATION_MIN_TIME_MS = 500L
@@ -1013,6 +1042,8 @@ private fun CitsApp(
     onStop: () -> Unit,
     onStartPcap: () -> Unit,
     onStopPcap: () -> Unit,
+    onStartReplay: () -> Unit,
+    onStopReplay: () -> Unit,
     camStationType: StationType,
     onCamStationTypeChange: (StationType) -> Unit,
     camIntervalMs: String,
@@ -1131,6 +1162,8 @@ private fun CitsApp(
                             onStop = onStop,
                             onStartPcap = onStartPcap,
                             onStopPcap = onStopPcap,
+                            onStartReplay = onStartReplay,
+                            onStopReplay = onStopReplay,
                         )
                         AppPage.CamBroadcast -> CamBroadcastPage(
                             status = status,
@@ -1326,6 +1359,8 @@ private fun HomePage(
     onStop: () -> Unit,
     onStartPcap: () -> Unit,
     onStopPcap: () -> Unit,
+    onStartReplay: () -> Unit,
+    onStopReplay: () -> Unit,
 ) {
     StatusBand(status)
     ConfigPanel(
@@ -1336,6 +1371,7 @@ private fun HomePage(
     )
     ActionRow(status.running, onStart, onStop)
     RecordingRow(status, onStartPcap, onStopPcap)
+    ReplayRow(status, onStartReplay, onStopReplay)
     Metrics(status)
     if (logLine.isNotBlank() || status.lastError.isNotBlank()) {
         EventLog(logLine, status.lastError)
@@ -3200,6 +3236,26 @@ private fun RecordingRow(status: BridgeStatus, onStartPcap: () -> Unit, onStopPc
 }
 
 @Composable
+private fun ReplayRow(status: BridgeStatus, onStartReplay: () -> Unit, onStopReplay: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Button(
+            onClick = onStartReplay,
+            modifier = Modifier.weight(1f).height(48.dp),
+            enabled = !status.running,
+            shape = RoundedCornerShape(8.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF0369A1)),
+        ) { Text("Replay PCAP") }
+        Button(
+            onClick = onStopReplay,
+            modifier = Modifier.weight(1f).height(48.dp),
+            enabled = status.replaying,
+            shape = RoundedCornerShape(8.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF475569)),
+        ) { Text("Stop replay") }
+    }
+}
+
+@Composable
 private fun Metrics(status: BridgeStatus) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -3208,7 +3264,7 @@ private fun Metrics(status: BridgeStatus) {
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             MetricCard("Queued", status.mqttQueued.toString(), Modifier.weight(1f))
-            MetricCard("PCAP", status.pcapPackets.toString(), Modifier.weight(1f))
+            MetricCard(if (status.replaying || status.replayPackets > 0) "Replayed" else "PCAP", if (status.replaying || status.replayPackets > 0) status.replayPackets.toString() else status.pcapPackets.toString(), Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             MetricCard("Discovered", status.discoveredDevices.toString(), Modifier.weight(1f))
