@@ -9,13 +9,15 @@ internal fun intersectionLaneSelectionAlpha(
     return if (laneId in selectedLaneIds || laneId in selectableLaneIds) 1f else 0.2f
 }
 
-internal fun intersectionConnectionSelectionAlpha(
+internal fun intersectionConnectionVisible(
     laneId: Int,
     connectedLaneId: Int,
+    signalized: Boolean,
     selectedLaneIds: Collection<Int>,
-): Float {
-    if (selectedLaneIds.isEmpty()) return 1f
-    return if (laneId in selectedLaneIds || connectedLaneId in selectedLaneIds) 1f else 0.2f
+): Boolean = when (selectedLaneIds.size) {
+    0 -> signalized
+    1 -> laneId in selectedLaneIds || connectedLaneId in selectedLaneIds
+    else -> laneId in selectedLaneIds && connectedLaneId in selectedLaneIds
 }
 
 internal fun connectedSremLaneIds(map: MapIntersection, laneId: Int): Set<Int> {

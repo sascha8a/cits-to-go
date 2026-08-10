@@ -121,12 +121,15 @@ import org.opentrafficmap.citstogo.intersection.LaneType
 import org.opentrafficmap.citstogo.intersection.MapIntersection
 import org.opentrafficmap.citstogo.intersection.MapLane
 import org.opentrafficmap.citstogo.intersection.MovementPhaseState
-import org.opentrafficmap.citstogo.intersection.SignalEvent
 import org.opentrafficmap.citstogo.intersection.SpatIntersection
+import org.opentrafficmap.citstogo.intersection.CountdownLabelBounds
+import org.opentrafficmap.citstogo.intersection.countdownLaneRepresentatives
 import org.opentrafficmap.citstogo.intersection.countdownSideOffset
 import org.opentrafficmap.citstogo.intersection.connectedSremLaneIds
-import org.opentrafficmap.citstogo.intersection.intersectionConnectionSelectionAlpha
+import org.opentrafficmap.citstogo.intersection.intersectionConnectionVisible
 import org.opentrafficmap.citstogo.intersection.intersectionLaneSelectionAlpha
+import org.opentrafficmap.citstogo.intersection.placeCountdownLabel
+import org.opentrafficmap.citstogo.intersection.roadConnectionControlPoints
 import org.opentrafficmap.citstogo.intersection.secondsUntilChange
 import org.opentrafficmap.citstogo.intersection.resolveSremLaneDirection
 import org.opentrafficmap.citstogo.srem.SremProfile
@@ -1753,30 +1756,31 @@ private fun IntersectionViewPage(
         modifier = modifier.fillMaxSize(),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                if (sortedSnapshots.size > 1) "${pagerState.currentPage + 1} / ${sortedSnapshots.size}" else "1 / 1",
-                modifier = Modifier.weight(1f),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
-            )
-            Button(
-                onClick = {
-                    onSortModeChange(when (sortMode) {
-                        IntersectionSortMode.FirstReceived -> IntersectionSortMode.Distance
-                        IntersectionSortMode.Distance -> IntersectionSortMode.FirstReceived
-                    })
-                },
-                shape = RoundedCornerShape(8.dp),
+        if (sortedSnapshots.size > 1) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Sort: ${sortMode.label}")
+                Text(
+                    "${pagerState.currentPage + 1} / ${sortedSnapshots.size}",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                TextButton(
+                    onClick = {
+                        onSortModeChange(when (sortMode) {
+                            IntersectionSortMode.FirstReceived -> IntersectionSortMode.Distance
+                            IntersectionSortMode.Distance -> IntersectionSortMode.FirstReceived
+                        })
+                    },
+                ) {
+                    Text("Sort: ${sortMode.label}")
+                }
             }
         }
-        if (sortMode == IntersectionSortMode.Distance && currentPosition == null) {
+        if (sortedSnapshots.size > 1 && sortMode == IntersectionSortMode.Distance && currentPosition == null) {
             Text(
                 "Waiting for location fix; showing first-received order.",
                 style = MaterialTheme.typography.bodySmall,
@@ -1836,14 +1840,10 @@ private fun IntersectionPageContent(
         val title = map?.name?.takeIf { it.isNotBlank() } ?: "Intersection ${snapshot.map?.key ?: snapshot.spat?.key}"
         Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Text(
-            "SREM profile: ${sremProfile.displayName}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.secondary,
-        )
-        Text(
             listOfNotNull(
                 map?.key?.let { "id $it" },
                 snapshot.updatedAtMs.takeIf { it > 0L }?.let { "last ${formatIntersectionAge(it)}" },
+                "SREM ${sremProfile.displayName}",
             ).joinToString(" • "),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.secondary,
@@ -1860,11 +1860,6 @@ private fun IntersectionPageContent(
                     selectedCrosswalkLaneIds = nextCrosswalkSelection(map, selectedCrosswalkLaneIds, lane.id)
                 },
             )
-            Text(
-                "${map.lanes.size} lanes • ${map.lanes.count { it.connections.isNotEmpty() }} signalized lane links",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.secondary,
-            )
             SremRequestPanel(
                 snapshot = snapshot,
                 selectedLaneIds = selectedCrosswalkLaneIds,
@@ -1880,7 +1875,7 @@ private fun IntersectionPageContent(
             )
         }
     }
-    SignalTimingPanel(snapshot)
+    SignalTimingPanel(snapshot, Modifier.padding(top = 12.dp))
 }
 
 private enum class SremRequestUiState(
@@ -2558,14 +2553,14 @@ private fun IntersectionRenderer(
         fun drawLocationDot(center: Offset, accuracyM: Float?) {
             accuracyM?.let { accuracy ->
                 val accuracyRadius = (accuracy * 100f * scale * zoomScale)
-                    .coerceIn(10.dp.toPx(), 80.dp.toPx())
+                    .coerceIn(10.dp.toPx(), 48.dp.toPx())
                 drawCircle(
-                    color = Color(0xFF2563EB).copy(alpha = 0.14f),
+                    color = Color(0xFF2563EB).copy(alpha = 0.08f),
                     radius = accuracyRadius,
                     center = center,
                 )
                 drawCircle(
-                    color = Color(0xFF2563EB).copy(alpha = 0.34f),
+                    color = Color(0xFF2563EB).copy(alpha = 0.24f),
                     radius = accuracyRadius,
                     center = center,
                     style = Stroke(width = 1.dp.toPx()),
@@ -2603,18 +2598,8 @@ private fun IntersectionRenderer(
         }
 
         val lanesById = map.lanes.associateBy { it.id }
-        fun eventFor(lane: MapLane, connection: LaneConnection? = null): SignalEvent? {
-            return connection?.signalGroup?.let { signalGroups[it]?.currentEvent }
-                ?: lane.connections.firstNotNullOfOrNull { laneConnection ->
-                    laneConnection.signalGroup?.let { signalGroups[it]?.currentEvent }
-                }
-        }
-
-        fun phaseFor(lane: MapLane, connection: LaneConnection? = null): MovementPhaseState? =
-            eventFor(lane, connection)?.state
-
-        fun signalColorFor(lane: MapLane, connection: LaneConnection? = null): Color {
-            val phase = phaseFor(lane, connection)
+        fun connectionColorFor(lane: MapLane, connection: LaneConnection): Color {
+            val phase = connection.signalGroup?.let { signalGroups[it]?.currentEvent?.state }
             return phase?.phaseColor() ?: lane.laneType.baseColor()
         }
 
@@ -2676,14 +2661,27 @@ private fun IntersectionRenderer(
             }
         }
 
-        fun closestEndpointPair(first: MapLane, second: MapLane): Pair<Offset, Offset> {
-            val firstEndpoints = listOf(first.nodes.first(), first.nodes.last()).map { point(it.xCm, it.yCm) }
-            val secondEndpoints = listOf(second.nodes.first(), second.nodes.last()).map { point(it.xCm, it.yCm) }
+        class LaneEndpoint(val point: Offset, val adjacent: Offset)
+
+        fun laneEndpoints(lane: MapLane): List<LaneEndpoint> = listOf(
+            LaneEndpoint(
+                point = point(lane.nodes.first().xCm, lane.nodes.first().yCm),
+                adjacent = point(lane.nodes[1].xCm, lane.nodes[1].yCm),
+            ),
+            LaneEndpoint(
+                point = point(lane.nodes.last().xCm, lane.nodes.last().yCm),
+                adjacent = point(lane.nodes[lane.nodes.lastIndex - 1].xCm, lane.nodes[lane.nodes.lastIndex - 1].yCm),
+            ),
+        )
+
+        fun closestEndpointPair(first: MapLane, second: MapLane): Pair<LaneEndpoint, LaneEndpoint> {
+            val firstEndpoints = laneEndpoints(first)
+            val secondEndpoints = laneEndpoints(second)
             return firstEndpoints.flatMap { firstPoint ->
                 secondEndpoints.map { secondPoint -> firstPoint to secondPoint }
             }.minBy { (firstPoint, secondPoint) ->
-                val dx = firstPoint.x - secondPoint.x
-                val dy = firstPoint.y - secondPoint.y
+                val dx = firstPoint.point.x - secondPoint.point.x
+                val dy = firstPoint.point.y - secondPoint.point.y
                 dx * dx + dy * dy
             }
         }
@@ -2706,50 +2704,54 @@ private fun IntersectionRenderer(
         )
 
         fun styleFor(type: LaneType): LaneVisualStyle = when (type) {
-            LaneType.Vehicle -> LaneVisualStyle(width = 5.dp.toPx())
+            LaneType.Vehicle -> LaneVisualStyle(width = 4.5.dp.toPx(), unsignalizedAlpha = 0.58f)
             LaneType.Crosswalk -> LaneVisualStyle(
-                width = 6.dp.toPx(),
+                width = 5.dp.toPx(),
                 pathEffect = crosswalkDash,
-                backingWidth = 9.dp.toPx(),
-                backingColor = Color.White.copy(alpha = 0.9f),
+                backingWidth = 8.dp.toPx(),
+                backingColor = Color.White.copy(alpha = 0.76f),
+                unsignalizedAlpha = 0.76f,
             )
             LaneType.Bike -> LaneVisualStyle(
-                width = 4.dp.toPx(),
+                width = 3.5.dp.toPx(),
                 pathEffect = bikeDash,
-                backingWidth = 6.dp.toPx(),
-                backingColor = Color.White.copy(alpha = 0.72f),
+                backingWidth = 5.5.dp.toPx(),
+                backingColor = Color.White.copy(alpha = 0.58f),
+                unsignalizedAlpha = 0.42f,
             )
             LaneType.Sidewalk -> LaneVisualStyle(
-                width = 3.5.dp.toPx(),
+                width = 3.dp.toPx(),
                 pathEffect = sidewalkDash,
-                backingWidth = 6.dp.toPx(),
-                backingColor = Color.White.copy(alpha = 0.68f),
+                backingWidth = 5.dp.toPx(),
+                backingColor = Color.White.copy(alpha = 0.5f),
+                unsignalizedAlpha = 0.28f,
             )
             LaneType.Median -> LaneVisualStyle(
-                width = 8.dp.toPx(),
+                width = 6.dp.toPx(),
                 pathEffect = medianDash,
-                unsignalizedAlpha = 0.46f,
+                unsignalizedAlpha = 0.22f,
             )
             LaneType.Striping -> LaneVisualStyle(
-                width = 3.dp.toPx(),
+                width = 2.5.dp.toPx(),
                 pathEffect = stripingDash,
-                unsignalizedAlpha = 0.62f,
+                unsignalizedAlpha = 0.28f,
             )
             LaneType.TrackedVehicle -> LaneVisualStyle(
-                width = 7.dp.toPx(),
-                backingWidth = 9.dp.toPx(),
-                backingColor = Color.White.copy(alpha = 0.68f),
+                width = 6.dp.toPx(),
+                backingWidth = 8.dp.toPx(),
+                backingColor = Color.White.copy(alpha = 0.54f),
                 centerGapWidth = 3.dp.toPx(),
+                unsignalizedAlpha = 0.4f,
             )
             LaneType.Parking -> LaneVisualStyle(
-                width = 4.dp.toPx(),
+                width = 3.dp.toPx(),
                 pathEffect = parkingDash,
-                unsignalizedAlpha = 0.68f,
+                unsignalizedAlpha = 0.25f,
             )
             LaneType.Other -> LaneVisualStyle(
-                width = 3.dp.toPx(),
+                width = 2.5.dp.toPx(),
                 pathEffect = otherDash,
-                unsignalizedAlpha = 0.56f,
+                unsignalizedAlpha = 0.22f,
             )
         }
 
@@ -2767,8 +2769,7 @@ private fun IntersectionRenderer(
 
         map.lanes.sortedBy { renderOrder(it.laneType) }.forEach { lane ->
             if (lane.nodes.size < 2) return@forEach
-            val phase = phaseFor(lane)
-            val color = signalColorFor(lane)
+            val color = lane.laneType.baseColor()
             val path = lanePath(lane)
             val style = styleFor(lane.laneType)
             val selectionAlpha = laneSelectionAlpha(lane)
@@ -2786,7 +2787,7 @@ private fun IntersectionRenderer(
             }
             drawPath(
                 path = path,
-                color = color.copy(alpha = (if (phase == null) style.unsignalizedAlpha else 0.92f) * selectionAlpha),
+                color = color.copy(alpha = style.unsignalizedAlpha * selectionAlpha),
                 style = Stroke(
                     width = style.width,
                     cap = StrokeCap.Round,
@@ -2837,39 +2838,72 @@ private fun IntersectionRenderer(
                 )
             }
         }
+        val drawnConnections = mutableSetOf<Pair<Int, Int>>()
         map.lanes.forEach { lane ->
             val style = styleFor(lane.laneType)
             lane.connections.forEach { connection ->
                 if (connection.remoteIntersection != null) return@forEach
                 val connectedLane = lanesById[connection.laneId]
                 if (connectedLane == null) return@forEach
-                val (start, end) = closestEndpointPair(lane, connectedLane)
-                val selectionAlpha = intersectionConnectionSelectionAlpha(
+                if (lane.nodes.size < 2 || connectedLane.nodes.size < 2) return@forEach
+                val connectionIsVisible = intersectionConnectionVisible(
                     laneId = lane.id,
                     connectedLaneId = connectedLane.id,
+                    signalized = connection.signalGroup?.let(signalGroups::containsKey) == true,
                     selectedLaneIds = selectedCrosswalkLaneIds,
                 )
-                style.backingWidth?.let { backingWidth ->
-                    drawLine(
-                        color = style.backingColor.copy(alpha = style.backingColor.alpha * selectionAlpha),
-                        start = start,
-                        end = end,
-                        strokeWidth = backingWidth,
-                        cap = StrokeCap.Round,
-                        pathEffect = style.pathEffect,
+                if (!connectionIsVisible) return@forEach
+                val connectionKey = minOf(lane.id, connectedLane.id) to maxOf(lane.id, connectedLane.id)
+                if (!drawnConnections.add(connectionKey)) return@forEach
+                val (start, end) = closestEndpointPair(lane, connectedLane)
+                val controls = roadConnectionControlPoints(
+                    startX = start.point.x,
+                    startY = start.point.y,
+                    startAdjacentX = start.adjacent.x,
+                    startAdjacentY = start.adjacent.y,
+                    endX = end.point.x,
+                    endY = end.point.y,
+                    endAdjacentX = end.adjacent.x,
+                    endAdjacentY = end.adjacent.y,
+                    maxControlDistance = 96.dp.toPx() * zoomScale,
+                )
+                val path = Path().apply {
+                    moveTo(start.point.x, start.point.y)
+                    cubicTo(
+                        controls.startX,
+                        controls.startY,
+                        controls.endX,
+                        controls.endY,
+                        end.point.x,
+                        end.point.y,
                     )
                 }
-                drawLine(
-                    color = signalColorFor(lane, connection).copy(alpha = 0.92f * selectionAlpha),
-                    start = start,
-                    end = end,
-                    strokeWidth = style.width,
-                    cap = StrokeCap.Round,
-                    pathEffect = style.pathEffect,
+                val connectionAlpha = if (selectedCrosswalkLaneIds.isEmpty()) 0.58f else 0.92f
+                style.backingWidth?.let { backingWidth ->
+                    drawPath(
+                        path = path,
+                        color = style.backingColor.copy(alpha = style.backingColor.alpha * connectionAlpha),
+                        style = Stroke(
+                            width = backingWidth,
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round,
+                            pathEffect = style.pathEffect,
+                        ),
+                    )
+                }
+                drawPath(
+                    path = path,
+                    color = connectionColorFor(lane, connection).copy(alpha = connectionAlpha),
+                    style = Stroke(
+                        width = style.width,
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                        pathEffect = style.pathEffect,
+                    ),
                 )
             }
         }
-        if (zoomScale >= LANE_TIMING_ZOOM_THRESHOLD) {
+        if (zoomScale >= LANE_TIMING_ZOOM_THRESHOLD || selectedCrosswalkLaneIds.isNotEmpty()) {
             val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.White.toArgb()
                 textAlign = Paint.Align.LEFT
@@ -2878,11 +2912,20 @@ private fun IntersectionRenderer(
             }
             val horizontalPadding = 6.dp.toPx()
             val verticalPadding = 3.dp.toPx()
-            val horizontalViewportPadding = 40.dp.toPx()
-            val verticalViewportPadding = 24.dp.toPx()
-            map.lanes.sortedBy { it.id }.forEach { lane ->
+            val occupiedLabels = mutableListOf<CountdownLabelBounds>()
+            val representatives = countdownLaneRepresentatives(
+                lanes = map.lanes,
+                availableSignalGroups = signalGroups.keys,
+                selectedLaneIds = selectedCrosswalkLaneIds.toSet(),
+                selectableLaneIds = selectableSecondLaneIds,
+            )
+            representatives.forEach { representative ->
+                val lane = representative.lane
                 if (lane.nodes.size < 2) return@forEach
-                val event = eventFor(lane) ?: return@forEach
+                if (zoomScale < LANE_TIMING_ZOOM_THRESHOLD &&
+                    lane.id !in selectedCrosswalkLaneIds && lane.id !in selectableSecondLaneIds
+                ) return@forEach
+                val event = signalGroups[representative.signalGroup]?.currentEvent ?: return@forEach
                 val seconds = event.secondsUntilChange(spat, nowMs) ?: return@forEach
                 val label = "${seconds}s"
                 val textWidth = textPaint.measureText(label)
@@ -2894,9 +2937,18 @@ private fun IntersectionRenderer(
                     labelHeight = labelHeight,
                     laneWidth = styleFor(lane.laneType).width,
                 )
-                if (labelPoint.x < -horizontalViewportPadding || labelPoint.x > size.width + horizontalViewportPadding) return@forEach
-                if (labelPoint.y < -verticalViewportPadding || labelPoint.y > size.height + verticalViewportPadding) return@forEach
-                val topLeft = Offset(labelPoint.x - labelWidth / 2f, labelPoint.y - labelHeight / 2f)
+                val bounds = placeCountdownLabel(
+                    preferredX = labelPoint.x,
+                    preferredY = labelPoint.y,
+                    labelWidth = labelWidth,
+                    labelHeight = labelHeight,
+                    viewportWidth = size.width,
+                    viewportHeight = size.height,
+                    occupied = occupiedLabels,
+                    gap = 4.dp.toPx(),
+                ) ?: return@forEach
+                occupiedLabels += bounds
+                val topLeft = Offset(bounds.left, bounds.top)
                 drawRoundRect(
                     color = event.state.phaseColor().copy(alpha = 0.94f),
                     topLeft = topLeft,
@@ -2935,25 +2987,48 @@ private fun IntersectionRenderer(
 }
 
 @Composable
-private fun SignalTimingPanel(snapshot: IntersectionSnapshot?) {
+private fun SignalTimingPanel(snapshot: IntersectionSnapshot?, modifier: Modifier = Modifier) {
+    val map = snapshot?.map
     val spat = snapshot?.spat
     val movements = spat?.movements.orEmpty()
     if (movements.isEmpty()) return
+    var expanded by rememberSaveable(map?.key.toString(), spat?.revision) { mutableStateOf(false) }
     var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(spat?.receivedAtMs) {
-        while (true) {
+    LaunchedEffect(spat?.receivedAtMs, expanded) {
+        while (expanded) {
             nowMs = System.currentTimeMillis()
             delay(1_000L)
         }
     }
     Column(
-        Modifier
+        modifier
             .fillMaxWidth()
             .background(Color.White, RoundedCornerShape(8.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("Signal phases", style = MaterialTheme.typography.titleMedium)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Signal phases", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    listOfNotNull(
+                        "${movements.size} groups",
+                        map?.let { "${it.lanes.size} lanes" },
+                        map?.let { intersection -> "${intersection.lanes.count { it.connections.isNotEmpty() }} linked" },
+                    ).joinToString(" • "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
+            TextButton(onClick = { expanded = !expanded }) {
+                Text(if (expanded) "Hide" else "Show")
+            }
+        }
+        if (!expanded) return@Column
         Row(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -2963,7 +3038,7 @@ private fun SignalTimingPanel(snapshot: IntersectionSnapshot?) {
             Text("Phase", modifier = Modifier.weight(1.2f), style = MaterialTheme.typography.labelMedium)
             Text("Next change", modifier = Modifier.weight(1.0f), style = MaterialTheme.typography.labelMedium)
         }
-        movements.sortedBy { it.signalGroup }.take(16).forEach { movement ->
+        movements.sortedBy { it.signalGroup }.forEach { movement ->
             val event = movement.currentEvent
             Row(
                 Modifier.fillMaxWidth(),

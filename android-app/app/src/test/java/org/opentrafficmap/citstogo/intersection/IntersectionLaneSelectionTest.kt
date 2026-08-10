@@ -24,14 +24,24 @@ class IntersectionLaneSelectionTest {
     }
 
     @Test
-    fun connectionsFromSelectedLanesKeepFullOpacity() {
-        assertEquals(1f, intersectionConnectionSelectionAlpha(10, 11, listOf(10)))
-        assertEquals(1f, intersectionConnectionSelectionAlpha(10, 11, listOf(11)))
+    fun onlySignalizedConnectionsAreVisibleBeforeSelection() {
+        assertEquals(true, intersectionConnectionVisible(10, 11, signalized = true, selectedLaneIds = emptyList()))
+        assertEquals(false, intersectionConnectionVisible(10, 11, signalized = false, selectedLaneIds = emptyList()))
     }
 
     @Test
-    fun connectionsNotFromSelectedLanesAreDimmed() {
-        assertEquals(0.2f, intersectionConnectionSelectionAlpha(20, 21, listOf(10)))
+    fun firstSelectionShowsOnlyItsConnections() {
+        assertEquals(true, intersectionConnectionVisible(10, 11, signalized = false, selectedLaneIds = listOf(10)))
+        assertEquals(true, intersectionConnectionVisible(10, 11, signalized = false, selectedLaneIds = listOf(11)))
+        assertEquals(false, intersectionConnectionVisible(20, 21, signalized = true, selectedLaneIds = listOf(10)))
+    }
+
+    @Test
+    fun completeSelectionShowsOnlyChosenConnection() {
+        val selected = listOf(10, 11)
+
+        assertEquals(true, intersectionConnectionVisible(10, 11, signalized = false, selectedLaneIds = selected))
+        assertEquals(false, intersectionConnectionVisible(10, 12, signalized = true, selectedLaneIds = selected))
     }
 
     @Test
