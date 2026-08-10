@@ -55,6 +55,37 @@ internal fun countdownLaneRepresentatives(
         .sortedWith(compareBy({ priority(it.lane) }, CountdownLaneRepresentative::signalGroup))
 }
 
+internal fun countdownSignalGroupsForSelection(
+    lanes: List<MapLane>,
+    selectedLaneIds: List<Int>,
+    availableSignalGroups: Set<Int>,
+): Set<Int> {
+    val selectedLaneId = selectedLaneIds.firstOrNull() ?: return emptySet()
+    val pairedLaneId = selectedLaneIds.getOrNull(1)
+    return lanes.asSequence()
+        .filter { lane ->
+            if (pairedLaneId == null) {
+                lane.id == selectedLaneId || lane.connections.any { it.laneId == selectedLaneId }
+            } else {
+                lane.id == selectedLaneId || lane.id == pairedLaneId
+            }
+        }
+        .flatMap { lane ->
+            lane.connections.asSequence().filter { connection ->
+                connection.remoteIntersection == null &&
+                    if (pairedLaneId == null) {
+                        lane.id == selectedLaneId || connection.laneId == selectedLaneId
+                    } else {
+                        (lane.id == selectedLaneId && connection.laneId == pairedLaneId) ||
+                            (lane.id == pairedLaneId && connection.laneId == selectedLaneId)
+                    }
+            }
+        }
+        .mapNotNull { it.signalGroup }
+        .filter { it in availableSignalGroups }
+        .toSet()
+}
+
 internal data class CountdownLabelBounds(
     val left: Float,
     val top: Float,

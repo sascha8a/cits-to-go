@@ -62,6 +62,35 @@ class IntersectionCountdownPlacementTest {
     }
 
     @Test
+    fun selectedLaneEmphasizesSignalGroupsDeclaredInEitherDirection() {
+        val groups = countdownSignalGroupsForSelection(
+            lanes = listOf(lane(1, signalGroup = 4, connectedLaneId = 2)),
+            selectedLaneIds = listOf(2),
+            availableSignalGroups = setOf(4, 7),
+        )
+
+        assertEquals(setOf(4), groups)
+    }
+
+    @Test
+    fun selectedPairNarrowsEmphasisToItsExactMovement() {
+        val source = lane(1, signalGroup = 4, connectedLaneId = 2).copy(
+            connections = listOf(
+                LaneConnection(2, 4, null, null),
+                LaneConnection(3, 7, null, null),
+            ),
+        )
+
+        val groups = countdownSignalGroupsForSelection(
+            lanes = listOf(source),
+            selectedLaneIds = listOf(1, 3),
+            availableSignalGroups = setOf(4, 7),
+        )
+
+        assertEquals(setOf(7), groups)
+    }
+
+    @Test
     fun countdownPlacementMovesAwayFromOccupiedLabel() {
         val occupied = CountdownLabelBounds(left = 35f, top = 40f, right = 65f, bottom = 60f)
 
@@ -97,7 +126,7 @@ class IntersectionCountdownPlacementTest {
         assertNull(placed)
     }
 
-    private fun lane(id: Int, signalGroup: Int): MapLane = MapLane(
+    private fun lane(id: Int, signalGroup: Int, connectedLaneId: Int = id + 100): MapLane = MapLane(
         id = id,
         ingressApproach = null,
         egressApproach = null,
@@ -105,6 +134,6 @@ class IntersectionCountdownPlacementTest {
         ingress = true,
         egress = false,
         nodes = listOf(LaneNode(0, 0), LaneNode(100, 0)),
-        connections = listOf(LaneConnection(id + 100, signalGroup, null, null)),
+        connections = listOf(LaneConnection(connectedLaneId, signalGroup, null, null)),
     )
 }

@@ -124,6 +124,7 @@ import org.opentrafficmap.citstogo.intersection.MovementPhaseState
 import org.opentrafficmap.citstogo.intersection.SpatIntersection
 import org.opentrafficmap.citstogo.intersection.CountdownLabelBounds
 import org.opentrafficmap.citstogo.intersection.countdownLaneRepresentatives
+import org.opentrafficmap.citstogo.intersection.countdownSignalGroupsForSelection
 import org.opentrafficmap.citstogo.intersection.countdownSideOffset
 import org.opentrafficmap.citstogo.intersection.connectedSremLaneIds
 import org.opentrafficmap.citstogo.intersection.intersectionConnectionVisible
@@ -2755,6 +2756,53 @@ private fun IntersectionRenderer(
             )
         }
 
+        fun drawCenterGap(path: Path, style: LaneVisualStyle) {
+            style.centerGapWidth?.let { centerGapWidth ->
+                drawPath(
+                    path = path,
+                    color = canvasBackground,
+                    style = Stroke(
+                        width = centerGapWidth,
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                        pathEffect = style.pathEffect,
+                    ),
+                )
+            }
+        }
+
+        fun drawStyledPath(
+            path: Path,
+            style: LaneVisualStyle,
+            color: Color,
+            colorAlpha: Float,
+            styleAlpha: Float,
+        ) {
+            style.backingWidth?.let { backingWidth ->
+                drawPath(
+                    path = path,
+                    color = style.backingColor.copy(alpha = style.backingColor.alpha * styleAlpha),
+                    style = Stroke(
+                        width = backingWidth,
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                        pathEffect = style.pathEffect,
+                    ),
+                )
+            }
+            drawPath(
+                path = path,
+                color = color.copy(alpha = colorAlpha),
+                style = Stroke(
+                    width = style.width,
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round,
+                    pathEffect = style.pathEffect,
+                ),
+            )
+            drawCenterGap(path, style)
+        }
+
         fun renderOrder(type: LaneType): Int = when (type) {
             LaneType.Median -> 0
             LaneType.Striping -> 1
@@ -2773,27 +2821,12 @@ private fun IntersectionRenderer(
             val path = lanePath(lane)
             val style = styleFor(lane.laneType)
             val selectionAlpha = laneSelectionAlpha(lane)
-            style.backingWidth?.let { backingWidth ->
-                drawPath(
-                    path = path,
-                    color = style.backingColor.copy(alpha = style.backingColor.alpha * selectionAlpha),
-                    style = Stroke(
-                        width = backingWidth,
-                        cap = StrokeCap.Round,
-                        join = StrokeJoin.Round,
-                        pathEffect = style.pathEffect,
-                    ),
-                )
-            }
-            drawPath(
+            drawStyledPath(
                 path = path,
-                color = color.copy(alpha = style.unsignalizedAlpha * selectionAlpha),
-                style = Stroke(
-                    width = style.width,
-                    cap = StrokeCap.Round,
-                    join = StrokeJoin.Round,
-                    pathEffect = style.pathEffect,
-                ),
+                style = style,
+                color = color,
+                colorAlpha = style.unsignalizedAlpha * selectionAlpha,
+                styleAlpha = selectionAlpha,
             )
             if (lane.id in selectedCrosswalkLaneIds) {
                 drawPath(
@@ -2824,18 +2857,7 @@ private fun IntersectionRenderer(
                         pathEffect = style.pathEffect,
                     ),
                 )
-            }
-            style.centerGapWidth?.let { centerGapWidth ->
-                drawPath(
-                    path = path,
-                    color = canvasBackground,
-                    style = Stroke(
-                        width = centerGapWidth,
-                        cap = StrokeCap.Round,
-                        join = StrokeJoin.Round,
-                        pathEffect = style.pathEffect,
-                    ),
-                )
+                drawCenterGap(path, style)
             }
         }
         val drawnConnections = mutableSetOf<Pair<Int, Int>>()
@@ -2879,27 +2901,12 @@ private fun IntersectionRenderer(
                     )
                 }
                 val connectionAlpha = if (selectedCrosswalkLaneIds.isEmpty()) 0.58f else 0.92f
-                style.backingWidth?.let { backingWidth ->
-                    drawPath(
-                        path = path,
-                        color = style.backingColor.copy(alpha = style.backingColor.alpha * connectionAlpha),
-                        style = Stroke(
-                            width = backingWidth,
-                            cap = StrokeCap.Round,
-                            join = StrokeJoin.Round,
-                            pathEffect = style.pathEffect,
-                        ),
-                    )
-                }
-                drawPath(
+                drawStyledPath(
                     path = path,
-                    color = connectionColorFor(lane, connection).copy(alpha = connectionAlpha),
-                    style = Stroke(
-                        width = style.width,
-                        cap = StrokeCap.Round,
-                        join = StrokeJoin.Round,
-                        pathEffect = style.pathEffect,
-                    ),
+                    style = style,
+                    color = connectionColorFor(lane, connection),
+                    colorAlpha = connectionAlpha,
+                    styleAlpha = connectionAlpha,
                 )
             }
         }
@@ -2918,6 +2925,11 @@ private fun IntersectionRenderer(
                 availableSignalGroups = signalGroups.keys,
                 selectedLaneIds = selectedCrosswalkLaneIds.toSet(),
                 selectableLaneIds = selectableSecondLaneIds,
+            )
+            val emphasizedSignalGroups = countdownSignalGroupsForSelection(
+                lanes = map.lanes,
+                selectedLaneIds = selectedCrosswalkLaneIds,
+                availableSignalGroups = signalGroups.keys,
             )
             representatives.forEach { representative ->
                 val lane = representative.lane
@@ -2949,12 +2961,15 @@ private fun IntersectionRenderer(
                 ) ?: return@forEach
                 occupiedLabels += bounds
                 val topLeft = Offset(bounds.left, bounds.top)
+                val deemphasized = emphasizedSignalGroups.isNotEmpty() &&
+                    representative.signalGroup !in emphasizedSignalGroups
                 drawRoundRect(
-                    color = event.state.phaseColor().copy(alpha = 0.94f),
+                    color = event.state.phaseColor().copy(alpha = if (deemphasized) 0.16f else 0.94f),
                     topLeft = topLeft,
                     size = Size(labelWidth, labelHeight),
                     cornerRadius = CornerRadius(5.dp.toPx(), 5.dp.toPx()),
                 )
+                textPaint.color = (if (deemphasized) Color(0xFF64748B) else Color.White).toArgb()
                 drawContext.canvas.nativeCanvas.drawText(
                     label,
                     topLeft.x + horizontalPadding,
