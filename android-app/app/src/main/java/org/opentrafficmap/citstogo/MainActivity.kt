@@ -23,6 +23,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.OpenableColumns
 import java.io.Serializable
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -112,6 +113,7 @@ import org.opentrafficmap.citstogo.cam.StationType
 import org.opentrafficmap.citstogo.flashing.CodebergReleaseClient
 import org.opentrafficmap.citstogo.flashing.Esp32RomFlasher
 import org.opentrafficmap.citstogo.flashing.EspFlashTransport
+import org.opentrafficmap.citstogo.flashing.FirmwareFileReader
 import org.opentrafficmap.citstogo.flashing.FirmwareRelease
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
@@ -173,6 +175,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var intersectionLocationActive = false
     private var lastShakeElapsedMs = 0L
     private var firmwareRelease: FirmwareRelease? = null
+    private var customFirmwareUri: Uri? = null
     private var releaseLookupRunning = false
     private var flashAfterPermission = false
     private var flashingState by mutableStateOf(FirmwareFlashingState.initial(BuildConfig.VERSION_NAME))
@@ -358,6 +361,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     flashingState = flashingState,
                     onFlashingPageActive = ::setFlashingPageActive,
                     onRetryFirmwareRelease = { loadFirmwareRelease(force = true) },
+                    onChooseCustomFirmware = ::chooseCustomFirmware,
+                    onUseReleaseFirmware = ::useReleaseFirmware,
                     onFlashFirmware = ::requestFirmwareFlash,
                     onSaveSettings = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds, updatedSremProfile ->
                         mqttUri = updatedMqttUri
@@ -446,12 +451,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     @Deprecated("Deprecated Android callback kept to avoid an activity dependency.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode !in setOf(REQUEST_CREATE_PCAP, REQUEST_OPEN_PCAP) || resultCode != RESULT_OK) return
+        if (requestCode !in setOf(REQUEST_CREATE_PCAP, REQUEST_OPEN_PCAP, REQUEST_OPEN_FIRMWARE) ||
+            resultCode != RESULT_OK
+        ) return
         val uri = data?.data ?: return
         val flags = data.flags and
             (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         runCatching { contentResolver.takePersistableUriPermission(uri, flags) }
-        if (requestCode == REQUEST_CREATE_PCAP) startPcap(uri) else startReplay(uri)
+        when (requestCode) {
+            REQUEST_CREATE_PCAP -> startPcap(uri)
+            REQUEST_OPEN_PCAP -> startReplay(uri)
+            REQUEST_OPEN_FIRMWARE -> selectCustomFirmware(uri)
+        }
     }
 
     private fun requestUsbThenStart() {
@@ -479,7 +490,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         if (!active) return
         refreshDevices()
         updateFlashingDeviceState()
-        if (firmwareRelease == null && !releaseLookupRunning) loadFirmwareRelease()
+        if (firmwareRelease == null && customFirmwareUri == null && !releaseLookupRunning) loadFirmwareRelease()
     }
 
     private fun loadFirmwareRelease(force: Boolean = false) {
@@ -493,9 +504,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     runOnUiThread {
                         releaseLookupRunning = false
                         firmwareRelease = release
+                        if (customFirmwareUri != null) return@runOnUiThread
                         flashingState = flashingState.copy(
                             releaseTag = release.tag,
                             firmwareName = release.firmwareName,
+                            customFirmware = false,
                             phase = FirmwareFlashingPhase.WaitingForDevice,
                             message = "Firmware release found. Connect an ESP32-C5 over USB.",
                         )
@@ -505,6 +518,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 .onFailure { error ->
                     runOnUiThread {
                         releaseLookupRunning = false
+                        if (customFirmwareUri != null) return@runOnUiThread
                         flashingState = flashingState.copy(
                             phase = FirmwareFlashingPhase.Error,
                             message = error.message ?: "Unable to load the matching Codeberg release",
@@ -515,13 +529,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun updateFlashingDeviceState() {
-        if (flashingState.busy || firmwareRelease == null) return
+        if (flashingState.busy || (firmwareRelease == null && customFirmwareUri == null)) return
         val device = connectedEspressifDevice()
+        val sourceMessage = if (customFirmwareUri != null) {
+            "Custom firmware selected. Connect an ESP32-C5 over USB."
+        } else {
+            "Firmware release found. Connect an ESP32-C5 over USB."
+        }
         flashingState = if (device == null) {
             flashingState.copy(
                 deviceName = null,
                 phase = FirmwareFlashingPhase.WaitingForDevice,
-                message = "Firmware release found. Connect an ESP32-C5 over USB.",
+                message = sourceMessage,
                 progress = 0f,
             )
         } else {
@@ -559,18 +578,29 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun startFirmwareFlash(device: UsbDevice) {
-        val release = firmwareRelease ?: return
+        val customUri = customFirmwareUri
+        val release = firmwareRelease
+        if (customUri == null && release == null) return
         if (flashingState.busy) return
         flashingState = flashingState.copy(
             phase = FirmwareFlashingPhase.Downloading,
-            message = "Downloading and verifying ${release.firmwareName}…",
+            message = if (customUri != null) {
+                "Reading ${flashingState.firmwareName ?: "custom firmware"}…"
+            } else {
+                "Downloading and verifying ${release!!.firmwareName}…"
+            },
             progress = 0f,
         )
         Thread {
             runCatching {
-                val client = CodebergReleaseClient()
-                val firmware = client.downloadAndVerify(release) { progress ->
-                    runOnUiThread { flashingState = flashingState.copy(progress = progress * 0.2f) }
+                val firmware = if (customUri != null) {
+                    contentResolver.openInputStream(customUri)?.use { input ->
+                        FirmwareFileReader.read(input)
+                    } ?: throw java.io.IOException("Unable to open the custom firmware file")
+                } else {
+                    CodebergReleaseClient().downloadAndVerify(release!!) { progress ->
+                        runOnUiThread { flashingState = flashingState.copy(progress = progress * 0.2f) }
+                    }
                 }
                 runOnUiThread {
                     flashingState = flashingState.copy(
@@ -607,6 +637,52 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 }
             }
         }.start()
+    }
+
+    private fun chooseCustomFirmware() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("application/octet-stream")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        startActivityForResult(intent, REQUEST_OPEN_FIRMWARE)
+    }
+
+    private fun selectCustomFirmware(uri: Uri) {
+        customFirmwareUri = uri
+        val name = runCatching {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        }.getOrNull() ?: uri.lastPathSegment ?: "firmware.bin"
+        flashingState = flashingState.copy(
+            releaseTag = null,
+            firmwareName = name,
+            customFirmware = true,
+            phase = FirmwareFlashingPhase.WaitingForDevice,
+            message = "Custom firmware selected. Connect an ESP32-C5 over USB.",
+            progress = 0f,
+        )
+        updateFlashingDeviceState()
+    }
+
+    private fun useReleaseFirmware() {
+        if (flashingState.busy) return
+        customFirmwareUri = null
+        val release = firmwareRelease
+        if (release == null) {
+            flashingState = FirmwareFlashingState.initial(BuildConfig.VERSION_NAME)
+            loadFirmwareRelease(force = true)
+            return
+        }
+        flashingState = flashingState.copy(
+            releaseTag = release.tag,
+            firmwareName = release.firmwareName,
+            customFirmware = false,
+            phase = FirmwareFlashingPhase.WaitingForDevice,
+            message = "Firmware release found. Connect an ESP32-C5 over USB.",
+            progress = 0f,
+        )
+        updateFlashingDeviceState()
     }
 
     private fun connectedEspressifDevice(): UsbDevice? = devices.firstOrNull {
@@ -941,6 +1017,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     companion object {
         private const val REQUEST_CREATE_PCAP = 1001
         private const val REQUEST_OPEN_PCAP = 1002
+        private const val REQUEST_OPEN_FIRMWARE = 1003
         private const val REQUEST_LOCATION = 1002
         private const val PREF_INTERSECTION_SORT_MODE = "intersection_sort_mode"
         private const val INTERSECTION_LOCATION_MIN_TIME_MS = 500L
@@ -965,6 +1042,7 @@ private data class FirmwareFlashingState(
     val appVersion: String,
     val releaseTag: String? = null,
     val firmwareName: String? = null,
+    val customFirmware: Boolean = false,
     val deviceName: String? = null,
     val phase: FirmwareFlashingPhase = FirmwareFlashingPhase.LoadingRelease,
     val message: String = "Looking for a matching Codeberg release…",
@@ -1066,6 +1144,8 @@ private fun CitsApp(
     flashingState: FirmwareFlashingState,
     onFlashingPageActive: (Boolean) -> Unit,
     onRetryFirmwareRelease: () -> Unit,
+    onChooseCustomFirmware: () -> Unit,
+    onUseReleaseFirmware: () -> Unit,
     onFlashFirmware: () -> Unit,
     onSaveSettings: (String, String, String, String, SremProfile) -> Unit,
 ) {
@@ -1193,6 +1273,8 @@ private fun CitsApp(
                             state = flashingState,
                             bridgeRunning = status.running,
                             onRetryRelease = onRetryFirmwareRelease,
+                            onChooseCustomFirmware = onChooseCustomFirmware,
+                            onUseReleaseFirmware = onUseReleaseFirmware,
                             onFlash = onFlashFirmware,
                         )
                         AppPage.Settings -> SettingsPage(
@@ -1259,6 +1341,8 @@ private fun FlashingPage(
     state: FirmwareFlashingState,
     bridgeRunning: Boolean,
     onRetryRelease: () -> Unit,
+    onChooseCustomFirmware: () -> Unit,
+    onUseReleaseFirmware: () -> Unit,
     onFlash: () -> Unit,
 ) {
     Column(
@@ -1270,12 +1354,12 @@ private fun FlashingPage(
     ) {
         Text("ESP32-C5 firmware", style = MaterialTheme.typography.titleMedium)
         Text(
-            "The app installs the firmware artifact from the Codeberg release matching this app version.",
+            "Install the firmware artifact matching this app version, or select a custom merged firmware.bin file.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.secondary,
         )
         FlashingDetail("App version", state.appVersion)
-        FlashingDetail("Release", state.releaseTag ?: "Checking…")
+        FlashingDetail("Source", if (state.customFirmware) "Custom file" else state.releaseTag ?: "Checking…")
         FlashingDetail("Firmware", state.firmwareName ?: "Checking…")
         FlashingDetail("Device", state.deviceName ?: "Waiting for ESP32-C5…")
         Text(
@@ -1298,14 +1382,30 @@ private fun FlashingPage(
             )
             Text("${(state.progress * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
         }
-        if (state.phase == FirmwareFlashingPhase.Error && state.releaseTag == null) {
+        if (state.phase == FirmwareFlashingPhase.Error && state.releaseTag == null && !state.customFirmware) {
             Button(onClick = onRetryRelease, modifier = Modifier.fillMaxWidth()) {
                 Text("Retry release lookup")
             }
         }
+        Button(
+            onClick = onChooseCustomFirmware,
+            enabled = !state.busy,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(if (state.customFirmware) "Choose another firmware.bin" else "Choose custom firmware.bin")
+        }
+        if (state.customFirmware) {
+            TextButton(
+                onClick = onUseReleaseFirmware,
+                enabled = !state.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text("Use matching release instead")
+            }
+        }
     }
     if (state.phase == FirmwareFlashingPhase.Ready ||
-        (state.phase == FirmwareFlashingPhase.Error && state.releaseTag != null && state.deviceName != null)
+        (state.phase == FirmwareFlashingPhase.Error && state.firmwareName != null && state.deviceName != null)
     ) {
         var position by remember(state.deviceName, state.message) { mutableStateOf(0f) }
         var submitted by remember(state.deviceName, state.message) { mutableStateOf(false) }
