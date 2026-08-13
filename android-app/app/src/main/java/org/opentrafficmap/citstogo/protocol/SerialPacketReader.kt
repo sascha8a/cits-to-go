@@ -32,6 +32,11 @@ class SerialPacketReader(
             when (val frame = decoder.decode(bytes)) {
                 is CtgInboundFrame.Capture -> onPacket(frame.packet)
                 is CtgInboundFrame.TxResult -> onTxResult(frame)
+                // Enrollment is handled by BluetoothEnrollment over its dedicated USB
+                // control exchange, not by the normal capture/bridge stream. Ignore a
+                // stray enrollment acknowledgement here while keeping the sealed
+                // frame dispatch exhaustive.
+                is CtgInboundFrame.BluetoothEnrollmentResult -> Unit
             }
         } catch (e: Exception) {
             onProtocolError(e.message ?: e.javaClass.simpleName)

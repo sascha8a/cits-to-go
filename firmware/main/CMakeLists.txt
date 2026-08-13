@@ -1,10 +1,12 @@
 idf_component_register(
     SRCS
         "main.c"
+        "cits_ble.c"
         "tx_custom.c"
     PRIV_REQUIRES
         esp_driver_gpio
         esp_driver_usb_serial_jtag
+        bt
         esp_event
         esp_timer
         esp_wifi

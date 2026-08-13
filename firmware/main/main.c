@@ -19,6 +19,7 @@
 #include "freertos/task.h"
 #include "hal/modem_syscon_ll.h"
 #include "nvs_flash.h"
+#include "cits_ble.h"
 #include "tx_custom.h"
 
 #define TAG "CITS"
@@ -31,9 +32,13 @@
 #define CITS_FRAME_TYPE_PACKET 1
 #define CITS_FRAME_TYPE_TX_REQUEST 2
 #define CITS_FRAME_TYPE_TX_RESULT 3
+#define CITS_FRAME_TYPE_BLE_ENROLL_REQUEST 4
+#define CITS_FRAME_TYPE_BLE_ENROLL_RESULT 5
 #define CITS_PACKET_HEADER_LEN 32
 #define CITS_TX_REQUEST_HEADER_LEN 16
 #define CITS_TX_RESULT_HEADER_LEN 20
+#define CITS_BLE_ENROLL_REQUEST_HEADER_LEN 12
+#define CITS_BLE_ENROLL_RESULT_HEADER_LEN 16
 #define CITS_FRAME_TRAILER_LEN 4
 #define CITS_PAYLOAD_FCS_LEN 4
 #define CITS_COBS_OVERHEAD(len) (((len) / 254u) + 1u)
@@ -226,22 +231,21 @@ static esp_err_t init_serial(void)
 
 static void serial_write_all_locked(const uint8_t *data, size_t len)
 {
+    if (!usb_serial_jtag_is_connected()) return;
     while (len > 0) {
         int written = usb_serial_jtag_write_bytes(data, len, pdMS_TO_TICKS(CONFIG_CITS_SERIAL_WRITE_TIMEOUT_MS));
-        if (written <= 0) {
-            taskYIELD();
-            continue;
-        }
+        if (written <= 0) break;
         data += written;
         len -= (size_t)written;
     }
 }
 
-static void serial_write_all(const uint8_t *data, size_t len)
+static void transport_write_all(const uint8_t *data, size_t len)
 {
     xSemaphoreTake(serial_write_mutex, portMAX_DELAY);
     serial_write_all_locked(data, len);
     xSemaphoreGive(serial_write_mutex);
+    cits_ble_write(data, len);
 }
 
 static void write_packet_record(const packet_slot_t *slot)
@@ -274,7 +278,7 @@ static void write_packet_record(const packet_slot_t *slot)
 
     const size_t encoded_len = cobs_encode_to(decoded, frame_without_crc_len + CITS_FRAME_TRAILER_LEN, encoded);
     encoded[encoded_len] = 0;
-    serial_write_all(encoded, encoded_len + 1);
+    transport_write_all(encoded, encoded_len + 1);
 }
 
 static void write_tx_result(uint32_t request_id, esp_err_t status, uint16_t packet_len, const uint8_t *payload)
@@ -305,30 +309,76 @@ static void write_tx_result(uint32_t request_id, esp_err_t status, uint16_t pack
     encoded[encoded_len] = 0;
     serial_write_all_locked(encoded, encoded_len + 1);
     xSemaphoreGive(serial_write_mutex);
+    cits_ble_write(encoded, encoded_len + 1);
 }
 
-static void handle_serial_record(const uint8_t *encoded, size_t encoded_len)
+static void write_ble_enroll_result(esp_err_t status)
+{
+    uint8_t decoded[CITS_BLE_ENROLL_RESULT_HEADER_LEN + CITS_FRAME_TRAILER_LEN] = {0};
+    uint8_t encoded[32];
+
+    decoded[0] = CITS_FRAME_MAGIC_0;
+    decoded[1] = CITS_FRAME_MAGIC_1;
+    decoded[2] = CITS_FRAME_MAGIC_2;
+    decoded[3] = CITS_FRAME_MAGIC_3;
+    decoded[4] = CITS_PROTOCOL_VERSION;
+    decoded[5] = CITS_FRAME_TYPE_BLE_ENROLL_RESULT;
+    put_u16(&decoded[6], CITS_BLE_ENROLL_RESULT_HEADER_LEN);
+    put_u32(&decoded[8], (uint32_t)status);
+    decoded[12] = status == ESP_OK ? 1 : 0;
+    put_u32(&decoded[CITS_BLE_ENROLL_RESULT_HEADER_LEN],
+            crc32_ieee(decoded, CITS_BLE_ENROLL_RESULT_HEADER_LEN));
+
+    const size_t encoded_len = cobs_encode_to(decoded, sizeof(decoded), encoded);
+    encoded[encoded_len] = 0;
+    xSemaphoreTake(serial_write_mutex, portMAX_DELAY);
+    serial_write_all_locked(encoded, encoded_len + 1);
+    xSemaphoreGive(serial_write_mutex);
+}
+
+static void handle_record(const uint8_t *encoded, size_t encoded_len, bool from_usb)
 {
     static uint8_t decoded[CITS_DECODED_MAX_LEN];
     size_t decoded_len = 0;
     if (!cobs_decode_to(encoded, encoded_len, decoded, &decoded_len) ||
-        decoded_len < CITS_TX_REQUEST_HEADER_LEN + CITS_FRAME_TRAILER_LEN ||
+        decoded_len < 8 + CITS_FRAME_TRAILER_LEN ||
         decoded[0] != CITS_FRAME_MAGIC_0 || decoded[1] != CITS_FRAME_MAGIC_1 ||
         decoded[2] != CITS_FRAME_MAGIC_2 || decoded[3] != CITS_FRAME_MAGIC_3 ||
-        decoded[4] != CITS_PROTOCOL_VERSION ||
-        decoded[5] != CITS_FRAME_TYPE_TX_REQUEST ||
-        get_u16(&decoded[6]) != CITS_TX_REQUEST_HEADER_LEN) {
+        decoded[4] != CITS_PROTOCOL_VERSION) {
+        return;
+    }
+
+    const uint32_t expected_crc = get_u32(&decoded[decoded_len - CITS_FRAME_TRAILER_LEN]);
+    if (crc32_ieee(decoded, decoded_len - CITS_FRAME_TRAILER_LEN) != expected_crc) {
+        if (decoded[5] == CITS_FRAME_TYPE_TX_REQUEST &&
+            decoded_len >= CITS_TX_REQUEST_HEADER_LEN + CITS_FRAME_TRAILER_LEN &&
+            get_u16(&decoded[6]) == CITS_TX_REQUEST_HEADER_LEN) {
+            write_tx_result(get_u32(&decoded[8]), ESP_ERR_INVALID_CRC, get_u16(&decoded[12]), NULL);
+        }
+        return;
+    }
+
+    if (decoded[5] == CITS_FRAME_TYPE_BLE_ENROLL_REQUEST) {
+        /* Enrollment is intentionally USB-only. A BLE peer can never grant
+         * itself permission to replace/create a bond. */
+        if (!from_usb || get_u16(&decoded[6]) != CITS_BLE_ENROLL_REQUEST_HEADER_LEN ||
+            decoded_len != CITS_BLE_ENROLL_REQUEST_HEADER_LEN + CITS_FRAME_TRAILER_LEN ||
+            decoded[8] != 1) {
+            return;
+        }
+        write_ble_enroll_result(cits_ble_begin_enrollment());
+        return;
+    }
+
+    if (decoded[5] != CITS_FRAME_TYPE_TX_REQUEST ||
+        get_u16(&decoded[6]) != CITS_TX_REQUEST_HEADER_LEN ||
+        decoded_len < CITS_TX_REQUEST_HEADER_LEN + CITS_FRAME_TRAILER_LEN) {
         return;
     }
 
     const uint32_t request_id = get_u32(&decoded[8]);
     const uint16_t packet_len = get_u16(&decoded[12]);
     const uint16_t flags = get_u16(&decoded[14]);
-    const uint32_t expected_crc = get_u32(&decoded[decoded_len - CITS_FRAME_TRAILER_LEN]);
-    if (crc32_ieee(decoded, decoded_len - CITS_FRAME_TRAILER_LEN) != expected_crc) {
-        write_tx_result(request_id, ESP_ERR_INVALID_CRC, packet_len, NULL);
-        return;
-    }
     const size_t expected_len = CITS_TX_REQUEST_HEADER_LEN + packet_len + CITS_FRAME_TRAILER_LEN;
     if (packet_len == 0 || packet_len > CONFIG_CITS_MAX_PACKET_BYTES || decoded_len != expected_len) {
         write_tx_result(request_id, ESP_ERR_INVALID_SIZE, packet_len, NULL);
@@ -351,6 +401,23 @@ static void handle_serial_record(const uint8_t *encoded, size_t encoded_len)
     }
 }
 
+static void ble_receive_chunk(const uint8_t *data, size_t len)
+{
+    static uint8_t encoded[CITS_ENCODED_MAX_LEN];
+    static size_t encoded_len;
+
+    for (size_t i = 0; i < len; ++i) {
+        if (data[i] == 0) {
+            if (encoded_len > 0) handle_record(encoded, encoded_len, false);
+            encoded_len = 0;
+        } else if (encoded_len < sizeof(encoded)) {
+            encoded[encoded_len++] = data[i];
+        } else {
+            encoded_len = 0;
+        }
+    }
+}
+
 static void serial_reader_task(void *arg)
 {
     (void)arg;
@@ -363,7 +430,7 @@ static void serial_reader_task(void *arg)
             input, sizeof(input), pdMS_TO_TICKS(CONFIG_CITS_SERIAL_READ_TIMEOUT_MS));
         for (int i = 0; i < count; ++i) {
             if (input[i] == 0) {
-                if (encoded_len > 0) handle_serial_record(encoded, encoded_len);
+                if (encoded_len > 0) handle_record(encoded, encoded_len, true);
                 encoded_len = 0;
             } else if (encoded_len < sizeof(encoded)) {
                 encoded[encoded_len++] = input[i];
@@ -540,6 +607,7 @@ void app_main(void)
     ESP_ERROR_CHECK(init_serial());
     ESP_ERROR_CHECK(init_led());
     ESP_ERROR_CHECK(init_queues());
+    ESP_ERROR_CHECK(cits_ble_init(ble_receive_chunk));
     ESP_ERROR_CHECK(xTaskCreate(packet_writer_task, "cits_serial", 4096, NULL, 3, NULL) == pdPASS ?
                     ESP_OK : ESP_ERR_NO_MEM);
     ESP_ERROR_CHECK(init_wifi_11p_sniffer());

@@ -12,14 +12,14 @@ import java.io.IOException
 class UsbCdcSerial(
     private val usbManager: UsbManager,
     val device: UsbDevice,
-) : Closeable {
+) : CtgByteTransport {
     private var connection: UsbDeviceConnection? = null
     private var inEndpoint: UsbEndpoint? = null
     private var outEndpoint: UsbEndpoint? = null
     private var controlInterfaceId: Int? = null
     private val claimedInterfaces = mutableListOf<UsbInterface>()
 
-    fun description(): String = "${device.deviceName} vid=%04x pid=%04x".format(device.vendorId, device.productId)
+    override fun description(): String = "${device.deviceName} vid=%04x pid=%04x".format(device.vendorId, device.productId)
 
     fun open(baudRate: Int = 921_600) {
         val conn = usbManager.openDevice(device) ?: throw IOException("Unable to open USB device")
@@ -63,14 +63,14 @@ class UsbCdcSerial(
         }
     }
 
-    fun read(buffer: ByteArray, timeoutMs: Int): Int {
+    override fun read(buffer: ByteArray, timeoutMs: Int): Int {
         val conn = connection ?: throw IOException("USB serial is not open")
         val endpoint = inEndpoint ?: throw IOException("USB serial has no input endpoint")
         return conn.bulkTransfer(endpoint, buffer, buffer.size, timeoutMs).coerceAtLeast(0)
     }
 
     @Synchronized
-    fun writeAll(buffer: ByteArray, timeoutMs: Int) {
+    override fun writeAll(buffer: ByteArray, timeoutMs: Int) {
         val conn = connection ?: throw IOException("USB serial is not open")
         val endpoint = outEndpoint ?: throw IOException("USB serial has no output endpoint")
         var offset = 0

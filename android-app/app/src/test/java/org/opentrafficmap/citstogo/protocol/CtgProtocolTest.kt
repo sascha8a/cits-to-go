@@ -34,6 +34,36 @@ class CtgProtocolTest {
     }
 
     @Test
+    fun bluetoothEnrollmentRequestIsCrcProtectedUsbControlFrame() {
+        val wire = CtgFrameEncoder.bluetoothEnrollmentRequest()
+        assertEquals(0, wire.last().toInt())
+        val decoded = Cobs.decode(wire, wire.size - 1)
+        assertEquals("CTG1", decoded.copyOfRange(0, 4).toString(Charsets.US_ASCII))
+        assertEquals(CtgFrameDecoder.TYPE_BLE_ENROLL_REQUEST, decoded[5].toInt())
+        assertEquals(CtgFrameDecoder.BLE_ENROLL_REQUEST_HEADER_LEN, u16(decoded, 6))
+        assertEquals(1, decoded[8].toInt())
+        val crc = CRC32().apply { update(decoded, 0, decoded.size - CtgFrameDecoder.CRC_LEN) }.value
+        assertEquals(crc, u32(decoded, decoded.size - CtgFrameDecoder.CRC_LEN))
+    }
+
+    @Test
+    fun bluetoothEnrollmentResultDecodes() {
+        val decoded = ByteArray(CtgFrameDecoder.BLE_ENROLL_RESULT_HEADER_LEN + CtgFrameDecoder.CRC_LEN)
+        "CTG1".toByteArray(Charsets.US_ASCII).copyInto(decoded, 0)
+        decoded[4] = 1
+        decoded[5] = CtgFrameDecoder.TYPE_BLE_ENROLL_RESULT.toByte()
+        putU16(decoded, 6, CtgFrameDecoder.BLE_ENROLL_RESULT_HEADER_LEN)
+        putU32(decoded, 8, 0)
+        decoded[12] = 1
+        val crc = CRC32().apply { update(decoded, 0, decoded.size - CtgFrameDecoder.CRC_LEN) }.value
+        putU32(decoded, decoded.size - CtgFrameDecoder.CRC_LEN, crc)
+
+        val result = CtgFrameDecoder().decode(Cobs.encode(decoded)) as CtgInboundFrame.BluetoothEnrollmentResult
+        assertEquals(true, result.successful)
+        assertEquals(true, result.armed)
+    }
+
+    @Test
     fun txResultCanCarrySuccessfulPayload() {
         val packet = byteArrayOf(0x88.toByte(), 0, 1, 2, 0, 3)
         val decoded = ByteArray(CtgFrameDecoder.TX_RESULT_HEADER_LEN + packet.size + CtgFrameDecoder.CRC_LEN)

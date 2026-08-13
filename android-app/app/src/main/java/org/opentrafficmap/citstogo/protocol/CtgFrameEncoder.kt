@@ -30,6 +30,25 @@ object CtgFrameEncoder {
         return Cobs.encode(decoded) + byteArrayOf(0)
     }
 
+
+    fun bluetoothEnrollmentRequest(): ByteArray {
+        val headerLen = CtgFrameDecoder.BLE_ENROLL_REQUEST_HEADER_LEN
+        val decoded = ByteArray(headerLen + CtgFrameDecoder.CRC_LEN)
+        decoded[0] = 'C'.code.toByte()
+        decoded[1] = 'T'.code.toByte()
+        decoded[2] = 'G'.code.toByte()
+        decoded[3] = '1'.code.toByte()
+        decoded[4] = 1
+        decoded[5] = CtgFrameDecoder.TYPE_BLE_ENROLL_REQUEST.toByte()
+        putU16(decoded, 6, headerLen)
+        decoded[8] = 1 // replace existing owner and arm exactly one pairing attempt
+
+        val crc = CRC32()
+        crc.update(decoded, 0, decoded.size - CtgFrameDecoder.CRC_LEN)
+        putU32(decoded, decoded.size - CtgFrameDecoder.CRC_LEN, crc.value)
+        return Cobs.encode(decoded) + byteArrayOf(0)
+    }
+
     private fun putU16(buffer: ByteArray, offset: Int, value: Int) {
         buffer[offset] = value.toByte()
         buffer[offset + 1] = (value ushr 8).toByte()

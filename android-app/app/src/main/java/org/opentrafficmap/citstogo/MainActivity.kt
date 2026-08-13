@@ -57,6 +57,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
@@ -106,8 +107,10 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import org.opentrafficmap.citstogo.bridge.BluetoothEnrollment
 import org.opentrafficmap.citstogo.bridge.BridgeStatus
 import org.opentrafficmap.citstogo.bridge.CitsBridgeService
+import org.opentrafficmap.citstogo.bridge.ConnectionMode
 import org.opentrafficmap.citstogo.bridge.UsbCdcSerial
 import org.opentrafficmap.citstogo.cam.StationType
 import org.opentrafficmap.citstogo.flashing.CodebergReleaseClient
@@ -152,9 +155,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private lateinit var sensorManager: SensorManager
     private var accelerometer: Sensor? = null
     private var startAfterPermission: UsbDevice? = null
+    private var enrollmentAfterUsbPermission = false
+    private var enrollmentAfterBluetoothPermission = false
+    private var bluetoothEnrollmentRunning by mutableStateOf(false)
+    private var bluetoothEnrollmentMessage by mutableStateOf("")
+    private var bluetoothEnrollmentError by mutableStateOf(false)
 
     private val devices = mutableStateListOf<UsbDevice>()
     private var selectedDeviceName by mutableStateOf<String?>(null)
+    private var connectionMode by mutableStateOf(ConnectionMode.USB)
     private var status by mutableStateOf(BridgeStatus())
     private var mqttUri by mutableStateOf("")
     private var nodeId by mutableStateOf("")
@@ -194,6 +203,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 selectedDeviceName = device?.deviceName ?: selectedDeviceName
                 if (flashAfterPermission && device != null) {
                     startFirmwareFlash(device)
+                } else if (enrollmentAfterUsbPermission) {
+                    if (device != null) {
+                        startBluetoothEnrollment(device)
+                    } else {
+                        bluetoothEnrollmentRunning = false
+                        bluetoothEnrollmentError = true
+                        bluetoothEnrollmentMessage = "USB device disappeared. Reconnect it and retry enrollment."
+                    }
                 } else {
                     startBridge()
                 }
@@ -203,11 +220,16 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         phase = FirmwareFlashingPhase.Error,
                         message = "USB permission denied",
                     )
+                } else if (enrollmentAfterUsbPermission) {
+                    bluetoothEnrollmentRunning = false
+                    bluetoothEnrollmentError = true
+                    bluetoothEnrollmentMessage = "USB permission was denied. Reconnect the device and retry enrollment."
                 } else {
                     logLine = "USB permission denied"
                 }
             }
             flashAfterPermission = false
+            enrollmentAfterUsbPermission = false
             startAfterPermission = null
         }
     }
@@ -276,6 +298,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         val prefs = getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE)
+        connectionMode = ConnectionMode.fromWireValue(prefs.getString(PREF_CONNECTION_MODE, null))
         txApproved = prefs.getBoolean(CitsBridgeService.PREF_TX_APPROVED, false)
         intersectionSortMode = IntersectionSortMode.fromPreference(
             prefs.getString(PREF_INTERSECTION_SORT_MODE, null),
@@ -322,6 +345,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     devices = devices.toList(),
                     selectedDeviceName = selectedDeviceName,
                     onSelectDevice = { selectedDeviceName = it },
+                    connectionMode = connectionMode,
+                    onConnectionModeChange = {
+                        connectionMode = it
+                        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+                            .putString(PREF_CONNECTION_MODE, it.wireValue)
+                            .apply()
+                    },
                     mqttUri = mqttUri,
                     onMqttUriChange = { mqttUri = it },
                     nodeId = nodeId,
@@ -336,8 +366,12 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     intersectionSortMode = intersectionSortMode,
                     onIntersectionSortModeChange = ::updateIntersectionSortMode,
                     currentPosition = currentPosition,
+                    bluetoothEnrollmentRunning = bluetoothEnrollmentRunning,
+                    bluetoothEnrollmentMessage = bluetoothEnrollmentMessage,
+                    bluetoothEnrollmentError = bluetoothEnrollmentError,
                     onRefresh = ::refreshDevices,
-                    onStart = ::requestUsbThenStart,
+                    onEnrollBluetooth = ::requestBluetoothEnrollment,
+                    onStart = ::requestConnectionThenStart,
                     onStop = ::stopBridge,
                     onStartPcap = ::choosePcapFile,
                     onStopPcap = ::stopPcap,
@@ -446,6 +480,20 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 logLine = "Location permission denied; position marker disabled"
             }
         }
+        if (requestCode == REQUEST_BLUETOOTH) {
+            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+                if (enrollmentAfterBluetoothPermission) requestEnrollmentUsb() else startBridge()
+            } else {
+                if (enrollmentAfterBluetoothPermission) {
+                    bluetoothEnrollmentRunning = false
+                    bluetoothEnrollmentError = true
+                    bluetoothEnrollmentMessage = "Bluetooth permission was denied. Allow it in Android settings and retry."
+                } else {
+                    logLine = "Bluetooth permission denied"
+                }
+            }
+            enrollmentAfterBluetoothPermission = false
+        }
     }
 
     @Deprecated("Deprecated Android callback kept to avoid an activity dependency.")
@@ -462,6 +510,118 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             REQUEST_CREATE_PCAP -> startPcap(uri)
             REQUEST_OPEN_PCAP -> startReplay(uri)
             REQUEST_OPEN_FIRMWARE -> selectCustomFirmware(uri)
+        }
+    }
+
+    private fun requestBluetoothEnrollment() {
+        if (status.running) {
+            bluetoothEnrollmentRunning = false
+            bluetoothEnrollmentError = true
+            bluetoothEnrollmentMessage = "Stop the active connection before enrollment."
+            return
+        }
+        bluetoothEnrollmentRunning = true
+        bluetoothEnrollmentError = false
+        bluetoothEnrollmentMessage = "Preparing Bluetooth enrollment…"
+        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        val missing = permissions.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isNotEmpty()) {
+            enrollmentAfterBluetoothPermission = true
+            bluetoothEnrollmentMessage = "Bluetooth permission is required to enroll this phone."
+            requestPermissions(missing.toTypedArray(), REQUEST_BLUETOOTH)
+            return
+        }
+        requestEnrollmentUsb()
+    }
+
+    private fun requestEnrollmentUsb() {
+        val device = devices.firstOrNull { it.deviceName == selectedDeviceName } ?: devices.firstOrNull()
+        if (device == null) {
+            bluetoothEnrollmentRunning = false
+            bluetoothEnrollmentError = true
+            bluetoothEnrollmentMessage = "Connect CITS-to-go by USB, then try again."
+            return
+        }
+        selectedDeviceName = device.deviceName
+        if (usbManager.hasPermission(device)) {
+            startBluetoothEnrollment(device)
+            return
+        }
+        enrollmentAfterUsbPermission = true
+        startAfterPermission = device
+        val intent = Intent(CitsBridgeService.ACTION_USB_PERMISSION).setPackage(packageName)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+        val pendingIntent = PendingIntent.getBroadcast(this, 22, intent, flags)
+        usbManager.requestPermission(device, pendingIntent)
+        bluetoothEnrollmentMessage = "USB permission is required to enroll this phone."
+    }
+
+    private fun startBluetoothEnrollment(device: UsbDevice) {
+        bluetoothEnrollmentRunning = true
+        bluetoothEnrollmentError = false
+        bluetoothEnrollmentMessage = "Enrolling this phone… Keep USB connected."
+        Thread {
+            val result = runCatching { BluetoothEnrollment(this).enroll(device) }
+            runOnUiThread {
+                bluetoothEnrollmentRunning = false
+                result.fold(
+                    onSuccess = {
+                        bluetoothEnrollmentError = false
+                        bluetoothEnrollmentMessage = "Bluetooth enrollment complete. This phone can now connect securely."
+                        logLine = "Bluetooth enrollment complete"
+                    },
+                    onFailure = { error ->
+                        bluetoothEnrollmentError = true
+                        bluetoothEnrollmentMessage = enrollmentErrorMessage(error)
+                        logLine = bluetoothEnrollmentMessage
+                    },
+                )
+            }
+        }.start()
+    }
+
+    private fun enrollmentErrorMessage(error: Throwable): String {
+        val detail = error.message?.trim().orEmpty()
+        return when {
+            detail.contains("turned off", ignoreCase = true) -> "Turn on Bluetooth, then try again."
+            detail.contains("not supported", ignoreCase = true) -> "Bluetooth is not supported on this phone."
+            detail.contains("scanner unavailable", ignoreCase = true) -> "Bluetooth scanning is unavailable. Turn Bluetooth off and on, then retry."
+            detail.contains("timed out", ignoreCase = true) -> "Enrollment timed out. Keep USB connected and the device nearby, then retry."
+            detail.contains("rejected", ignoreCase = true) || detail.contains("pairing", ignoreCase = true) -> "Bluetooth pairing failed or was cancelled. Retry enrollment."
+            detail.contains("Firmware refused", ignoreCase = true) -> "The device refused enrollment. Reconnect USB and try again."
+            detail.contains("acknowledge", ignoreCase = true) -> "The device did not acknowledge enrollment. Check the USB connection and firmware."
+            detail.contains("USB", ignoreCase = true) -> "USB enrollment failed. Reconnect the device and try again."
+            detail.isNotBlank() -> "Enrollment failed: $detail"
+            else -> "Bluetooth enrollment failed. Try again."
+        }
+    }
+
+    private fun requestConnectionThenStart() {
+        if (connectionMode == ConnectionMode.BLUETOOTH) {
+            requestBluetoothThenStart()
+        } else {
+            requestUsbThenStart()
+        }
+    }
+
+    private fun requestBluetoothThenStart() {
+        saveSettings()
+        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        val missing = permissions.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isEmpty()) {
+            startBridge()
+        } else {
+            requestPermissions(missing.toTypedArray(), REQUEST_BLUETOOTH)
+            logLine = "Requesting Bluetooth permission"
         }
     }
 
@@ -693,6 +853,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         saveSettings()
         val intent = Intent(this, CitsBridgeService::class.java)
             .setAction(CitsBridgeService.ACTION_START)
+            .putExtra(CitsBridgeService.EXTRA_CONNECTION_MODE, connectionMode.wireValue)
             .putExtra(CitsBridgeService.EXTRA_DEVICE_NAME, selectedDeviceName.orEmpty())
             .putExtra(CitsBridgeService.EXTRA_MQTT_URI, mqttUri)
             .putExtra(CitsBridgeService.EXTRA_NODE_ID, nodeId)
@@ -1018,6 +1179,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         private const val REQUEST_CREATE_PCAP = 1001
         private const val REQUEST_OPEN_PCAP = 1002
         private const val REQUEST_OPEN_FIRMWARE = 1003
+        private const val REQUEST_BLUETOOTH = 13
+        private const val PREF_CONNECTION_MODE = "connectionMode"
         private const val REQUEST_LOCATION = 1002
         private const val PREF_INTERSECTION_SORT_MODE = "intersection_sort_mode"
         private const val INTERSECTION_LOCATION_MIN_TIME_MS = 500L
@@ -1105,6 +1268,8 @@ private fun CitsApp(
     devices: List<UsbDevice>,
     selectedDeviceName: String?,
     onSelectDevice: (String) -> Unit,
+    connectionMode: ConnectionMode,
+    onConnectionModeChange: (ConnectionMode) -> Unit,
     mqttUri: String,
     onMqttUriChange: (String) -> Unit,
     nodeId: String,
@@ -1119,7 +1284,11 @@ private fun CitsApp(
     intersectionSortMode: IntersectionSortMode,
     onIntersectionSortModeChange: (IntersectionSortMode) -> Unit,
     currentPosition: DevicePosition?,
+    bluetoothEnrollmentRunning: Boolean,
+    bluetoothEnrollmentMessage: String,
+    bluetoothEnrollmentError: Boolean,
     onRefresh: () -> Unit,
+    onEnrollBluetooth: () -> Unit,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onStartPcap: () -> Unit,
@@ -1239,6 +1408,8 @@ private fun CitsApp(
                             devices = devices,
                             selectedDeviceName = selectedDeviceName,
                             onSelectDevice = onSelectDevice,
+                            connectionMode = connectionMode,
+                            onConnectionModeChange = onConnectionModeChange,
                             status = status,
                             logLine = logLine,
                             onRefresh = onRefresh,
@@ -1284,6 +1455,11 @@ private fun CitsApp(
                             maxQueueAgeSeconds = maxQueueAgeSeconds,
                             txApproved = txApproved,
                             sremProfile = sremProfile,
+                            bridgeRunning = status.running,
+                            bluetoothEnrollmentRunning = bluetoothEnrollmentRunning,
+                            bluetoothEnrollmentMessage = bluetoothEnrollmentMessage,
+                            bluetoothEnrollmentError = bluetoothEnrollmentError,
+                            onEnrollBluetooth = onEnrollBluetooth,
                             onRevokeTxApproval = onRevokeTxApproval,
                             onSave = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds, updatedSremProfile ->
                                 onMqttUriChange(updatedMqttUri)
@@ -1456,6 +1632,8 @@ private fun HomePage(
     devices: List<UsbDevice>,
     selectedDeviceName: String?,
     onSelectDevice: (String) -> Unit,
+    connectionMode: ConnectionMode,
+    onConnectionModeChange: (ConnectionMode) -> Unit,
     status: BridgeStatus,
     logLine: String,
     onRefresh: () -> Unit,
@@ -1471,6 +1649,8 @@ private fun HomePage(
         devices,
         selectedDeviceName,
         onSelectDevice,
+        connectionMode,
+        onConnectionModeChange,
         onRefresh,
     )
     ActionRow(status.running, onStart, onStop)
@@ -3262,25 +3442,49 @@ private fun ConfigPanel(
     devices: List<UsbDevice>,
     selectedDeviceName: String?,
     onSelectDevice: (String) -> Unit,
+    connectionMode: ConnectionMode,
+    onConnectionModeChange: (ConnectionMode) -> Unit,
     onRefresh: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("USB serial", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            TextButton(onClick = onRefresh) { Text("Refresh") }
-        }
-        if (devices.isEmpty()) {
-            Text("No USB devices detected", color = MaterialTheme.colorScheme.secondary)
-        } else {
-            devices.forEach { device ->
-                val selected = device.deviceName == selectedDeviceName
+        Text("Connection", style = MaterialTheme.typography.titleMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ConnectionMode.entries.forEach { mode ->
+                val selected = mode == connectionMode
                 Button(
-                    onClick = { onSelectDevice(device.deviceName) },
-                    modifier = Modifier.fillMaxWidth(),
+                    onClick = { onConnectionModeChange(mode) },
+                    modifier = Modifier.weight(1f),
                     colors = if (selected) ButtonDefaults.buttonColors() else ButtonDefaults.outlinedButtonColors(),
                     shape = RoundedCornerShape(8.dp),
                 ) {
-                    Text(deviceLabel(device), maxLines = 2)
+                    Text(mode.label)
+                }
+            }
+        }
+        if (connectionMode == ConnectionMode.BLUETOOTH) {
+            Text(
+                "Bluetooth enrollment is available in Settings.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("USB serial", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                TextButton(onClick = onRefresh) { Text("Refresh") }
+            }
+            if (devices.isEmpty()) {
+                Text("No USB devices detected", color = MaterialTheme.colorScheme.secondary)
+            } else {
+                devices.forEach { device ->
+                    val selected = device.deviceName == selectedDeviceName
+                    Button(
+                        onClick = { onSelectDevice(device.deviceName) },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = if (selected) ButtonDefaults.buttonColors() else ButtonDefaults.outlinedButtonColors(),
+                        shape = RoundedCornerShape(8.dp),
+                    ) {
+                        Text(deviceLabel(device), maxLines = 2)
+                    }
                 }
             }
         }
@@ -3295,6 +3499,11 @@ private fun SettingsPage(
     maxQueueAgeSeconds: String,
     txApproved: Boolean,
     sremProfile: SremProfile,
+    bridgeRunning: Boolean,
+    bluetoothEnrollmentRunning: Boolean,
+    bluetoothEnrollmentMessage: String,
+    bluetoothEnrollmentError: Boolean,
+    onEnrollBluetooth: () -> Unit,
     onRevokeTxApproval: () -> Unit,
     onSave: (String, String, String, String, SremProfile) -> Unit,
 ) {
@@ -3358,6 +3567,34 @@ private fun SettingsPage(
                 val index = SremProfile.entries.indexOf(draftSremProfile)
                 draftSremProfile = SremProfile.entries[(index + 1) % SremProfile.entries.size]
             }) { Text("Next") }
+        }
+        HorizontalDivider()
+        Text("Bluetooth", style = MaterialTheme.typography.titleMedium)
+        Text(
+            "Enrollment uses USB once. Afterwards the Bluetooth bond secures normal connections.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        Button(
+            onClick = onEnrollBluetooth,
+            modifier = Modifier.fillMaxWidth().height(48.dp),
+            enabled = !bridgeRunning && !bluetoothEnrollmentRunning,
+            shape = RoundedCornerShape(8.dp),
+        ) {
+            Text(if (bluetoothEnrollmentRunning) "Enrolling…" else "Enroll this phone for Bluetooth")
+        }
+        if (bridgeRunning) {
+            Text(
+                "Stop the active connection before enrollment.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+        } else if (bluetoothEnrollmentMessage.isNotBlank()) {
+            Text(
+                bluetoothEnrollmentMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (bluetoothEnrollmentError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.secondary,
+            )
         }
         Button(
             onClick = onRevokeTxApproval,

@@ -106,3 +106,10 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
 ---
+
+
+## Bluetooth enrollment
+
+Bluetooth is not open-pairing. Connect CITS-to-go over USB, select the USB device, and tap **Enroll this phone for Bluetooth**. The app sends a USB-only enrollment command and asks Android to create the BLE bond. Firmware permits exactly one new pairing attempt for 30 seconds and replaces the previous owner bond.
+
+After enrollment, select **Bluetooth** and start normally. Android and NimBLE authenticate using the stored BLE bond and encrypt the link; the CTG application protocol does not perform a separate login or challenge-response. Unknown/unbonded phones are ignored by the app and rejected by firmware.

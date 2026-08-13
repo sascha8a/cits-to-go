@@ -57,7 +57,7 @@ class CitsBridgeService : Service() {
     private lateinit var locationManager: LocationManager
     private lateinit var spool: MqttSpool
 
-    private var serial: UsbCdcSerial? = null
+    private var serial: CtgByteTransport? = null
     private var serialReadThread: Thread? = null
     private var serialWriteThread: Thread? = null
     private var pcapWriter: PcapWriter? = null
@@ -66,7 +66,8 @@ class CitsBridgeService : Service() {
     private var mqttClient = MiniMqttClient()
     private var wakeLock: PowerManager.WakeLock? = null
 
-    private var usbWanted = false
+    private var connectionWanted = false
+    private var connectionMode = ConnectionMode.USB
     private var mqttEnabled = false
     private var mqttConnecting = AtomicBoolean(false)
     private var mqttFlushing = AtomicBoolean(false)
@@ -123,13 +124,13 @@ class CitsBridgeService : Service() {
                         handleDiscoveredDevice(device)
                         selectedDeviceName = device.deviceName
                     }
-                    if (usbWanted && serial == null) scheduleUsbReconnect(0)
+                    if (connectionWanted && connectionMode == ConnectionMode.USB && serial == null) scheduleConnectionReconnect(0)
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
                     if (device == null || device.deviceName == selectedDeviceName) {
                         closeSerial("USB device detached")
-                        if (usbWanted) scheduleUsbReconnect(2_000)
+                        if (connectionWanted && connectionMode == ConnectionMode.USB) scheduleConnectionReconnect(2_000)
                     }
                 }
             }
@@ -232,6 +233,7 @@ class CitsBridgeService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> startBridge(
+                ConnectionMode.fromWireValue(intent.getStringExtra(EXTRA_CONNECTION_MODE)),
                 intent.getStringExtra(EXTRA_DEVICE_NAME),
                 intent.getStringExtra(EXTRA_MQTT_URI).orEmpty(),
                 intent.getStringExtra(EXTRA_NODE_ID).orEmpty(),
@@ -274,6 +276,7 @@ class CitsBridgeService : Service() {
     }
 
     private fun startBridge(
+        requestedConnectionMode: ConnectionMode,
         deviceName: String?,
         requestedMqttUri: String,
         requestedNodeId: String,
@@ -282,6 +285,7 @@ class CitsBridgeService : Service() {
     ) {
         stopReplay(log = false)
         startElapsedMs = SystemClock.elapsedRealtime()
+        connectionMode = requestedConnectionMode
         selectedDeviceName = deviceName?.takeIf { it.isNotBlank() } ?: selectedDeviceName
         if (requestedNodeId.isNotBlank()) {
             nodeId = requestedNodeId.trim()
@@ -291,18 +295,18 @@ class CitsBridgeService : Service() {
         mqttUri = requestedMqttUri.trim()
         mqttEnabled = mqttUri.isNotEmpty()
         mqttReconnectDelayMs = 1_000
-        usbWanted = true
+        connectionWanted = true
         acquireWakeLock()
-        openUsb()
+        openConnection()
         if (mqttEnabled) ensureMqttConnected()
         publishStatus("Capture started")
     }
 
     private fun stopBridge() {
-        usbWanted = false
+        connectionWanted = false
         mqttEnabled = false
         configureCam(false, camStationType, camIntervalMs)
-        closeSerial("USB stopped")
+        closeSerial("Connection stopped")
         runCatching { mqttClient.close() }
         stopPcap(log = false)
         stopReplay(log = false)
@@ -311,16 +315,24 @@ class CitsBridgeService : Service() {
         publishStatus("Capture stopped")
     }
 
+    private fun openConnection() {
+        if (!connectionWanted) return
+        when (connectionMode) {
+            ConnectionMode.USB -> openUsb()
+            ConnectionMode.BLUETOOTH -> openBluetooth()
+        }
+    }
+
     private fun openUsb() {
         val device = findDevice(selectedDeviceName)
         if (device == null) {
-            status = status.copy(running = usbWanted, usbState = "Waiting for USB device")
-            scheduleUsbReconnect(2_000)
+            status = status.copy(running = connectionWanted, usbState = "Waiting for USB device")
+            scheduleConnectionReconnect(2_000)
             return
         }
         selectedDeviceName = device.deviceName
         if (!usbManager.hasPermission(device)) {
-            status = status.copy(running = usbWanted, usbState = "USB permission required")
+            status = status.copy(running = connectionWanted, usbState = "USB permission required")
             publishStatus("Grant USB permission in the app")
             return
         }
@@ -334,7 +346,7 @@ class CitsBridgeService : Service() {
             val reader = SerialPacketReader(::handlePacket, ::handleTxResult, ::handleProtocolError)
             serialReadThread = Thread({
                 val buffer = ByteArray(16 * 1024)
-                while (usbWanted && serial === opened) {
+                while (connectionWanted && connectionMode == ConnectionMode.USB && serial === opened) {
                     try {
                         val count = opened.read(buffer, USB_READ_TIMEOUT_MS)
                         if (count > 0) reader.accept(buffer, count)
@@ -344,7 +356,7 @@ class CitsBridgeService : Service() {
                 }
             }, "ctg-serial-read").apply { start() }
             serialWriteThread = Thread({
-                while (usbWanted && serial === opened) {
+                while (connectionWanted && connectionMode == ConnectionMode.USB && serial === opened) {
                     try {
                         val tx = txQueue.take()
                         opened.writeAll(
@@ -362,10 +374,63 @@ class CitsBridgeService : Service() {
             publishStatus("USB connected")
         } catch (e: Exception) {
             closeSerial(null)
-            status = status.copy(running = usbWanted, usbState = "USB error", lastError = "USB open failed: ${e.message}")
+            status = status.copy(running = connectionWanted, usbState = "USB error", lastError = "USB open failed: ${e.message}")
             publishStatus(status.lastError)
-            scheduleUsbReconnect(2_000)
+            scheduleConnectionReconnect(2_000)
         }
+    }
+
+    private fun openBluetooth() {
+        closeSerial(null)
+        status = status.copy(running = connectionWanted, usbState = "Searching for CITS-to-go Bluetooth")
+        publishStatus("Searching for CITS-to-go Bluetooth")
+        Thread({
+            try {
+                val opened = BleGattSerial(this).also { it.connect() }
+                if (!connectionWanted || connectionMode != ConnectionMode.BLUETOOTH) {
+                    opened.close()
+                    return@Thread
+                }
+                serial = opened
+                promoteConnectedDeviceForeground()
+                status = status.copy(running = true, usbState = "Connected: ${opened.description()}", lastError = "")
+                val reader = SerialPacketReader(::handlePacket, ::handleTxResult, ::handleProtocolError)
+                serialReadThread = Thread({
+                    val buffer = ByteArray(16 * 1024)
+                    while (connectionWanted && connectionMode == ConnectionMode.BLUETOOTH && serial === opened) {
+                        try {
+                            val count = opened.read(buffer, USB_READ_TIMEOUT_MS)
+                            if (count > 0) reader.accept(buffer, count)
+                        } catch (e: Exception) {
+                            handleSerialError(e)
+                        }
+                    }
+                }, "ctg-ble-read").apply { start() }
+                serialWriteThread = Thread({
+                    while (connectionWanted && connectionMode == ConnectionMode.BLUETOOTH && serial === opened) {
+                        try {
+                            val tx = txQueue.take()
+                            opened.writeAll(CtgFrameEncoder.txRequest(tx.requestId, tx.packet), BLE_WRITE_TIMEOUT_MS)
+                        } catch (e: InterruptedException) {
+                            Thread.currentThread().interrupt()
+                            break
+                        } catch (e: Exception) {
+                            handleSerialError(e)
+                        }
+                    }
+                }, "ctg-ble-write").apply { start() }
+                publishStatus("Bluetooth connected")
+            } catch (e: Exception) {
+                closeSerial(null)
+                status = status.copy(
+                    running = connectionWanted,
+                    usbState = "Bluetooth error",
+                    lastError = "Bluetooth connect failed: ${e.message}",
+                )
+                publishStatus(status.lastError)
+                if (connectionWanted && connectionMode == ConnectionMode.BLUETOOTH) scheduleConnectionReconnect(2_000)
+            }
+        }, "ctg-ble-connect").start()
     }
 
     private fun closeSerial(message: String?) {
@@ -385,13 +450,13 @@ class CitsBridgeService : Service() {
                 pendingSremRequests.remove(pendingSrem.sremRequestId)
                 status = status.copy(
                     lastSremState = SREM_STATE_FAILED,
-                    lastSremSummary = "SREM transmit canceled: USB disconnected",
+                    lastSremSummary = "SREM transmit canceled: connection lost",
                     lastSremUpdatedAtMs = System.currentTimeMillis(),
                 )
             }
         }
         if (message != null) {
-            status = status.copy(usbState = if (usbWanted) "Waiting for USB device" else "Stopped")
+            status = status.copy(usbState = if (connectionWanted) "Waiting for ${connectionMode.label} device" else "Stopped")
             publishStatus(message)
         }
     }
@@ -435,7 +500,7 @@ class CitsBridgeService : Service() {
             return
         }
         stopReplay(log = false)
-        usbWanted = false
+        connectionWanted = false
         closeSerial(null)
         stopPcap(log = false)
         startElapsedMs = SystemClock.elapsedRealtime()
@@ -948,7 +1013,7 @@ class CitsBridgeService : Service() {
         status = status.copy(usbState = "USB error", lastError = "Serial read failed: ${error.message}")
         publishStatus(status.lastError)
         closeSerial(null)
-        if (usbWanted) scheduleUsbReconnect(2_000)
+        if (connectionWanted && connectionMode == ConnectionMode.USB) scheduleConnectionReconnect(2_000)
     }
 
     private fun queueMqttPacket(packet: ByteArray?) {
@@ -1078,9 +1143,9 @@ class CitsBridgeService : Service() {
         }
     }
 
-    private fun scheduleUsbReconnect(delayMs: Long) {
-        if (!usbWanted) return
-        handler.postDelayed({ if (usbWanted && serial == null) openUsb() }, delayMs)
+    private fun scheduleConnectionReconnect(delayMs: Long) {
+        if (!connectionWanted) return
+        handler.postDelayed({ if (connectionWanted && serial == null) openConnection() }, delayMs)
     }
 
     private fun scheduleMqttReconnect() {
@@ -1119,7 +1184,7 @@ class CitsBridgeService : Service() {
     private fun publishStatus(log: String?) {
         refreshIntersectionSnapshots()
         status = status.copy(
-            running = usbWanted || replayWanted,
+            running = connectionWanted || replayWanted,
             nodeId = nodeId,
             packetTopic = "its/$nodeId/packet",
             mqttQueued = spool.pendingCount(),
@@ -1406,6 +1471,7 @@ class CitsBridgeService : Service() {
         const val ACTION_STATUS = "org.opentrafficmap.citstogo.action.STATUS"
         const val ACTION_USB_PERMISSION = "org.opentrafficmap.citstogo.action.USB_PERMISSION"
 
+        const val EXTRA_CONNECTION_MODE = "connectionMode"
         const val EXTRA_DEVICE_NAME = "deviceName"
         const val EXTRA_MQTT_URI = "mqttUri"
         const val EXTRA_NODE_ID = "nodeId"
@@ -1491,6 +1557,7 @@ class CitsBridgeService : Service() {
         private const val NOTIFICATION_ID = 2301
         private const val STATION_NOTIFICATION_ID_BASE = 2400
         private const val USB_READ_TIMEOUT_MS = 5_000
+        private const val BLE_WRITE_TIMEOUT_MS = 5_000
         private const val USB_WRITE_TIMEOUT_MS = 2_000
         private const val MAX_TX_QUEUE = 64
         private const val MAX_LOCATION_AGE_MS = 5_000L

@@ -12,6 +12,12 @@ sealed interface CtgInboundFrame {
     ) : CtgInboundFrame {
         val successful: Boolean get() = status == 0L
     }
+    data class BluetoothEnrollmentResult(
+        val status: Long,
+        val armed: Boolean,
+    ) : CtgInboundFrame {
+        val successful: Boolean get() = status == 0L && armed
+    }
 }
 
 class CtgFrameDecoder {
@@ -44,6 +50,7 @@ class CtgFrameDecoder {
         return when (type) {
             TYPE_CAPTURE -> decodeCapture(decoded, headerLen)
             TYPE_TX_RESULT -> decodeTxResult(decoded, headerLen)
+            TYPE_BLE_ENROLL_RESULT -> decodeBluetoothEnrollmentResult(decoded, headerLen)
             else -> throw ProtocolException("Unsupported CTG frame type $type")
         }
     }
@@ -87,6 +94,16 @@ class CtgFrameDecoder {
         )
     }
 
+    private fun decodeBluetoothEnrollmentResult(decoded: ByteArray, headerLen: Int): CtgInboundFrame.BluetoothEnrollmentResult {
+        if (headerLen != BLE_ENROLL_RESULT_HEADER_LEN || decoded.size != headerLen + CRC_LEN) {
+            throw ProtocolException("Malformed Bluetooth enrollment result")
+        }
+        return CtgInboundFrame.BluetoothEnrollmentResult(
+            status = u32(decoded, 8),
+            armed = decoded[12].toInt() != 0,
+        )
+    }
+
     private fun u16(buf: ByteArray, offset: Int): Int =
         (buf[offset].toInt() and 0xff) or ((buf[offset + 1].toInt() and 0xff) shl 8)
 
@@ -103,9 +120,13 @@ class CtgFrameDecoder {
         const val TYPE_CAPTURE = 1
         const val TYPE_TX_REQUEST = 2
         const val TYPE_TX_RESULT = 3
+        const val TYPE_BLE_ENROLL_REQUEST = 4
+        const val TYPE_BLE_ENROLL_RESULT = 5
         const val CAPTURE_HEADER_LEN = 32
         const val TX_REQUEST_HEADER_LEN = 16
         const val TX_RESULT_HEADER_LEN = 20
+        const val BLE_ENROLL_REQUEST_HEADER_LEN = 12
+        const val BLE_ENROLL_RESULT_HEADER_LEN = 16
         const val MIN_HEADER_LEN = 8
         const val CRC_LEN = 4
     }
