@@ -563,6 +563,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             bluetoothEnrollmentMessage = "Connect CITS-to-go by USB, then try again."
             return
         }
+        if (device.vendorId != ESPRESSIF_USB_VENDOR_ID ||
+            device.productId != ESPRESSIF_USB_JTAG_SERIAL_PRODUCT_ID
+        ) {
+            bluetoothEnrollmentRunning = false
+            bluetoothEnrollmentError = true
+            bluetoothEnrollmentMessage = "Select the connected CITS-to-go USB device, then try again."
+            return
+        }
         selectedDeviceName = device.deviceName
         if (usbManager.hasPermission(device)) {
             startBluetoothEnrollment(device)

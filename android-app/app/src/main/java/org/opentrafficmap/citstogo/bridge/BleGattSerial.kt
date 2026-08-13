@@ -48,6 +48,14 @@ class BleGattSerial(private val context: Context) : CtgByteTransport {
     }
 
     fun connect(timeoutMs: Long = 15_000) {
+        connectTarget(null, timeoutMs)
+    }
+
+    fun connect(device: BluetoothDevice, timeoutMs: Long = 15_000) {
+        connectTarget(device, timeoutMs)
+    }
+
+    private fun connectTarget(targetDevice: BluetoothDevice?, timeoutMs: Long) {
         if (!adapter.isEnabled) throw IOException("Bluetooth is turned off")
         val scanner = adapter.bluetoothLeScanner ?: throw IOException("Bluetooth LE scanner unavailable")
         val found = CountDownLatch(1)
@@ -57,6 +65,7 @@ class BleGattSerial(private val context: Context) : CtgByteTransport {
         val callback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
                 if (connectedDevice != null || closed) return
+                if (targetDevice != null && result.device.address != targetDevice.address) return
                 // Normal operation only uses an OS-level BLE bond created during USB enrollment.
                 if (result.device.bondState != BluetoothDevice.BOND_BONDED) return
                 connectedDevice = result.device
@@ -74,7 +83,13 @@ class BleGattSerial(private val context: Context) : CtgByteTransport {
 
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(SERVICE_UUID)).build()
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
-        scanner.startScan(listOf(filter), settings, callback)
+        if (targetDevice == null) {
+            scanner.startScan(listOf(filter), settings, callback)
+        } else {
+            connectedDevice = targetDevice
+            gatt = targetDevice.connectGatt(context, false, gattCallback(ready), BluetoothDevice.TRANSPORT_LE)
+            found.countDown()
+        }
         try {
             if (!found.await(timeoutMs, TimeUnit.MILLISECONDS)) {
                 throw IOException("No enrolled CITS-to-go Bluetooth device found; enroll this phone over USB first")

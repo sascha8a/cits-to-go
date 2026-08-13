@@ -112,8 +112,8 @@ Bluetooth access is owner-bonded:
 - NimBLE uses LE Secure Connections, bonding, identity-key exchange, and persistent NVS-backed bond storage.
 - The Android-to-firmware RX characteristic requires an encrypted BLE link, and firmware notifications are emitted only after the connection is encrypted and bonded.
 - Unknown peers are disconnected and cannot start pairing during normal operation.
-- A new/replacement bond can only be created after the Android app sends the USB-only enrollment control frame. This opens a one-shot 30-second enrollment window. Re-enrolling the existing owner keeps its bond; when an unknown peer consumes the attempt, the previous owner bond is removed immediately before SMP pairing starts.
-- Repeat pairing is rejected; replacing an owner must start from USB again.
+- A new/replacement bond can only be created after the Android app sends the USB-only enrollment control frame. This opens a one-shot 30-second enrollment window. Re-enrolling the existing owner keeps its bond; when an unknown peer consumes the attempt, the previous owner bond is removed only after the replacement finishes secure pairing.
+- Repeat pairing is rejected during normal operation. A USB-authorized enrollment can replace stale keys left after firmware storage or Android's bond state was reset.
 
 The pairing association model is LE Secure Connections "Just Works" (no PIN). USB access is the physical authorization step controlling when a new bond may be created. Normal CTG traffic contains no application-layer authentication messages. USB remains available for firmware flashing.
 

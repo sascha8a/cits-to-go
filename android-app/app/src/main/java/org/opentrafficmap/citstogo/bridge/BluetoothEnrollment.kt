@@ -37,19 +37,19 @@ class BluetoothEnrollment(private val context: Context) {
         val done = CountDownLatch(1)
         val error = AtomicReference<String?>(null)
         val bonded = AtomicReference<BluetoothDevice?>(null)
-        val wasAlreadyBonded = AtomicReference(false)
-        var target: BluetoothDevice? = null
+        val target = AtomicReference<BluetoothDevice?>(null)
 
         val bondReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
                 val device = if (android.os.Build.VERSION.SDK_INT >= 33) {
                     intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
                 } else {
                     @Suppress("DEPRECATION")
                     intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)
                 } ?: return
-                if (target != null && device.address != target?.address) return
+                val expectedDevice = target.get() ?: return
+                if (device.address != expectedDevice.address) return
+                if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
                 when (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)) {
                     BluetoothDevice.BOND_BONDED -> {
                         bonded.set(device)
@@ -69,11 +69,9 @@ class BluetoothEnrollment(private val context: Context) {
 
         val scanCallback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                if (target != null) return
-                target = result.device
+                if (!target.compareAndSet(null, result.device)) return
                 runCatching { scanner.stopScan(this) }
                 if (result.device.bondState == BluetoothDevice.BOND_BONDED) {
-                    wasAlreadyBonded.set(true)
                     bonded.set(result.device)
                     done.countDown()
                 } else if (!result.device.createBond()) {
@@ -97,10 +95,13 @@ class BluetoothEnrollment(private val context: Context) {
             }
             error.get()?.let { throw IOException(it) }
             val device = bonded.get() ?: throw IOException("Bluetooth bond was not created")
-            if (wasAlreadyBonded.get()) {
-                // Force one secured connection so firmware consumes the temporary
-                // enrollment window without deleting the still-valid owner bond.
-                BleGattSerial(context).use { it.connect(10_000) }
+            // A bond broadcast alone does not prove that this board accepted and
+            // persisted the bond. Verify the exact scan target over secured GATT.
+            BleGattSerial(context).use {
+                it.connect(device, 10_000)
+                // RX requires encryption. An empty CTG record is ignored by the
+                // parser but forces Android to prove possession of the bond key.
+                it.writeAll(byteArrayOf(0), 10_000)
             }
             return "Bluetooth enrolled: ${device.address}"
         } finally {

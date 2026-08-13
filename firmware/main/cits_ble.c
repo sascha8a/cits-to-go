@@ -24,7 +24,7 @@
 #define CITS_BLE_DEVICE_NAME "CITS-to-go"
 #define CITS_BLE_INVALID_CONN_HANDLE 0xffffu
 #define CITS_BLE_NOTIFY_RETRY_MS 5
-#define CITS_BLE_MAX_BONDS 1
+#define CITS_BLE_MAX_BONDS 2
 #define CITS_BLE_ENROLLMENT_WINDOW_US (30LL * 1000LL * 1000LL)
 
 /* ESP-IDF's NimBLE examples expose the persistent-store initializer this way. */
@@ -71,13 +71,15 @@ static bool peer_is_bonded(const ble_addr_t *peer_id_addr)
     return false;
 }
 
-static void delete_all_bonds(void)
+static void delete_other_bonds(const ble_addr_t *retained_peer)
 {
     ble_addr_t peers[CITS_BLE_MAX_BONDS];
     int num_peers = 0;
     if (ble_store_util_bonded_peers(peers, &num_peers, CITS_BLE_MAX_BONDS) != 0) return;
     for (int i = 0; i < num_peers; ++i) {
-        (void)ble_store_util_delete_peer(&peers[i]);
+        if (ble_addr_cmp(&peers[i], retained_peer) != 0) {
+            (void)ble_store_util_delete_peer(&peers[i]);
+        }
     }
 }
 
@@ -158,6 +160,11 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             if (enrollment_armed) {
                 enrollment_armed = false;
                 enrollment_deadline_us = 0;
+                enrollment_conn_handle = event->connect.conn_handle;
+                /* Android may have lost its side of this bond and be starting
+                 * fresh pairing. Let it drive SMP; the encrypted GATT probe
+                 * sent after enrollment verifies a still-valid bond. */
+                return 0;
             }
             rc = ble_gap_security_initiate(event->connect.conn_handle);
             if (rc != 0) {
@@ -168,17 +175,12 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 
         if (enrollment_armed && esp_timer_get_time() <= enrollment_deadline_us) {
             /* Enrollment is deliberately one-shot: the first unknown peer owns
-             * this attempt. Only now replace the old owner, so re-enrolling the
-             * already-bonded phone does not create a stale Android-side bond. */
+             * this attempt. Android createBond() initiated this connection and
+             * must remain the sole SMP initiator; initiating security here too
+             * leaves Android waiting for pairing UI confirmation. */
             enrollment_armed = false;
             enrollment_deadline_us = 0;
             enrollment_conn_handle = event->connect.conn_handle;
-            delete_all_bonds();
-            rc = ble_gap_security_initiate(event->connect.conn_handle);
-            if (rc != 0) {
-                enrollment_conn_handle = CITS_BLE_INVALID_CONN_HANDLE;
-                (void)ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-            }
             return 0;
         }
 
@@ -202,12 +204,25 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             return 0;
         }
         link_secured = true;
+        if (enrollment_conn_handle == event->enc_change.conn_handle) {
+            /* NimBLE can retain two bonds temporarily. Commit replacement only
+             * after pairing succeeded, preserving the old owner on failure. */
+            delete_other_bonds(&desc.peer_id_addr);
+        }
         enrollment_conn_handle = CITS_BLE_INVALID_CONN_HANDLE;
         return 0;
 
     case BLE_GAP_EVENT_REPEAT_PAIRING:
-        /* Never silently replace a stored identity. Replacement must begin over
-         * USB, which deletes the old bond before the new pairing attempt. */
+        if (enrollment_conn_handle == event->repeat_pairing.conn_handle &&
+            ble_gap_conn_find(event->repeat_pairing.conn_handle, &desc) == 0) {
+            /* Android can retain keys after firmware was reflashed or erased.
+             * During this USB-authorized attempt only, remove the conflicting
+             * firmware key and let NimBLE complete a fresh bond. */
+            if (ble_store_util_delete_peer(&desc.peer_id_addr) == 0) {
+                return BLE_GAP_REPEAT_PAIRING_RETRY;
+            }
+        }
+        /* Never silently replace a stored identity during normal operation. */
         return BLE_GAP_REPEAT_PAIRING_IGNORE;
 
     case BLE_GAP_EVENT_DISCONNECT:

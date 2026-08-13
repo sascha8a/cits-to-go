@@ -18,8 +18,8 @@ android {
         applicationId = 'org.opentrafficmap.citstogo'
         minSdk = 26
         targetSdk = 35
-        versionCode = 51
-        versionName = '2.26.4'
+        versionCode = 56
+        versionName = '2.26.9'
     }
 
     signingConfigs {

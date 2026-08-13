@@ -72,6 +72,7 @@ static QueueHandle_t capture_queue;
 static QueueHandle_t tx_free_queue;
 static QueueHandle_t tx_queue;
 static SemaphoreHandle_t serial_write_mutex;
+static SemaphoreHandle_t parser_mutex;
 static packet_slot_t packet_slots[CONFIG_CITS_PACKET_POOL_SIZE];
 static tx_slot_t tx_slots[CONFIG_CITS_TX_POOL_SIZE];
 static uint32_t sequence;
@@ -336,7 +337,7 @@ static void write_ble_enroll_result(esp_err_t status)
     xSemaphoreGive(serial_write_mutex);
 }
 
-static void handle_record(const uint8_t *encoded, size_t encoded_len, bool from_usb)
+static void handle_record_locked(const uint8_t *encoded, size_t encoded_len, bool from_usb)
 {
     static uint8_t decoded[CITS_DECODED_MAX_LEN];
     size_t decoded_len = 0;
@@ -399,6 +400,14 @@ static void handle_record(const uint8_t *encoded, size_t encoded_len, bool from_
         (void)xQueueSend(tx_free_queue, &slot_index, 0);
         write_tx_result(request_id, ESP_ERR_NO_MEM, packet_len, NULL);
     }
+}
+
+static void handle_record(const uint8_t *encoded, size_t encoded_len, bool from_usb)
+{
+    /* USB and NimBLE invoke the parser from different tasks. */
+    xSemaphoreTake(parser_mutex, portMAX_DELAY);
+    handle_record_locked(encoded, encoded_len, from_usb);
+    xSemaphoreGive(parser_mutex);
 }
 
 static void ble_receive_chunk(const uint8_t *data, size_t len)
@@ -552,8 +561,9 @@ static esp_err_t init_queues(void)
     tx_free_queue = xQueueCreate(CONFIG_CITS_TX_POOL_SIZE, sizeof(uint8_t));
     tx_queue = xQueueCreate(CONFIG_CITS_TX_POOL_SIZE, sizeof(uint8_t));
     serial_write_mutex = xSemaphoreCreateMutex();
+    parser_mutex = xSemaphoreCreateMutex();
     ESP_RETURN_ON_FALSE(
-        free_queue && capture_queue && tx_free_queue && tx_queue && serial_write_mutex,
+        free_queue && capture_queue && tx_free_queue && tx_queue && serial_write_mutex && parser_mutex,
         ESP_ERR_NO_MEM, TAG, "queue/mutex create");
 
     for (uint8_t i = 0; i < CONFIG_CITS_PACKET_POOL_SIZE; ++i) {
