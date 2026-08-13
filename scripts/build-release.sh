@@ -37,7 +37,7 @@ for command_name in docker tshark; do
   fi
 done
 
-APP_VERSION="$(sed -n "s/^[[:space:]]*versionName ['\"]\([^'\"]*\)['\"].*/\1/p" "$ANDROID_DIR/app/build.gradle")"
+APP_VERSION="$(sed -n "s/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*['\"]\([^'\"]*\)['\"].*/\1/p" "$ANDROID_DIR/app/build.gradle")"
 if [[ -z "$APP_VERSION" ]]; then
   echo "Could not read Android versionName" >&2
   exit 1
@@ -83,7 +83,7 @@ docker run --rm \
   --workdir /project \
   --env "FIRMWARE_NAME=$FIRMWARE_NAME" \
   "$IDF_IMAGE" \
-  sh -c 'if grep -qx "CONFIG_IDF_TARGET=\"esp32c5\"" sdkconfig 2>/dev/null; then idf.py build; else idf.py set-target esp32c5 build; fi && cd build && esptool --chip esp32c5 merge-bin --format raw -o "/release/$FIRMWARE_NAME" @flash_args'
+  sh -c 'if grep -qx "CONFIG_IDF_TARGET=\"esp32c5\"" sdkconfig 2>/dev/null; then idf.py -B build-release build; else idf.py -B build-release set-target esp32c5 build; fi && cd build-release && esptool --chip esp32c5 merge-bin --format raw -o "/release/$FIRMWARE_NAME" @flash_args'
 
 if [[ ! -s "$RELEASE_DIR/$FIRMWARE_NAME" ]]; then
   echo "Merged firmware was not generated" >&2
