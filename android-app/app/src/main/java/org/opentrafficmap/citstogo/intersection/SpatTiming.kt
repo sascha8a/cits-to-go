@@ -17,12 +17,13 @@ fun SignalEvent.secondsUntilChange(spat: SpatIntersection?, nowMs: Long): Long? 
     if (remainingAtReceipt < 0) {
         val crossesHourBoundary = messageTenths >= TENTHS_PER_HOUR - TENTHS_PER_MINUTE &&
             targetTenths < TENTHS_PER_MINUTE
-        if (!crossesHourBoundary) return 0L
+        if (!crossesHourBoundary) return null
         remainingAtReceipt += TENTHS_PER_HOUR
     }
 
     val elapsedTenths = ((nowMs - spat.receivedAtMs).coerceAtLeast(0L) / 100L).toInt()
-    val remainingTenths = (remainingAtReceipt - elapsedTenths).coerceAtLeast(0)
+    val remainingTenths = remainingAtReceipt - elapsedTenths
+    if (remainingTenths < 0) return null
     return (remainingTenths + 9L) / 10L
 }
 

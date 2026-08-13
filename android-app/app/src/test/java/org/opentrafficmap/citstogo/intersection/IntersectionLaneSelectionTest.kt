@@ -30,6 +30,20 @@ class IntersectionLaneSelectionTest {
     }
 
     @Test
+    fun structuralConnectionsCanRemainVisibleWithoutAValidSignalGroup() {
+        assertEquals(
+            true,
+            intersectionConnectionVisible(
+                10,
+                11,
+                signalized = false,
+                alwaysVisible = true,
+                selectedLaneIds = emptyList(),
+            ),
+        )
+    }
+
+    @Test
     fun firstSelectionShowsOnlyItsConnections() {
         assertEquals(true, intersectionConnectionVisible(10, 11, signalized = false, selectedLaneIds = listOf(10)))
         assertEquals(true, intersectionConnectionVisible(10, 11, signalized = false, selectedLaneIds = listOf(11)))

@@ -3070,6 +3070,8 @@ private fun IntersectionRenderer(
                     laneId = lane.id,
                     connectedLaneId = connectedLane.id,
                     signalized = connection.signalGroup?.let(signalGroups::containsKey) == true,
+                    alwaysVisible = lane.laneType == LaneType.TrackedVehicle ||
+                        connectedLane.laneType == LaneType.TrackedVehicle,
                     selectedLaneIds = selectedCrosswalkLaneIds,
                 )
                 if (!connectionIsVisible) return@forEach

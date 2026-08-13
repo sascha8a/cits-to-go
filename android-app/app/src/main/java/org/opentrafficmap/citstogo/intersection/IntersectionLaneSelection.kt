@@ -13,9 +13,10 @@ internal fun intersectionConnectionVisible(
     laneId: Int,
     connectedLaneId: Int,
     signalized: Boolean,
+    alwaysVisible: Boolean = false,
     selectedLaneIds: Collection<Int>,
 ): Boolean = when (selectedLaneIds.size) {
-    0 -> signalized
+    0 -> signalized || alwaysVisible
     1 -> laneId in selectedLaneIds || connectedLaneId in selectedLaneIds
     else -> laneId in selectedLaneIds && connectedLaneId in selectedLaneIds
 }

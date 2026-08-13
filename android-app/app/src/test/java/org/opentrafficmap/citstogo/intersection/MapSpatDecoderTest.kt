@@ -3,6 +3,7 @@ package org.opentrafficmap.citstogo.intersection
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -27,6 +28,57 @@ class MapSpatDecoderTest {
             }
         }
         assertEquals(6, specialTimeMarkCount)
+    }
+
+    @Test
+    fun staleTimingFromReportedIntersectionIsNotDisplayed() {
+        val affectedIntersections = pcapFrames("cits-1786038712016.pcap").mapNotNull { frame ->
+            val packet = ItsFrameExtractor.extract(frame)
+                ?.takeIf { it.destinationPort == MapSpatDecoder.BTP_PORT_SPATEM }
+                ?: return@mapNotNull null
+            MapSpatDecoder.decodeSpat(packet, 1_000L)
+                .firstOrNull { it.key == IntersectionKey(17153, 1010) }
+        }
+
+        assertTrue(affectedIntersections.isNotEmpty())
+        affectedIntersections.forEach { spat ->
+            assertNull(spat.movements.first { it.signalGroup == 1 }.currentEvent?.secondsUntilChange(spat, 1_000L))
+        }
+    }
+
+    @Test
+    fun reportedRailConnectionsRemainAvailableWithoutMatchingSpatGroups() {
+        val frames = pcapFrames("cits-1786038712016.pcap")
+        val mapPacket = requireNotNull(ItsFrameExtractor.extract(frames[19]))
+        val map = MapSpatDecoder.decodeMap(mapPacket, 1_000L)
+            .first { it.key == IntersectionKey(43, 1048) }
+        val spatPacket = frames.asSequence()
+            .mapNotNull(ItsFrameExtractor::extract)
+            .first { packet ->
+                packet.destinationPort == MapSpatDecoder.BTP_PORT_SPATEM &&
+                    MapSpatDecoder.decodeSpat(packet, 1_000L).any { it.key == map.key }
+            }
+        val spatGroups = MapSpatDecoder.decodeSpat(spatPacket, 1_000L)
+            .first { it.key == map.key }
+            .movementsBySignalGroup.keys
+        val railConnections = map.lanes
+            .filter { it.laneType == LaneType.TrackedVehicle }
+            .flatMap { lane -> lane.connections.map { connection -> lane to connection } }
+
+        assertTrue(railConnections.isNotEmpty())
+        assertTrue(railConnections.any { (_, connection) -> connection.signalGroup !in spatGroups })
+        railConnections.forEach { (lane, connection) ->
+            val connectedLane = map.lanes.first { it.id == connection.laneId }
+            assertTrue(
+                intersectionConnectionVisible(
+                    laneId = lane.id,
+                    connectedLaneId = connectedLane.id,
+                    signalized = connection.signalGroup in spatGroups,
+                    alwaysVisible = true,
+                    selectedLaneIds = emptyList(),
+                ),
+            )
+        }
     }
 
     @Test

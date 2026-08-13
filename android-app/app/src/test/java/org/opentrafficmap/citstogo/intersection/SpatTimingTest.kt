@@ -6,21 +6,21 @@ import org.junit.Test
 
 class SpatTimingTest {
     @Test
-    fun expiredTimeMarkStopsAtZeroInsteadOfWrappingToNextHour() {
+    fun expiredTimeMarkIsNotDisplayed() {
         val spat = spat(moy = 10, timestampMs = 35_800, receivedAtMs = 1_000L)
         val event = event(likelyTime = 358)
 
-        assertEquals(0L, event.secondsUntilChange(spat, 1_000L))
-        assertEquals(0L, event.secondsUntilChange(spat, 10_000L))
+        assertNull(event.secondsUntilChange(spat, 1_000L))
+        assertNull(event.secondsUntilChange(spat, 10_000L))
     }
 
     @Test
-    fun countdownNeverBecomesNegativeAfterItExpires() {
+    fun countdownIsNotDisplayedAfterItExpires() {
         val spat = spat(moy = 10, timestampMs = 10_000, receivedAtMs = 1_000L)
         val event = event(likelyTime = 6_120)
 
         assertEquals(2L, event.secondsUntilChange(spat, 1_000L))
-        assertEquals(0L, event.secondsUntilChange(spat, 4_000L))
+        assertNull(event.secondsUntilChange(spat, 4_000L))
     }
 
     @Test
