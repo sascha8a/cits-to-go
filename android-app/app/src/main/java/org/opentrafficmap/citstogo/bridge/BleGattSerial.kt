@@ -162,6 +162,7 @@ class BleGattSerial(private val context: Context) : CtgByteTransport {
         }
 
         @Deprecated("Used on Android 12 and earlier")
+        @Suppress("DEPRECATION")
         override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
             if (characteristic.uuid == TX_UUID) incoming.offer(characteristic.value.clone())
         }

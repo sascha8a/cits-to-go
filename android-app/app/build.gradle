@@ -5,8 +5,8 @@ plugins {
 }
 
 android {
-    namespace 'org.opentrafficmap.citstogo'
-    compileSdk 35
+    namespace = 'org.opentrafficmap.citstogo'
+    compileSdk = 35
 
     def releaseStoreFile = System.getenv('CITS_RELEASE_STORE_FILE')
     def releaseStorePassword = System.getenv('CITS_RELEASE_STORE_PASSWORD')
@@ -15,20 +15,20 @@ android {
     def hasReleaseSigning = releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
 
     defaultConfig {
-        applicationId 'org.opentrafficmap.citstogo'
-        minSdk 26
-        targetSdk 35
-        versionCode 47
-        versionName '2.26.0'
+        applicationId = 'org.opentrafficmap.citstogo'
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 51
+        versionName = '2.26.4'
     }
 
     signingConfigs {
         release {
             if (hasReleaseSigning) {
-                storeFile file(releaseStoreFile)
-                storePassword releaseStorePassword
-                keyAlias releaseKeyAlias
-                keyPassword releaseKeyPassword
+                storeFile = file(releaseStoreFile)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
             }
         }
     }
@@ -36,18 +36,18 @@ android {
     buildTypes {
         release {
             if (hasReleaseSigning) {
-                signingConfig signingConfigs.release
+                signingConfig = signingConfigs.release
             }
         }
     }
 
     buildFeatures {
-        compose true
-        buildConfig true
+        compose = true
+        buildConfig = true
     }
 
     lint {
-        disable 'NullSafeMutableLiveData'
+        disable('NullSafeMutableLiveData')
     }
 
     kotlin {

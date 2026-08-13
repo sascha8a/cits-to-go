@@ -27,9 +27,10 @@ import android.os.Bundle
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.OpenableColumns
-import java.io.Serializable
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.ActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -153,6 +154,8 @@ import kotlin.math.hypot
 import kotlin.math.roundToLong
 import kotlin.math.sin
 import kotlin.math.sqrt
+import org.opentrafficmap.citstogo.util.parcelableExtra
+import org.opentrafficmap.citstogo.util.serializableExtra
 
 class MainActivity : ComponentActivity(), SensorEventListener {
     private lateinit var usbManager: UsbManager
@@ -194,6 +197,58 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var flashAfterPermission = false
     private var flashingState by mutableStateOf(FirmwareFlashingState.initial(BuildConfig.VERSION_NAME))
 
+    private val locationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        val granted = grants.values.any { it }
+        if (enableCamAfterPermission) {
+            enableCamAfterPermission = false
+            if (granted) {
+                configureCam(true)
+            } else {
+                logLine = "Location permission denied; CAM remains off"
+            }
+        }
+        if (wantsIntersectionLocation) {
+            if (granted) {
+                startIntersectionLocationUpdates()
+            } else {
+                logLine = "Location permission denied; position marker disabled"
+            }
+        }
+    }
+
+    private val bluetoothPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        if (grants.isNotEmpty() && grants.values.all { it }) {
+            if (enrollmentAfterBluetoothPermission) requestEnrollmentUsb() else startBridge()
+        } else if (enrollmentAfterBluetoothPermission) {
+            bluetoothEnrollmentRunning = false
+            bluetoothEnrollmentError = true
+            bluetoothEnrollmentMessage = "Bluetooth permission was denied. Allow it in Android settings and retry."
+        } else {
+            logLine = "Bluetooth permission denied"
+        }
+        enrollmentAfterBluetoothPermission = false
+    }
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { }
+
+    private val createPcapLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result -> handleDocumentResult(result, ::startPcap) }
+
+    private val openPcapLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result -> handleDocumentResult(result, ::startReplay) }
+
+    private val openFirmwareLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result -> handleDocumentResult(result, ::selectCustomFirmware) }
+
     private val intersectionLocationListener = LocationListener { location ->
         updateCurrentPosition(location)
     }
@@ -202,7 +257,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != CitsBridgeService.ACTION_USB_PERMISSION) return
             val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
-            val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+            val device = intent.parcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
             refreshDevices()
             if (granted) {
                 selectedDeviceName = device?.deviceName ?: selectedDeviceName
@@ -285,11 +340,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 lastError = intent.getStringExtra(CitsBridgeService.EXTRA_LAST_ERROR).orEmpty(),
             )
             intent.getStringExtra(CitsBridgeService.EXTRA_LOG)?.let { logLine = it }
-            serializableExtra<IntersectionSnapshotList>(intent, CitsBridgeService.EXTRA_INTERSECTION_SNAPSHOTS)?.let {
+            intent.serializableExtra<IntersectionSnapshotList>(CitsBridgeService.EXTRA_INTERSECTION_SNAPSHOTS)?.let {
                 intersectionSnapshots = it.snapshots
                 intersectionSnapshot = it.snapshots.firstOrNull()
             }
-            serializableExtra<IntersectionSnapshot>(intent, CitsBridgeService.EXTRA_INTERSECTION_SNAPSHOT)?.let {
+            intent.serializableExtra<IntersectionSnapshot>(CitsBridgeService.EXTRA_INTERSECTION_SNAPSHOT)?.let {
                 intersectionSnapshot = it
                 if (intersectionSnapshots.isEmpty()) intersectionSnapshots = listOf(it)
             }
@@ -465,58 +520,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray,
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == REQUEST_LOCATION && enableCamAfterPermission) {
-            enableCamAfterPermission = false
-            if (grantResults.any { it == PackageManager.PERMISSION_GRANTED }) {
-                configureCam(true)
-            } else {
-                logLine = "Location permission denied; CAM remains off"
-            }
-        }
-        if (requestCode == REQUEST_LOCATION && wantsIntersectionLocation) {
-            if (grantResults.any { it == PackageManager.PERMISSION_GRANTED }) {
-                startIntersectionLocationUpdates()
-            } else {
-                logLine = "Location permission denied; position marker disabled"
-            }
-        }
-        if (requestCode == REQUEST_BLUETOOTH) {
-            if (grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
-                if (enrollmentAfterBluetoothPermission) requestEnrollmentUsb() else startBridge()
-            } else {
-                if (enrollmentAfterBluetoothPermission) {
-                    bluetoothEnrollmentRunning = false
-                    bluetoothEnrollmentError = true
-                    bluetoothEnrollmentMessage = "Bluetooth permission was denied. Allow it in Android settings and retry."
-                } else {
-                    logLine = "Bluetooth permission denied"
-                }
-            }
-            enrollmentAfterBluetoothPermission = false
-        }
-    }
-
-    @Deprecated("Deprecated Android callback kept to avoid an activity dependency.")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode !in setOf(REQUEST_CREATE_PCAP, REQUEST_OPEN_PCAP, REQUEST_OPEN_FIRMWARE) ||
-            resultCode != RESULT_OK
-        ) return
-        val uri = data?.data ?: return
+    private fun handleDocumentResult(result: ActivityResult, onUriSelected: (Uri) -> Unit) {
+        if (result.resultCode != RESULT_OK) return
+        val data = result.data ?: return
+        val uri = data.data ?: return
         val flags = data.flags and
             (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         runCatching { contentResolver.takePersistableUriPermission(uri, flags) }
-        when (requestCode) {
-            REQUEST_CREATE_PCAP -> startPcap(uri)
-            REQUEST_OPEN_PCAP -> startReplay(uri)
-            REQUEST_OPEN_FIRMWARE -> selectCustomFirmware(uri)
-        }
+        onUriSelected(uri)
     }
 
     private fun requestBluetoothEnrollment() {
@@ -538,7 +549,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         if (missing.isNotEmpty()) {
             enrollmentAfterBluetoothPermission = true
             bluetoothEnrollmentMessage = "Bluetooth permission is required to enroll this phone."
-            requestPermissions(missing.toTypedArray(), REQUEST_BLUETOOTH)
+            bluetoothPermissionLauncher.launch(missing.toTypedArray())
             return
         }
         requestEnrollmentUsb()
@@ -626,7 +637,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         if (missing.isEmpty()) {
             startBridge()
         } else {
-            requestPermissions(missing.toTypedArray(), REQUEST_BLUETOOTH)
+            bluetoothPermissionLauncher.launch(missing.toTypedArray())
             logLine = "Requesting Bluetooth permission"
         }
     }
@@ -810,7 +821,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             .addCategory(Intent.CATEGORY_OPENABLE)
             .setType("application/octet-stream")
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        startActivityForResult(intent, REQUEST_OPEN_FIRMWARE)
+        openFirmwareLauncher.launch(intent)
     }
 
     private fun selectCustomFirmware(uri: Uri) {
@@ -879,7 +890,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             .setType("application/vnd.tcpdump.pcap")
             .putExtra(Intent.EXTRA_TITLE, title)
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        startActivityForResult(intent, REQUEST_CREATE_PCAP)
+        createPcapLauncher.launch(intent)
     }
 
     private fun startPcap(uri: Uri) {
@@ -898,7 +909,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             .addCategory(Intent.CATEGORY_OPENABLE)
             .setType("*/*")
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
-        startActivityForResult(intent, REQUEST_OPEN_PCAP)
+        openPcapLauncher.launch(intent)
     }
 
     private fun startReplay(uri: Uri) {
@@ -927,12 +938,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
         ) {
             enableCamAfterPermission = true
-            requestPermissions(
+            locationPermissionLauncher.launch(
                 arrayOf(
                     Manifest.permission.ACCESS_FINE_LOCATION,
                     Manifest.permission.ACCESS_COARSE_LOCATION,
                 ),
-                REQUEST_LOCATION,
             )
             return
         }
@@ -1039,12 +1049,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     private fun startOrRequestIntersectionLocation() {
         if (!hasLocationPermission()) {
-            requestPermissions(
+            locationPermissionLauncher.launch(
                 arrayOf(
                     Manifest.permission.ACCESS_FINE_LOCATION,
                     Manifest.permission.ACCESS_COARSE_LOCATION,
                 ),
-                REQUEST_LOCATION,
             )
             return
         }
@@ -1205,7 +1214,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 10)
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
 
@@ -1219,12 +1228,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     companion object {
-        private const val REQUEST_CREATE_PCAP = 1001
-        private const val REQUEST_OPEN_PCAP = 1002
-        private const val REQUEST_OPEN_FIRMWARE = 1003
-        private const val REQUEST_BLUETOOTH = 13
         private const val PREF_CONNECTION_MODE = "connectionMode"
-        private const val REQUEST_LOCATION = 1002
         private const val PREF_INTERSECTION_SORT_MODE = "intersection_sort_mode"
         private const val INTERSECTION_LOCATION_MIN_TIME_MS = 500L
         private const val TX_SHAKE_THRESHOLD_G = 2.7f
@@ -1285,16 +1289,6 @@ private data class DevicePosition(
         )
     }
 }
-
-private inline fun <reified T : Serializable> serializableExtra(intent: Intent, key: String): T? {
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        intent.getSerializableExtra(key, T::class.java)
-    } else {
-        @Suppress("DEPRECATION")
-        intent.getSerializableExtra(key) as? T
-    }
-}
-
 @Composable
 private fun CitsTheme(content: @Composable () -> Unit) {
     MaterialTheme(

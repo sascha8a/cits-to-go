@@ -1,0 +1,1291 @@
+package org.opentrafficmap.citstogo
+
+import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
+import android.net.Uri
+import android.os.Build
+import android.os.Bundle
+import android.os.Looper
+import android.os.SystemClock
+import android.provider.OpenableColumns
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.activity.result.ActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateCentroid
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import org.opentrafficmap.citstogo.bridge.BluetoothEnrollment
+import org.opentrafficmap.citstogo.bridge.BridgeStatus
+import org.opentrafficmap.citstogo.bridge.CitsBridgeService
+import org.opentrafficmap.citstogo.bridge.ConnectionMode
+import org.opentrafficmap.citstogo.bridge.UsbCdcSerial
+import org.opentrafficmap.citstogo.cam.StationType
+import org.opentrafficmap.citstogo.flashing.CodebergReleaseClient
+import org.opentrafficmap.citstogo.flashing.Esp32RomFlasher
+import org.opentrafficmap.citstogo.flashing.EspFlashTransport
+import org.opentrafficmap.citstogo.flashing.FirmwareFileReader
+import org.opentrafficmap.citstogo.flashing.FirmwareRelease
+import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
+import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
+import org.opentrafficmap.citstogo.intersection.LaneConnection
+import org.opentrafficmap.citstogo.intersection.LaneNode
+import org.opentrafficmap.citstogo.intersection.LaneType
+import org.opentrafficmap.citstogo.intersection.MapIntersection
+import org.opentrafficmap.citstogo.intersection.MapLane
+import org.opentrafficmap.citstogo.intersection.MovementPhaseState
+import org.opentrafficmap.citstogo.intersection.SpatIntersection
+import org.opentrafficmap.citstogo.intersection.CountdownLabelBounds
+import org.opentrafficmap.citstogo.intersection.countdownLaneRepresentatives
+import org.opentrafficmap.citstogo.intersection.countdownSignalGroupsForSelection
+import org.opentrafficmap.citstogo.intersection.countdownSideOffset
+import org.opentrafficmap.citstogo.intersection.connectedSremLaneIds
+import org.opentrafficmap.citstogo.intersection.intersectionConnectionVisible
+import org.opentrafficmap.citstogo.intersection.intersectionLaneSelectionAlpha
+import org.opentrafficmap.citstogo.intersection.placeCountdownLabel
+import org.opentrafficmap.citstogo.intersection.roadConnectionControlPoints
+import org.opentrafficmap.citstogo.intersection.secondsUntilChange
+import org.opentrafficmap.citstogo.intersection.resolveSremLaneDirection
+import org.opentrafficmap.citstogo.srem.SremProfile
+import org.opentrafficmap.citstogo.srem.estimateSremRequestTimeMs
+import org.opentrafficmap.citstogo.ui.DragConfirmDirection
+import org.opentrafficmap.citstogo.ui.DragConfirmSlider
+import org.opentrafficmap.citstogo.update.CodebergAppUpdateChecker
+import java.security.SecureRandom
+import java.util.Locale
+import kotlin.math.cos
+import kotlin.math.exp
+import kotlin.math.hypot
+import kotlin.math.roundToLong
+import kotlin.math.sin
+import kotlin.math.sqrt
+import org.opentrafficmap.citstogo.util.parcelableExtra
+import org.opentrafficmap.citstogo.util.serializableExtra
+
+class MainActivity : ComponentActivity(), SensorEventListener {
+    private lateinit var usbManager: UsbManager
+    private lateinit var locationManager: LocationManager
+    private lateinit var sensorManager: SensorManager
+    private var accelerometer: Sensor? = null
+    private var startAfterPermission: UsbDevice? = null
+    private var enrollmentAfterUsbPermission = false
+    private var enrollmentAfterBluetoothPermission = false
+    private var bluetoothEnrollmentRunning by mutableStateOf(false)
+    private var bluetoothEnrollmentMessage by mutableStateOf("")
+    private var bluetoothEnrollmentError by mutableStateOf(false)
+
+    private val devices = mutableStateListOf<UsbDevice>()
+    private var selectedDeviceName by mutableStateOf<String?>(null)
+    private var connectionMode by mutableStateOf(ConnectionMode.USB)
+    private var status by mutableStateOf(BridgeStatus())
+    private var mqttUri by mutableStateOf("")
+    private var nodeId by mutableStateOf("")
+    private var maxQueueLength by mutableStateOf("")
+    private var maxQueueAgeSeconds by mutableStateOf("")
+    private var logLine by mutableStateOf("")
+    private var intersectionSnapshot by mutableStateOf<IntersectionSnapshot?>(null)
+    private var intersectionSnapshots by mutableStateOf<List<IntersectionSnapshot>>(emptyList())
+    private var intersectionSortMode by mutableStateOf(IntersectionSortMode.FirstReceived)
+    private var currentPosition by mutableStateOf<DevicePosition?>(null)
+    private var camStationType by mutableStateOf(StationType.PEDESTRIAN)
+    private var sremProfile by mutableStateOf(SremProfile.PEDESTRIAN)
+    private var camIntervalMs by mutableStateOf(CitsBridgeService.DEFAULT_CAM_INTERVAL_MS.toString())
+    private var txApproved by mutableStateOf(false)
+    private var txApprovalPromptState by mutableStateOf(TxApprovalPromptState.Hidden)
+    private var enableCamAfterPermission = false
+    private var wantsIntersectionLocation = false
+    private var intersectionLocationActive = false
+    private var lastShakeElapsedMs = 0L
+    private var firmwareRelease: FirmwareRelease? = null
+    private var customFirmwareUri: Uri? = null
+    private var releaseLookupRunning = false
+    private var flashAfterPermission = false
+    private var flashingState by mutableStateOf(FirmwareFlashingState.initial(BuildConfig.VERSION_NAME))
+
+    private val locationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        val granted = grants.values.any { it }
+        if (enableCamAfterPermission) {
+            enableCamAfterPermission = false
+            if (granted) {
+                configureCam(true)
+            } else {
+                logLine = "Location permission denied; CAM remains off"
+            }
+        }
+        if (wantsIntersectionLocation) {
+            if (granted) {
+                startIntersectionLocationUpdates()
+            } else {
+                logLine = "Location permission denied; position marker disabled"
+            }
+        }
+    }
+
+    private val bluetoothPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        if (grants.isNotEmpty() && grants.values.all { it }) {
+            if (enrollmentAfterBluetoothPermission) requestEnrollmentUsb() else startBridge()
+        } else if (enrollmentAfterBluetoothPermission) {
+            bluetoothEnrollmentRunning = false
+            bluetoothEnrollmentError = true
+            bluetoothEnrollmentMessage = "Bluetooth permission was denied. Allow it in Android settings and retry."
+        } else {
+            logLine = "Bluetooth permission denied"
+        }
+        enrollmentAfterBluetoothPermission = false
+    }
+
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { }
+
+    private val createPcapLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result -> handleDocumentResult(result, ::startPcap) }
+
+    private val openPcapLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result -> handleDocumentResult(result, ::startReplay) }
+
+    private val openFirmwareLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result -> handleDocumentResult(result, ::selectCustomFirmware) }
+
+    private val intersectionLocationListener = LocationListener { location ->
+        updateCurrentPosition(location)
+    }
+
+    private val usbPermissionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != CitsBridgeService.ACTION_USB_PERMISSION) return
+            val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+            val device = intent.parcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+            refreshDevices()
+            if (granted) {
+                selectedDeviceName = device?.deviceName ?: selectedDeviceName
+                if (flashAfterPermission && device != null) {
+                    startFirmwareFlash(device)
+                } else if (enrollmentAfterUsbPermission) {
+                    if (device != null) {
+                        startBluetoothEnrollment(device)
+                    } else {
+                        bluetoothEnrollmentRunning = false
+                        bluetoothEnrollmentError = true
+                        bluetoothEnrollmentMessage = "USB device disappeared. Reconnect it and retry enrollment."
+                    }
+                } else {
+                    startBridge()
+                }
+            } else {
+                if (flashAfterPermission) {
+                    flashingState = flashingState.copy(
+                        phase = FirmwareFlashingPhase.Error,
+                        message = "USB permission denied",
+                    )
+                } else if (enrollmentAfterUsbPermission) {
+                    bluetoothEnrollmentRunning = false
+                    bluetoothEnrollmentError = true
+                    bluetoothEnrollmentMessage = "USB permission was denied. Reconnect the device and retry enrollment."
+                } else {
+                    logLine = "USB permission denied"
+                }
+            }
+            flashAfterPermission = false
+            enrollmentAfterUsbPermission = false
+            startAfterPermission = null
+        }
+    }
+
+    private val usbDeviceReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != UsbManager.ACTION_USB_DEVICE_ATTACHED &&
+                intent.action != UsbManager.ACTION_USB_DEVICE_DETACHED
+            ) return
+            refreshDevices()
+            updateFlashingDeviceState()
+        }
+    }
+
+    private val statusReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != CitsBridgeService.ACTION_STATUS) return
+            status = BridgeStatus(
+                running = intent.getBooleanExtra(CitsBridgeService.EXTRA_RUNNING, false),
+                usbState = intent.getStringExtra(CitsBridgeService.EXTRA_USB_STATE).orEmpty(),
+                mqttState = intent.getStringExtra(CitsBridgeService.EXTRA_MQTT_STATE).orEmpty(),
+                nodeId = intent.getStringExtra(CitsBridgeService.EXTRA_NODE_ID).orEmpty(),
+                packetTopic = intent.getStringExtra(CitsBridgeService.EXTRA_PACKET_TOPIC).orEmpty(),
+                packets = intent.getLongExtra(CitsBridgeService.EXTRA_PACKETS, 0),
+                mqttPublished = intent.getLongExtra(CitsBridgeService.EXTRA_MQTT_PUBLISHED, 0),
+                mqttQueued = intent.getLongExtra(CitsBridgeService.EXTRA_MQTT_QUEUED, 0),
+                pcapRecording = intent.getBooleanExtra(CitsBridgeService.EXTRA_PCAP_RECORDING, false),
+                pcapPackets = intent.getLongExtra(CitsBridgeService.EXTRA_PCAP_PACKETS, 0),
+                replaying = intent.getBooleanExtra(CitsBridgeService.EXTRA_REPLAYING, false),
+                replayPackets = intent.getLongExtra(CitsBridgeService.EXTRA_REPLAY_PACKETS, 0),
+                discoveredDevices = intent.getLongExtra(CitsBridgeService.EXTRA_DISCOVERED_DEVICES, 0),
+                truncated = intent.getLongExtra(CitsBridgeService.EXTRA_TRUNCATED, 0),
+                protocolErrors = intent.getLongExtra(CitsBridgeService.EXTRA_PROTOCOL_ERRORS, 0),
+                txRequested = intent.getLongExtra(CitsBridgeService.EXTRA_TX_REQUESTED, 0),
+                txSuccessful = intent.getLongExtra(CitsBridgeService.EXTRA_TX_SUCCESSFUL, 0),
+                txFailed = intent.getLongExtra(CitsBridgeService.EXTRA_TX_FAILED, 0),
+                camEnabled = intent.getBooleanExtra(CitsBridgeService.EXTRA_CAM_ENABLED, false),
+                camSent = intent.getLongExtra(CitsBridgeService.EXTRA_CAM_SENT, 0),
+                lastSremState = intent.getStringExtra(CitsBridgeService.EXTRA_SREM_STATE).orEmpty(),
+                lastSremSummary = intent.getStringExtra(CitsBridgeService.EXTRA_SREM_SUMMARY).orEmpty(),
+                lastSremRequestId = intent.getIntExtra(CitsBridgeService.EXTRA_SREM_REQUEST_ID, -1),
+                lastSremIntersectionId = intent.getIntExtra(CitsBridgeService.EXTRA_SREM_INTERSECTION_ID, -1),
+                lastSremInboundLaneId = intent.getIntExtra(CitsBridgeService.EXTRA_SREM_INBOUND_LANE_ID, -1),
+                lastSremOutboundLaneId = intent.getIntExtra(CitsBridgeService.EXTRA_SREM_OUTBOUND_LANE_ID, -1),
+                lastSremUpdatedAtMs = intent.getLongExtra(CitsBridgeService.EXTRA_SREM_UPDATED_AT_MS, 0L),
+                lastTxSummary = intent.getStringExtra(CitsBridgeService.EXTRA_LAST_TX).orEmpty(),
+                lastPacketSummary = intent.getStringExtra(CitsBridgeService.EXTRA_LAST_PACKET).orEmpty(),
+                lastError = intent.getStringExtra(CitsBridgeService.EXTRA_LAST_ERROR).orEmpty(),
+            )
+            intent.getStringExtra(CitsBridgeService.EXTRA_LOG)?.let { logLine = it }
+            intent.serializableExtra<IntersectionSnapshotList>(CitsBridgeService.EXTRA_INTERSECTION_SNAPSHOTS)?.let {
+                intersectionSnapshots = it.snapshots
+                intersectionSnapshot = it.snapshots.firstOrNull()
+            }
+            intent.serializableExtra<IntersectionSnapshot>(CitsBridgeService.EXTRA_INTERSECTION_SNAPSHOT)?.let {
+                intersectionSnapshot = it
+                if (intersectionSnapshots.isEmpty()) intersectionSnapshots = listOf(it)
+            }
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        usbManager = getSystemService(USB_SERVICE) as UsbManager
+        locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+        accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        val prefs = getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE)
+        connectionMode = ConnectionMode.fromWireValue(prefs.getString(PREF_CONNECTION_MODE, null))
+        txApproved = prefs.getBoolean(CitsBridgeService.PREF_TX_APPROVED, false)
+        intersectionSortMode = IntersectionSortMode.fromPreference(
+            prefs.getString(PREF_INTERSECTION_SORT_MODE, null),
+        )
+        mqttUri = prefs.getString(CitsBridgeService.PREF_MQTT_URI, CitsBridgeService.DEFAULT_MQTT_URI).orEmpty()
+        nodeId = prefs.getString(CitsBridgeService.PREF_NODE_ID, null) ?: createAndStoreNodeId()
+        maxQueueLength = prefs.getInt(
+            CitsBridgeService.PREF_MQTT_MAX_QUEUE_LENGTH,
+            CitsBridgeService.DEFAULT_MQTT_MAX_QUEUE_LENGTH,
+        ).toString()
+        maxQueueAgeSeconds = formatQueueAgeSeconds(
+            prefs.getLong(
+                CitsBridgeService.PREF_MQTT_MAX_QUEUE_AGE_MS,
+                CitsBridgeService.DEFAULT_MQTT_MAX_QUEUE_AGE_MS,
+            ),
+        )
+        camStationType = StationType.selectableFromCode(
+            prefs.getInt(CitsBridgeService.PREF_CAM_STATION_TYPE, StationType.PEDESTRIAN.code))
+        sremProfile = SremProfile.fromPreferenceCode(
+            prefs.getInt(CitsBridgeService.PREF_SREM_PROFILE, SremProfile.PEDESTRIAN.preferenceCode),
+        )
+        camIntervalMs = prefs.getInt(
+            CitsBridgeService.PREF_CAM_INTERVAL_MS,
+            CitsBridgeService.DEFAULT_CAM_INTERVAL_MS,
+        ).toString()
+        status = status.copy(
+            discoveredDevices = prefs.getStringSet(CitsBridgeService.PREF_DISCOVERED_MAC_ADDRESSES, emptySet())
+                ?.size
+                ?.toLong()
+                ?: 0L,
+        )
+        registerReceiverCompat(usbPermissionReceiver, IntentFilter(CitsBridgeService.ACTION_USB_PERMISSION))
+        registerReceiverCompat(statusReceiver, IntentFilter(CitsBridgeService.ACTION_STATUS))
+        registerReceiverCompat(usbDeviceReceiver, IntentFilter().apply {
+            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+        })
+        requestNotificationPermission()
+        checkForAppUpdate()
+        refreshDevices()
+        selectedDeviceName = selectedDeviceName ?: devices.firstOrNull()?.deviceName
+        setContent {
+            CitsTheme {
+                CitsApp(
+                    devices = devices.toList(),
+                    selectedDeviceName = selectedDeviceName,
+                    onSelectDevice = { selectedDeviceName = it },
+                    connectionMode = connectionMode,
+                    onConnectionModeChange = {
+                        connectionMode = it
+                        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+                            .putString(PREF_CONNECTION_MODE, it.wireValue)
+                            .apply()
+                    },
+                    mqttUri = mqttUri,
+                    onMqttUriChange = { mqttUri = it },
+                    nodeId = nodeId,
+                    onNodeIdChange = { nodeId = it },
+                    maxQueueLength = maxQueueLength,
+                    onMaxQueueLengthChange = { maxQueueLength = it },
+                    maxQueueAgeSeconds = maxQueueAgeSeconds,
+                    onMaxQueueAgeSecondsChange = { maxQueueAgeSeconds = it },
+                    status = status,
+                    logLine = logLine,
+                    intersectionSnapshots = intersectionSnapshots.ifEmpty { listOfNotNull(intersectionSnapshot) },
+                    intersectionSortMode = intersectionSortMode,
+                    onIntersectionSortModeChange = ::updateIntersectionSortMode,
+                    currentPosition = currentPosition,
+                    bluetoothEnrollmentRunning = bluetoothEnrollmentRunning,
+                    bluetoothEnrollmentMessage = bluetoothEnrollmentMessage,
+                    bluetoothEnrollmentError = bluetoothEnrollmentError,
+                    onRefresh = ::refreshDevices,
+                    onEnrollBluetooth = ::requestBluetoothEnrollment,
+                    onStart = ::requestConnectionThenStart,
+                    onStop = ::stopBridge,
+                    onStartPcap = ::choosePcapFile,
+                    onStopPcap = ::stopPcap,
+                    onStartReplay = ::chooseReplayFile,
+                    onStopReplay = ::stopReplay,
+                    camStationType = camStationType,
+                    onCamStationTypeChange = { camStationType = it },
+                    camIntervalMs = camIntervalMs,
+                    onCamIntervalChange = { camIntervalMs = it },
+                    onConfigureCam = ::configureCam,
+                    sremProfile = sremProfile,
+                    onSremProfileChange = { sremProfile = it },
+                    txApproved = txApproved,
+                    txApprovalPromptState = txApprovalPromptState,
+                    onGrantTxApproval = ::grantTxApproval,
+                    onDismissTxApproval = { txApprovalPromptState = TxApprovalPromptState.Hidden },
+                    onFinishTxApproval = { txApprovalPromptState = TxApprovalPromptState.Hidden },
+                    onRevokeTxApproval = ::revokeTxApproval,
+                    onSendSrem = ::sendSrem,
+                    onIntersectionLocationActiveChange = ::setIntersectionLocationActive,
+                    flashingState = flashingState,
+                    onFlashingPageActive = ::setFlashingPageActive,
+                    onRetryFirmwareRelease = { loadFirmwareRelease(force = true) },
+                    onChooseCustomFirmware = ::chooseCustomFirmware,
+                    onUseReleaseFirmware = ::useReleaseFirmware,
+                    onFlashFirmware = ::requestFirmwareFlash,
+                    onSaveSettings = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds, updatedSremProfile ->
+                        mqttUri = updatedMqttUri
+                        nodeId = updatedNodeId
+                        maxQueueLength = updatedMaxQueueLength
+                        maxQueueAgeSeconds = updatedMaxQueueAgeSeconds
+                        sremProfile = updatedSremProfile
+                        saveSettings(
+                            updatedMqttUri,
+                            updatedNodeId,
+                            updatedMaxQueueLength,
+                            updatedMaxQueueAgeSeconds,
+                            updatedSremProfile,
+                        )
+                    },
+                )
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        refreshDevices()
+        if (!txApproved) startTxShakeDetection()
+        if (wantsIntersectionLocation) {
+            startOrRequestIntersectionLocation()
+        }
+    }
+
+    override fun onPause() {
+        stopTxShakeDetection()
+        stopIntersectionLocationUpdates()
+        super.onPause()
+    }
+
+    override fun onDestroy() {
+        stopIntersectionLocationUpdates()
+        runCatching { unregisterReceiver(usbPermissionReceiver) }
+        runCatching { unregisterReceiver(statusReceiver) }
+        runCatching { unregisterReceiver(usbDeviceReceiver) }
+        super.onDestroy()
+    }
+
+    override fun onSensorChanged(event: SensorEvent) {
+        if (txApproved ||
+            txApprovalPromptState != TxApprovalPromptState.Hidden ||
+            event.sensor.type != Sensor.TYPE_ACCELEROMETER
+        ) return
+        val x = event.values.getOrNull(0) ?: return
+        val y = event.values.getOrNull(1) ?: return
+        val z = event.values.getOrNull(2) ?: return
+        val gForce = sqrt((x * x + y * y + z * z).toDouble()).toFloat() / SensorManager.GRAVITY_EARTH
+        val now = SystemClock.elapsedRealtime()
+        if (gForce >= TX_SHAKE_THRESHOLD_G && now - lastShakeElapsedMs >= TX_SHAKE_COOLDOWN_MS) {
+            lastShakeElapsedMs = now
+            txApprovalPromptState = TxApprovalPromptState.Ready
+            logLine = "Shake detected; TX approval slider unlocked"
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+    private fun handleDocumentResult(result: ActivityResult, onUriSelected: (Uri) -> Unit) {
+        if (result.resultCode != RESULT_OK) return
+        val data = result.data ?: return
+        val uri = data.data ?: return
+        val flags = data.flags and
+            (Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
+        runCatching { contentResolver.takePersistableUriPermission(uri, flags) }
+        onUriSelected(uri)
+    }
+
+    private fun requestBluetoothEnrollment() {
+        if (status.running) {
+            bluetoothEnrollmentRunning = false
+            bluetoothEnrollmentError = true
+            bluetoothEnrollmentMessage = "Stop the active connection before enrollment."
+            return
+        }
+        bluetoothEnrollmentRunning = true
+        bluetoothEnrollmentError = false
+        bluetoothEnrollmentMessage = "Preparing Bluetooth enrollment…"
+        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        val missing = permissions.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isNotEmpty()) {
+            enrollmentAfterBluetoothPermission = true
+            bluetoothEnrollmentMessage = "Bluetooth permission is required to enroll this phone."
+            bluetoothPermissionLauncher.launch(missing.toTypedArray())
+            return
+        }
+        requestEnrollmentUsb()
+    }
+
+    private fun requestEnrollmentUsb() {
+        val device = devices.firstOrNull { it.deviceName == selectedDeviceName } ?: devices.firstOrNull()
+        if (device == null) {
+            bluetoothEnrollmentRunning = false
+            bluetoothEnrollmentError = true
+            bluetoothEnrollmentMessage = "Connect CITS-to-go by USB, then try again."
+            return
+        }
+        selectedDeviceName = device.deviceName
+        if (usbManager.hasPermission(device)) {
+            startBluetoothEnrollment(device)
+            return
+        }
+        enrollmentAfterUsbPermission = true
+        startAfterPermission = device
+        val intent = Intent(CitsBridgeService.ACTION_USB_PERMISSION).setPackage(packageName)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+        val pendingIntent = PendingIntent.getBroadcast(this, 22, intent, flags)
+        usbManager.requestPermission(device, pendingIntent)
+        bluetoothEnrollmentMessage = "USB permission is required to enroll this phone."
+    }
+
+    private fun startBluetoothEnrollment(device: UsbDevice) {
+        bluetoothEnrollmentRunning = true
+        bluetoothEnrollmentError = false
+        bluetoothEnrollmentMessage = "Enrolling this phone… Keep USB connected."
+        Thread {
+            val result = runCatching { BluetoothEnrollment(this).enroll(device) }
+            runOnUiThread {
+                bluetoothEnrollmentRunning = false
+                result.fold(
+                    onSuccess = {
+                        bluetoothEnrollmentError = false
+                        bluetoothEnrollmentMessage = "Bluetooth enrollment complete. This phone can now connect securely."
+                        logLine = "Bluetooth enrollment complete"
+                    },
+                    onFailure = { error ->
+                        bluetoothEnrollmentError = true
+                        bluetoothEnrollmentMessage = enrollmentErrorMessage(error)
+                        logLine = bluetoothEnrollmentMessage
+                    },
+                )
+            }
+        }.start()
+    }
+
+    private fun enrollmentErrorMessage(error: Throwable): String {
+        val detail = error.message?.trim().orEmpty()
+        return when {
+            detail.contains("turned off", ignoreCase = true) -> "Turn on Bluetooth, then try again."
+            detail.contains("not supported", ignoreCase = true) -> "Bluetooth is not supported on this phone."
+            detail.contains("scanner unavailable", ignoreCase = true) -> "Bluetooth scanning is unavailable. Turn Bluetooth off and on, then retry."
+            detail.contains("timed out", ignoreCase = true) -> "Enrollment timed out. Keep USB connected and the device nearby, then retry."
+            detail.contains("rejected", ignoreCase = true) || detail.contains("pairing", ignoreCase = true) -> "Bluetooth pairing failed or was cancelled. Retry enrollment."
+            detail.contains("Firmware refused", ignoreCase = true) -> "The device refused enrollment. Reconnect USB and try again."
+            detail.contains("acknowledge", ignoreCase = true) -> "The device did not acknowledge enrollment. Check the USB connection and firmware."
+            detail.contains("USB", ignoreCase = true) -> "USB enrollment failed. Reconnect the device and try again."
+            detail.isNotBlank() -> "Enrollment failed: $detail"
+            else -> "Bluetooth enrollment failed. Try again."
+        }
+    }
+
+    private fun requestConnectionThenStart() {
+        if (connectionMode == ConnectionMode.BLUETOOTH) {
+            requestBluetoothThenStart()
+        } else {
+            requestUsbThenStart()
+        }
+    }
+
+    private fun requestBluetoothThenStart() {
+        saveSettings()
+        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        val missing = permissions.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+        if (missing.isEmpty()) {
+            startBridge()
+        } else {
+            bluetoothPermissionLauncher.launch(missing.toTypedArray())
+            logLine = "Requesting Bluetooth permission"
+        }
+    }
+
+    private fun requestUsbThenStart() {
+        saveSettings()
+        val device = devices.firstOrNull { it.deviceName == selectedDeviceName } ?: devices.firstOrNull()
+        if (device == null) {
+            startBridge()
+            return
+        }
+        selectedDeviceName = device.deviceName
+        if (usbManager.hasPermission(device)) {
+            startBridge()
+            return
+        }
+        startAfterPermission = device
+        val intent = Intent(CitsBridgeService.ACTION_USB_PERMISSION).setPackage(packageName)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+        val pendingIntent = PendingIntent.getBroadcast(this, 20, intent, flags)
+        usbManager.requestPermission(device, pendingIntent)
+        logLine = "Requesting USB permission"
+    }
+
+    private fun setFlashingPageActive(active: Boolean) {
+        if (!active) return
+        refreshDevices()
+        updateFlashingDeviceState()
+        if (firmwareRelease == null && customFirmwareUri == null && !releaseLookupRunning) loadFirmwareRelease()
+    }
+
+    private fun loadFirmwareRelease(force: Boolean = false) {
+        if (releaseLookupRunning || (!force && firmwareRelease != null)) return
+        releaseLookupRunning = true
+        firmwareRelease = null
+        flashingState = FirmwareFlashingState.initial(BuildConfig.VERSION_NAME)
+        Thread {
+            runCatching { CodebergReleaseClient().findFirmware(BuildConfig.VERSION_NAME) }
+                .onSuccess { release ->
+                    runOnUiThread {
+                        releaseLookupRunning = false
+                        firmwareRelease = release
+                        if (customFirmwareUri != null) return@runOnUiThread
+                        flashingState = flashingState.copy(
+                            releaseTag = release.tag,
+                            firmwareName = release.firmwareName,
+                            customFirmware = false,
+                            phase = FirmwareFlashingPhase.WaitingForDevice,
+                            message = "Firmware release found. Connect an ESP32-C5 over USB.",
+                        )
+                        updateFlashingDeviceState()
+                    }
+                }
+                .onFailure { error ->
+                    runOnUiThread {
+                        releaseLookupRunning = false
+                        if (customFirmwareUri != null) return@runOnUiThread
+                        flashingState = flashingState.copy(
+                            phase = FirmwareFlashingPhase.Error,
+                            message = error.message ?: "Unable to load the matching Codeberg release",
+                        )
+                    }
+                }
+        }.start()
+    }
+
+    private fun updateFlashingDeviceState() {
+        if (flashingState.busy || (firmwareRelease == null && customFirmwareUri == null)) return
+        val device = connectedEspressifDevice()
+        val sourceMessage = if (customFirmwareUri != null) {
+            "Custom firmware selected. Connect an ESP32-C5 over USB."
+        } else {
+            "Firmware release found. Connect an ESP32-C5 over USB."
+        }
+        flashingState = if (device == null) {
+            flashingState.copy(
+                deviceName = null,
+                phase = FirmwareFlashingPhase.WaitingForDevice,
+                message = sourceMessage,
+                progress = 0f,
+            )
+        } else {
+            flashingState.copy(
+                deviceName = device.productName ?: device.deviceName,
+                phase = FirmwareFlashingPhase.Ready,
+                message = "ESP32-C5 USB interface detected. Pull the slider fully to flash.",
+                progress = 0f,
+            )
+        }
+    }
+
+    private fun requestFirmwareFlash() {
+        val device = connectedEspressifDevice() ?: run {
+            updateFlashingDeviceState()
+            return
+        }
+        if (status.running) {
+            flashingState = flashingState.copy(
+                phase = FirmwareFlashingPhase.Error,
+                message = "Stop the receiver on the Home page before flashing.",
+            )
+            return
+        }
+        if (!usbManager.hasPermission(device)) {
+            flashAfterPermission = true
+            val intent = Intent(CitsBridgeService.ACTION_USB_PERMISSION).setPackage(packageName)
+            val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+            usbManager.requestPermission(device, PendingIntent.getBroadcast(this, 21, intent, flags))
+            flashingState = flashingState.copy(message = "Grant USB permission to continue flashing.")
+            return
+        }
+        startFirmwareFlash(device)
+    }
+
+    private fun startFirmwareFlash(device: UsbDevice) {
+        val customUri = customFirmwareUri
+        val release = firmwareRelease
+        if (customUri == null && release == null) return
+        if (flashingState.busy) return
+        flashingState = flashingState.copy(
+            phase = FirmwareFlashingPhase.Downloading,
+            message = if (customUri != null) {
+                "Reading ${flashingState.firmwareName ?: "custom firmware"}…"
+            } else {
+                "Downloading and verifying ${release!!.firmwareName}…"
+            },
+            progress = 0f,
+        )
+        Thread {
+            runCatching {
+                val firmware = if (customUri != null) {
+                    contentResolver.openInputStream(customUri)?.use { input ->
+                        FirmwareFileReader.read(input)
+                    } ?: throw java.io.IOException("Unable to open the custom firmware file")
+                } else {
+                    CodebergReleaseClient().downloadAndVerify(release!!) { progress ->
+                        runOnUiThread { flashingState = flashingState.copy(progress = progress * 0.2f) }
+                    }
+                }
+                runOnUiThread {
+                    flashingState = flashingState.copy(
+                        phase = FirmwareFlashingPhase.Flashing,
+                        message = "Flashing ESP32-C5. Keep the cable connected…",
+                        progress = 0.2f,
+                    )
+                }
+                UsbCdcSerial(usbManager, device).use { serial ->
+                    serial.open(115_200)
+                    val transport = object : EspFlashTransport {
+                        override fun write(data: ByteArray) = serial.writeAll(data, 10_000)
+                        override fun read(buffer: ByteArray, timeoutMs: Int): Int = serial.read(buffer, timeoutMs)
+                        override fun setControlLines(dtr: Boolean, rts: Boolean) = serial.setControlLines(dtr, rts)
+                    }
+                    Esp32RomFlasher(transport).flash(firmware) { progress ->
+                        runOnUiThread { flashingState = flashingState.copy(progress = 0.2f + progress * 0.8f) }
+                    }
+                }
+            }.onSuccess {
+                runOnUiThread {
+                    flashingState = flashingState.copy(
+                        phase = FirmwareFlashingPhase.Complete,
+                        message = "Firmware flashed and verified successfully.",
+                        progress = 1f,
+                    )
+                }
+            }.onFailure { error ->
+                runOnUiThread {
+                    flashingState = flashingState.copy(
+                        phase = FirmwareFlashingPhase.Error,
+                        message = error.message ?: "Firmware flashing failed",
+                    )
+                }
+            }
+        }.start()
+    }
+
+    private fun chooseCustomFirmware() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("application/octet-stream")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        openFirmwareLauncher.launch(intent)
+    }
+
+    private fun selectCustomFirmware(uri: Uri) {
+        customFirmwareUri = uri
+        val name = runCatching {
+            contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) cursor.getString(0) else null
+            }
+        }.getOrNull() ?: uri.lastPathSegment ?: "firmware.bin"
+        flashingState = flashingState.copy(
+            releaseTag = null,
+            firmwareName = name,
+            customFirmware = true,
+            phase = FirmwareFlashingPhase.WaitingForDevice,
+            message = "Custom firmware selected. Connect an ESP32-C5 over USB.",
+            progress = 0f,
+        )
+        updateFlashingDeviceState()
+    }
+
+    private fun useReleaseFirmware() {
+        if (flashingState.busy) return
+        customFirmwareUri = null
+        val release = firmwareRelease
+        if (release == null) {
+            flashingState = FirmwareFlashingState.initial(BuildConfig.VERSION_NAME)
+            loadFirmwareRelease(force = true)
+            return
+        }
+        flashingState = flashingState.copy(
+            releaseTag = release.tag,
+            firmwareName = release.firmwareName,
+            customFirmware = false,
+            phase = FirmwareFlashingPhase.WaitingForDevice,
+            message = "Firmware release found. Connect an ESP32-C5 over USB.",
+            progress = 0f,
+        )
+        updateFlashingDeviceState()
+    }
+
+    private fun connectedEspressifDevice(): UsbDevice? = devices.firstOrNull {
+        it.vendorId == ESPRESSIF_USB_VENDOR_ID && it.productId == ESPRESSIF_USB_JTAG_SERIAL_PRODUCT_ID
+    }
+
+    private fun startBridge() {
+        saveSettings()
+        val intent = Intent(this, CitsBridgeService::class.java)
+            .setAction(CitsBridgeService.ACTION_START)
+            .putExtra(CitsBridgeService.EXTRA_CONNECTION_MODE, connectionMode.wireValue)
+            .putExtra(CitsBridgeService.EXTRA_DEVICE_NAME, selectedDeviceName.orEmpty())
+            .putExtra(CitsBridgeService.EXTRA_MQTT_URI, mqttUri)
+            .putExtra(CitsBridgeService.EXTRA_NODE_ID, nodeId)
+            .putExtra(CitsBridgeService.EXTRA_MQTT_MAX_QUEUE_LENGTH, parseMaxQueueLength(maxQueueLength))
+            .putExtra(CitsBridgeService.EXTRA_MQTT_MAX_QUEUE_AGE_MS, parseMaxQueueAgeMs(maxQueueAgeSeconds))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
+    }
+
+    private fun stopBridge() {
+        sendServiceIntent(CitsBridgeService.ACTION_STOP)
+    }
+
+    private fun choosePcapFile() {
+        val title = "cits-${System.currentTimeMillis()}.pcap"
+        val intent = Intent(Intent.ACTION_CREATE_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("application/vnd.tcpdump.pcap")
+            .putExtra(Intent.EXTRA_TITLE, title)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        createPcapLauncher.launch(intent)
+    }
+
+    private fun startPcap(uri: Uri) {
+        val intent = Intent(this, CitsBridgeService::class.java)
+            .setAction(CitsBridgeService.ACTION_START_PCAP)
+            .putExtra(CitsBridgeService.EXTRA_PCAP_URI, uri.toString())
+        startService(intent)
+    }
+
+    private fun stopPcap() {
+        sendServiceIntent(CitsBridgeService.ACTION_STOP_PCAP)
+    }
+
+    private fun chooseReplayFile() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("*/*")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        openPcapLauncher.launch(intent)
+    }
+
+    private fun startReplay(uri: Uri) {
+        saveSettings()
+        val intent = Intent(this, CitsBridgeService::class.java)
+            .setAction(CitsBridgeService.ACTION_START_REPLAY)
+            .putExtra(CitsBridgeService.EXTRA_PCAP_URI, uri.toString())
+            .putExtra(CitsBridgeService.EXTRA_MQTT_URI, mqttUri)
+            .putExtra(CitsBridgeService.EXTRA_NODE_ID, nodeId)
+            .putExtra(CitsBridgeService.EXTRA_MQTT_MAX_QUEUE_LENGTH, parseMaxQueueLength(maxQueueLength))
+            .putExtra(CitsBridgeService.EXTRA_MQTT_MAX_QUEUE_AGE_MS, parseMaxQueueAgeMs(maxQueueAgeSeconds))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
+    }
+
+    private fun stopReplay() {
+        sendServiceIntent(CitsBridgeService.ACTION_STOP_REPLAY)
+    }
+
+    private fun configureCam(enabled: Boolean) {
+        if (enabled && !txApproved) {
+            logLine = "TX approval is required before CAM broadcast"
+            return
+        }
+        if (enabled &&
+            checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED
+        ) {
+            enableCamAfterPermission = true
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                ),
+            )
+            return
+        }
+        val interval = camIntervalMs.toIntOrNull()
+            ?.coerceIn(CitsBridgeService.MIN_CAM_INTERVAL_MS, CitsBridgeService.MAX_CAM_INTERVAL_MS)
+            ?: CitsBridgeService.DEFAULT_CAM_INTERVAL_MS
+        camIntervalMs = interval.toString()
+        sendServiceIntent(CitsBridgeService.ACTION_CONFIGURE_CAM) {
+            putExtra(CitsBridgeService.EXTRA_CAM_ENABLED, enabled)
+            putExtra(CitsBridgeService.EXTRA_CAM_STATION_TYPE, camStationType.code)
+            putExtra(CitsBridgeService.EXTRA_CAM_INTERVAL_MS, interval)
+        }
+    }
+
+    private fun sendSrem(snapshot: IntersectionSnapshot, inboundLaneId: Int, outboundLaneId: Int) {
+        if (!txApproved) {
+            logLine = "TX approval is required before SREM"
+            return
+        }
+        val map = snapshot.map ?: run {
+            logLine = "SREM requires MAPEM geometry"
+            return
+        }
+        val position = currentPosition ?: run {
+            logLine = "SREM requires a fresh location"
+            return
+        }
+        val nowMs = System.currentTimeMillis()
+        if (position.timeMs !in (nowMs - SREM_MAX_LOCATION_AGE_MS)..(nowMs + 1_000L)) {
+            logLine = "SREM requires a fresh location"
+            return
+        }
+        sendServiceIntent(CitsBridgeService.ACTION_SEND_SREM) {
+            map.key.region?.let { putExtra(CitsBridgeService.EXTRA_SREM_REGION, it) }
+            putExtra(CitsBridgeService.EXTRA_SREM_INTERSECTION_ID, map.key.id)
+            putExtra(CitsBridgeService.EXTRA_SREM_INBOUND_LANE_ID, inboundLaneId)
+            putExtra(CitsBridgeService.EXTRA_SREM_OUTBOUND_LANE_ID, outboundLaneId)
+            putExtra(CitsBridgeService.EXTRA_SREM_LATITUDE_E7, position.latitudeE7)
+            putExtra(CitsBridgeService.EXTRA_SREM_LONGITUDE_E7, position.longitudeE7)
+            putExtra(CitsBridgeService.EXTRA_SREM_POSITION_TIME_MS, position.timeMs)
+            putExtra(CitsBridgeService.EXTRA_SREM_HEADING, position.heading)
+            putExtra(CitsBridgeService.EXTRA_SREM_POSITION_ACCURATE, position.accuracyM != null)
+            putExtra(CitsBridgeService.EXTRA_SREM_PROFILE, sremProfile.preferenceCode)
+            putExtra(
+                CitsBridgeService.EXTRA_SREM_PACKAGE_REQUEST_TIME_MS,
+                sremPackageRequestTimeMs(map, inboundLaneId, position, sremProfile, nowMs),
+            )
+        }
+        logLine = "SREM request submitted"
+    }
+
+    private fun grantTxApproval() {
+        txApproved = true
+        txApprovalPromptState = TxApprovalPromptState.Granting
+        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+            .putBoolean(CitsBridgeService.PREF_TX_APPROVED, true)
+            .apply()
+        stopTxShakeDetection()
+        logLine = "TX approval granted"
+    }
+
+    private fun revokeTxApproval() {
+        txApproved = false
+        txApprovalPromptState = TxApprovalPromptState.Hidden
+        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+            .putBoolean(CitsBridgeService.PREF_TX_APPROVED, false)
+            .apply()
+        if (status.running || status.camEnabled) {
+            sendServiceIntent(CitsBridgeService.ACTION_REVOKE_TX_APPROVAL)
+        }
+        startTxShakeDetection()
+        logLine = "TX approval revoked"
+    }
+
+    private fun startTxShakeDetection() {
+        val sensor = accelerometer ?: run {
+            logLine = "Accelerometer unavailable; TX approval cannot be granted on this device"
+            return
+        }
+        sensorManager.registerListener(this, sensor, SensorManager.SENSOR_DELAY_UI)
+    }
+
+    private fun stopTxShakeDetection() {
+        if (::sensorManager.isInitialized) {
+            sensorManager.unregisterListener(this)
+        }
+    }
+
+    private fun setIntersectionLocationActive(active: Boolean) {
+        wantsIntersectionLocation = active
+        if (active) {
+            startOrRequestIntersectionLocation()
+        } else {
+            stopIntersectionLocationUpdates()
+        }
+    }
+
+    private fun updateIntersectionSortMode(sortMode: IntersectionSortMode) {
+        intersectionSortMode = sortMode
+        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+            .putString(PREF_INTERSECTION_SORT_MODE, sortMode.name)
+            .apply()
+    }
+
+    private fun startOrRequestIntersectionLocation() {
+        if (!hasLocationPermission()) {
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION,
+                ),
+            )
+            return
+        }
+        startIntersectionLocationUpdates()
+    }
+
+    private fun startIntersectionLocationUpdates() {
+        if (!hasLocationPermission() || intersectionLocationActive) return
+        var requestedProvider = false
+        runCatching {
+            listOf(LocationManager.GPS_PROVIDER, LocationManager.NETWORK_PROVIDER).forEach { provider ->
+                runCatching { locationManager.getLastKnownLocation(provider) }
+                    .getOrNull()
+                    ?.let { updateCurrentPosition(it) }
+                if (locationManager.isProviderEnabled(provider)) {
+                    locationManager.requestLocationUpdates(
+                        provider,
+                        INTERSECTION_LOCATION_MIN_TIME_MS,
+                        0f,
+                        intersectionLocationListener,
+                        Looper.getMainLooper(),
+                    )
+                    requestedProvider = true
+                }
+            }
+        }.onFailure {
+            logLine = "Location unavailable: ${it.message}"
+            return
+        }
+        intersectionLocationActive = requestedProvider
+        if (!requestedProvider) {
+            logLine = "Location provider disabled; position marker unavailable"
+        }
+    }
+
+    private fun stopIntersectionLocationUpdates() {
+        if (!::locationManager.isInitialized || !intersectionLocationActive) return
+        runCatching { locationManager.removeUpdates(intersectionLocationListener) }
+        intersectionLocationActive = false
+    }
+
+    private fun updateCurrentPosition(location: Location) {
+        val previous = currentPosition
+        if (previous == null ||
+            location.time >= previous.timeMs ||
+            (location.hasAccuracy() && (previous.accuracyM == null || location.accuracy < previous.accuracyM))
+        ) {
+            currentPosition = DevicePosition.from(location)
+        }
+    }
+
+    private fun hasLocationPermission(): Boolean =
+        checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
+            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+
+    private fun sendServiceIntent(action: String, configure: Intent.() -> Unit = {}) {
+        val intent = Intent(this, CitsBridgeService::class.java).setAction(action).apply(configure)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && action == CitsBridgeService.ACTION_START) {
+            startForegroundService(intent)
+        } else {
+            startService(intent)
+        }
+    }
+
+    private fun refreshDevices() {
+        devices.clear()
+        devices.addAll(usbManager.deviceList.values.sortedWith(compareByDescending<UsbDevice> { it.vendorId == 0x303A }.thenBy { it.deviceName }))
+        if (selectedDeviceName == null || devices.none { it.deviceName == selectedDeviceName }) {
+            selectedDeviceName = devices.firstOrNull()?.deviceName
+        }
+    }
+
+    private fun saveSettings(
+        mqttUriValue: String = mqttUri,
+        nodeIdValue: String = nodeId,
+        maxQueueLengthValue: String = maxQueueLength,
+        maxQueueAgeSecondsValue: String = maxQueueAgeSeconds,
+        sremProfileValue: SremProfile = sremProfile,
+    ) {
+        val parsedMaxQueueLength = parseMaxQueueLength(maxQueueLengthValue)
+        val parsedMaxQueueAgeMs = parseMaxQueueAgeMs(maxQueueAgeSecondsValue)
+        mqttUri = mqttUriValue.trim()
+        nodeId = nodeIdValue.trim()
+        maxQueueLength = parsedMaxQueueLength.toString()
+        maxQueueAgeSeconds = formatQueueAgeSeconds(parsedMaxQueueAgeMs)
+        sremProfile = sremProfileValue
+        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+            .putString(CitsBridgeService.PREF_MQTT_URI, mqttUri)
+            .putString(CitsBridgeService.PREF_NODE_ID, nodeId)
+            .putInt(CitsBridgeService.PREF_MQTT_MAX_QUEUE_LENGTH, parsedMaxQueueLength)
+            .putLong(CitsBridgeService.PREF_MQTT_MAX_QUEUE_AGE_MS, parsedMaxQueueAgeMs)
+            .putInt(CitsBridgeService.PREF_SREM_PROFILE, sremProfile.preferenceCode)
+            .apply()
+    }
+
+    private fun parseMaxQueueLength(value: String): Int =
+        value.trim().toIntOrNull()?.coerceAtLeast(1) ?: CitsBridgeService.DEFAULT_MQTT_MAX_QUEUE_LENGTH
+
+    private fun parseMaxQueueAgeMs(value: String): Long =
+        value.trim().toDoubleOrNull()
+            ?.takeIf { it.isFinite() }
+            ?.let { (it * 1_000.0).roundToLong().coerceAtLeast(0L) }
+            ?: CitsBridgeService.DEFAULT_MQTT_MAX_QUEUE_AGE_MS
+
+    private fun formatQueueAgeSeconds(ageMs: Long): String {
+        if (ageMs % 1_000L == 0L) return (ageMs / 1_000L).toString()
+        return String.format(Locale.US, "%.3f", ageMs / 1_000.0).trimEnd('0').trimEnd('.')
+    }
+
+    private fun createAndStoreNodeId(): String {
+        val bytes = ByteArray(6)
+        SecureRandom().nextBytes(bytes)
+        val generated = bytes.joinToString("") { "%02x".format(it) }
+        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+            .putString(CitsBridgeService.PREF_NODE_ID, generated)
+            .apply()
+        return generated
+    }
+
+    private fun checkForAppUpdate() {
+        val prefs = getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE)
+        Thread {
+            val update = runCatching { CodebergAppUpdateChecker().findUpdate(BuildConfig.VERSION_NAME) }.getOrNull()
+                ?: return@Thread
+            if (prefs.getString(PREF_LAST_NOTIFIED_UPDATE_TAG, null) == update.tag) return@Thread
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) return@Thread
+            val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    UPDATE_CHANNEL_ID,
+                    "App updates",
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ),
+            )
+            val releaseIntent = Intent(Intent.ACTION_VIEW, Uri.parse(update.releaseUrl))
+            val pendingIntent = PendingIntent.getActivity(
+                this,
+                0,
+                releaseIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val notification = Notification.Builder(this, UPDATE_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle("C-ITS to go ${update.version} is available")
+                .setContentText("Tap to open the new Codeberg release.")
+                .setStyle(Notification.BigTextStyle().bigText("A newer C-ITS to go release (${update.version}) is available on Codeberg. Tap to view the release and download the update."))
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .build()
+            manager.notify(UPDATE_NOTIFICATION_ID, notification)
+            prefs.edit().putString(PREF_LAST_NOTIFIED_UPDATE_TAG, update.tag).apply()
+        }.start()
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
+    private fun registerReceiverCompat(receiver: BroadcastReceiver, filter: IntentFilter) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(receiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(receiver, filter)
+        }
+    }
+
+    companion object {
+        private const val PREF_CONNECTION_MODE = "connectionMode"
+        private const val PREF_INTERSECTION_SORT_MODE = "intersection_sort_mode"
+        private const val INTERSECTION_LOCATION_MIN_TIME_MS = 500L
+        private const val TX_SHAKE_THRESHOLD_G = 2.7f
+        private const val TX_SHAKE_COOLDOWN_MS = 1_200L
+        private const val ESPRESSIF_USB_VENDOR_ID = 0x303a
+        private const val ESPRESSIF_USB_JTAG_SERIAL_PRODUCT_ID = 0x1001
+        private const val PREF_LAST_NOTIFIED_UPDATE_TAG = "last_notified_app_update_tag"
+        private const val UPDATE_CHANNEL_ID = "app_updates"
+        private const val UPDATE_NOTIFICATION_ID = 4102
+    }
+}
+
+private enum class FirmwareFlashingPhase {
+    LoadingRelease,
+    WaitingForDevice,
+    Ready,
+    Downloading,
+    Flashing,
+    Complete,
+    Error,
+}
+
+private data class FirmwareFlashingState(
+    val appVersion: String,
+    val releaseTag: String? = null,
+    val firmwareName: String? = null,
+    val customFirmware: Boolean = false,
+    val deviceName: String? = null,
+    val phase: FirmwareFlashingPhase = FirmwareFlashingPhase.LoadingRelease,
+    val message: String = "Looking for a matching Codeberg release…",
+    val progress: Float = 0f,
+) {
+    val busy: Boolean get() = phase == FirmwareFlashingPhase.Downloading || phase == FirmwareFlashingPhase.Flashing
+
+    companion object {
+        fun initial(appVersion: String) = FirmwareFlashingState(appVersion = appVersion)
+    }
+}
+
+private data class DevicePosition(
+    val latitudeE7: Int,
+    val longitudeE7: Int,
+    val accuracyM: Float?,
+    val speedMetersPerSecond: Float?,
+    val heading: Int,
+    val timeMs: Long,
+) {
+    companion object {
+        fun from(location: Location): DevicePosition = DevicePosition(
+            latitudeE7 = (location.latitude * 10_000_000.0).toInt(),
+            longitudeE7 = (location.longitude * 10_000_000.0).toInt(),
+            accuracyM = location.takeIf { it.hasAccuracy() }?.accuracy,
+            speedMetersPerSecond = location.takeIf { it.hasSpeed() && it.speed >= 0.5f }?.speed,
+            heading = location.takeIf { it.hasBearing() }
+                ?.let { (it.bearing.mod(360f) * 10f).roundToLong().toInt().coerceIn(0, 3_600) }
+                ?: 0,
+            timeMs = location.time,
+        )
+    }
+}

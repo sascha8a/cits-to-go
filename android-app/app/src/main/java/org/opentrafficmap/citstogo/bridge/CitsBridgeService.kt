@@ -8,6 +8,7 @@ import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.graphics.drawable.Icon
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.content.pm.PackageManager
@@ -43,6 +44,7 @@ import org.opentrafficmap.citstogo.protocol.SerialPacketReader
 import org.opentrafficmap.citstogo.srem.SremPosition
 import org.opentrafficmap.citstogo.srem.SremProfile
 import org.opentrafficmap.citstogo.srem.SremRequest
+import org.opentrafficmap.citstogo.util.parcelableExtra
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
@@ -119,7 +121,7 @@ class CitsBridgeService : Service() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
-                    val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+                    val device = intent.parcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
                     if (device != null) {
                         handleDiscoveredDevice(device)
                         selectedDeviceName = device.deviceName
@@ -127,7 +129,7 @@ class CitsBridgeService : Service() {
                     if (connectionWanted && connectionMode == ConnectionMode.USB && serial == null) scheduleConnectionReconnect(0)
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
-                    val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+                    val device = intent.parcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
                     if (device == null || device.deviceName == selectedDeviceName) {
                         closeSerial("USB device detached")
                         if (connectionWanted && connectionMode == ConnectionMode.USB) scheduleConnectionReconnect(2_000)
@@ -1317,7 +1319,13 @@ class CitsBridgeService : Service() {
             .setStyle(Notification.BigTextStyle().bigText(content))
             .setOngoing(true)
             .setContentIntent(openPi)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop", stopPi)
+            .addAction(
+                Notification.Action.Builder(
+                    Icon.createWithResource(this, android.R.drawable.ic_menu_close_clear_cancel),
+                    "Stop",
+                    stopPi,
+                ).build(),
+            )
             .build()
     }
 
