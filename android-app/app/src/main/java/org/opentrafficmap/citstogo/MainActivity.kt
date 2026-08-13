@@ -1,6 +1,9 @@
 package org.opentrafficmap.citstogo
 
 import android.Manifest
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -29,6 +32,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculateCentroid
@@ -81,10 +85,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -102,7 +102,9 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
@@ -140,6 +142,9 @@ import org.opentrafficmap.citstogo.intersection.secondsUntilChange
 import org.opentrafficmap.citstogo.intersection.resolveSremLaneDirection
 import org.opentrafficmap.citstogo.srem.SremProfile
 import org.opentrafficmap.citstogo.srem.estimateSremRequestTimeMs
+import org.opentrafficmap.citstogo.ui.DragConfirmDirection
+import org.opentrafficmap.citstogo.ui.DragConfirmSlider
+import org.opentrafficmap.citstogo.update.CodebergAppUpdateChecker
 import java.security.SecureRandom
 import java.util.Locale
 import kotlin.math.cos
@@ -337,6 +342,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
         })
         requestNotificationPermission()
+        checkForAppUpdate()
         refreshDevices()
         selectedDeviceName = selectedDeviceName ?: devices.firstOrNull()?.deviceName
         setContent {
@@ -1158,6 +1164,43 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         return generated
     }
 
+    private fun checkForAppUpdate() {
+        val prefs = getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE)
+        Thread {
+            val update = runCatching { CodebergAppUpdateChecker().findUpdate(BuildConfig.VERSION_NAME) }.getOrNull()
+                ?: return@Thread
+            if (prefs.getString(PREF_LAST_NOTIFIED_UPDATE_TAG, null) == update.tag) return@Thread
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            ) return@Thread
+            val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(
+                NotificationChannel(
+                    UPDATE_CHANNEL_ID,
+                    "App updates",
+                    NotificationManager.IMPORTANCE_DEFAULT,
+                ),
+            )
+            val releaseIntent = Intent(Intent.ACTION_VIEW, Uri.parse(update.releaseUrl))
+            val pendingIntent = PendingIntent.getActivity(
+                this,
+                0,
+                releaseIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val notification = Notification.Builder(this, UPDATE_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle("C-ITS to go ${update.version} is available")
+                .setContentText("Tap to open the new Codeberg release.")
+                .setStyle(Notification.BigTextStyle().bigText("A newer C-ITS to go release (${update.version}) is available on Codeberg. Tap to view the release and download the update."))
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .build()
+            manager.notify(UPDATE_NOTIFICATION_ID, notification)
+            prefs.edit().putString(PREF_LAST_NOTIFIED_UPDATE_TAG, update.tag).apply()
+        }.start()
+    }
+
     private fun requestNotificationPermission() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
@@ -1188,6 +1231,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         private const val TX_SHAKE_COOLDOWN_MS = 1_200L
         private const val ESPRESSIF_USB_VENDOR_ID = 0x303a
         private const val ESPRESSIF_USB_JTAG_SERIAL_PRODUCT_ID = 0x1001
+        private const val PREF_LAST_NOTIFIED_UPDATE_TAG = "last_notified_app_update_tag"
+        private const val UPDATE_CHANNEL_ID = "app_updates"
+        private const val UPDATE_NOTIFICATION_ID = 4102
     }
 }
 
@@ -1476,6 +1522,7 @@ private fun CitsApp(
                                 )
                             },
                         )
+                        AppPage.About -> AboutPage()
                     }
                 }
             }
@@ -1504,6 +1551,7 @@ private enum class AppPage(val title: String) {
     IntersectionView("Intersection View"),
     Flashing("Flashing"),
     Settings("Settings"),
+    About("About"),
     ;
 
     fun visibleWithTxApproval(txApproved: Boolean): Boolean = when (this) {
@@ -1834,92 +1882,24 @@ private fun TxApprovalSlider(
     enabled: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    var sliderSize by remember { mutableStateOf(IntSize.Zero) }
     val onDragStateChange = LocalSliderDragStateChange.current
-    val constrainedPosition = position.coerceIn(0f, 1f)
-    Canvas(
-        modifier = modifier
-            .height(96.dp)
-            .onSizeChanged { sliderSize = it }
-            .pointerInput(enabled, sliderSize.width) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                    val width = sliderSize.width.toFloat()
-                    if (!enabled || width <= 0f) return@awaitEachGesture
-                    val thumbRadius = 30.dp.toPx()
-                    val startX = thumbRadius
-                    val endX = width - thumbRadius
-                    val thumbX = startX + (endX - startX) * position.coerceIn(0f, 1f)
-                    val hitSlop = 18.dp.toPx()
-                    if (kotlin.math.abs(down.position.x - thumbX) > thumbRadius + hitSlop) {
-                        return@awaitEachGesture
-                    }
-                    down.consume()
-                    onDragStateChange(true)
-                    try {
-                        val startPosition = position.coerceIn(0f, 1f)
-                        val downX = down.position.x
-                        while (true) {
-                            val event = awaitPointerEvent(PointerEventPass.Initial)
-                            event.changes.forEach { it.consume() }
-                            val active = event.changes.firstOrNull { it.pressed }
-                            if (active == null) break
-                            val dragFraction = (active.position.x - downX) / (endX - startX)
-                            onPositionChange((startPosition + dragFraction).coerceIn(0f, 1f))
-                        }
-                    } finally {
-                        onDragStateChange(false)
-                    }
-                }
-            },
-    ) {
-        val trackHeight = 66.dp.toPx()
-        val thumbRadius = 30.dp.toPx()
-        val centerY = size.height / 2f
-        val startX = thumbRadius
-        val endX = size.width - thumbRadius
-        val thumbX = startX + (endX - startX) * constrainedPosition
-        drawLine(
-            color = if (enabled) Color(0xFFFECACA) else Color(0xFFFEE2E2),
-            start = Offset(startX, centerY),
-            end = Offset(endX, centerY),
-            strokeWidth = trackHeight,
-            cap = StrokeCap.Round,
-        )
-        drawLine(
-            color = Color(0xFFB91C1C),
-            start = Offset(startX, centerY),
-            end = Offset(thumbX, centerY),
-            strokeWidth = trackHeight,
-            cap = StrokeCap.Round,
-        )
-        drawCircle(Color.White, radius = thumbRadius + 3.dp.toPx(), center = Offset(thumbX, centerY))
-        drawCircle(Color(0xFFB91C1C), radius = thumbRadius, center = Offset(thumbX, centerY))
+    DragConfirmSlider(
+        position = position,
+        onPositionChange = onPositionChange,
+        enabled = enabled,
+        direction = DragConfirmDirection.LeftToRight,
+        trackColor = if (enabled) Color(0xFFFECACA) else Color(0xFFFEE2E2),
+        fillColor = Color(0xFFB91C1C),
+        onDragStateChange = onDragStateChange,
+        modifier = modifier.height(96.dp),
+    ) { center, _ ->
         val arrowLength = 22.dp.toPx()
         val arrowHead = 8.dp.toPx()
-        val arrowStart = Offset(thumbX - arrowLength / 2f, centerY)
-        val arrowEnd = Offset(thumbX + arrowLength / 2f, centerY)
-        drawLine(
-            color = Color.White,
-            start = arrowStart,
-            end = arrowEnd,
-            strokeWidth = 4.dp.toPx(),
-            cap = StrokeCap.Round,
-        )
-        drawLine(
-            color = Color.White,
-            start = arrowEnd,
-            end = Offset(arrowEnd.x - arrowHead, arrowEnd.y - arrowHead),
-            strokeWidth = 4.dp.toPx(),
-            cap = StrokeCap.Round,
-        )
-        drawLine(
-            color = Color.White,
-            start = arrowEnd,
-            end = Offset(arrowEnd.x - arrowHead, arrowEnd.y + arrowHead),
-            strokeWidth = 4.dp.toPx(),
-            cap = StrokeCap.Round,
-        )
+        val arrowStart = Offset(center.x - arrowLength / 2f, center.y)
+        val arrowEnd = Offset(center.x + arrowLength / 2f, center.y)
+        drawLine(Color.White, arrowStart, arrowEnd, 4.dp.toPx(), StrokeCap.Round)
+        drawLine(Color.White, arrowEnd, Offset(arrowEnd.x - arrowHead, arrowEnd.y - arrowHead), 4.dp.toPx(), StrokeCap.Round)
+        drawLine(Color.White, arrowEnd, Offset(arrowEnd.x - arrowHead, arrowEnd.y + arrowHead), 4.dp.toPx(), StrokeCap.Round)
     }
 }
 
@@ -2302,100 +2282,36 @@ private fun SremRequestSlider(
                     SremRequestUiState.UnknownResponse,
                     SremRequestUiState.WalkActive,
                 )
-            ) {
-                1f
-            } else {
-                0f
-            },
+            ) 1f else 0f,
         )
     }
     var submitted by rememberSaveable(state) { mutableStateOf(false) }
-    var animateReset by remember { mutableStateOf(false) }
-    val targetPosition by remember(state, sliderPosition, animateReset) {
-        mutableFloatStateOf(
-            if (animateReset && state == SremRequestUiState.Ready) 0f else sliderPosition
-        )
-    }
-    val animatedPosition by animateFloatAsState(
-        targetValue = targetPosition,
-        animationSpec = tween(durationMillis = 300),
-        label = "sliderReset",
-    )
-    val constrainedPosition = animatedPosition.coerceIn(0f, 1f)
-    var sliderSize by remember { mutableStateOf(IntSize.Zero) }
+    val constrainedPosition = sliderPosition.coerceIn(0f, 1f)
     val onDragStateChange = LocalSliderDragStateChange.current
-    val scope = rememberCoroutineScope()
-    Canvas(
-        modifier = modifier
-            .height(96.dp)
-            .onSizeChanged { sliderSize = it }
-            .pointerInput(enabled, sliderSize.width, state) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                    val width = sliderSize.width.toFloat()
-                    if (!enabled || width <= 0f) return@awaitEachGesture
-                    val thumbRadius = 30.dp.toPx()
-                    val startX = thumbRadius
-                    val endX = width - thumbRadius
-                    val thumbX = endX - (endX - startX) * constrainedPosition
-                    val hitSlop = 18.dp.toPx()
-                    if (kotlin.math.abs(down.position.x - thumbX) > thumbRadius + hitSlop) {
-                        return@awaitEachGesture
-                    }
-                    down.consume()
-                    onDragStateChange(true)
-                    try {
-                        val startPosition = constrainedPosition
-                        val downX = down.position.x
-                        animateReset = false
-                        while (true) {
-                            val event = awaitPointerEvent(PointerEventPass.Initial)
-                            event.changes.forEach { it.consume() }
-                            val active = event.changes.firstOrNull { it.pressed }
-                            if (active == null) break
-                            val dragFraction = (downX - active.position.x) / (endX - startX)
-                            val nextPosition = (startPosition + dragFraction).coerceIn(0f, 1f)
-                            sliderPosition = nextPosition
-                            if (!submitted && nextPosition >= 0.995f) {
-                                submitted = true
-                                sliderPosition = 1f
-                                onSubmit()
-                            }
-                        }
-                        if (!submitted && state == SremRequestUiState.Ready) {
-                            animateReset = true
-                        }
-                    } finally {
-                        onDragStateChange(false)
-                    }
-                }
-            },
-    ) {
-        val trackHeight = 66.dp.toPx()
-        val thumbRadius = 30.dp.toPx()
-        val centerY = size.height / 2f
-        val startX = thumbRadius
-        val endX = size.width - thumbRadius
-        val thumbX = endX - (endX - startX) * constrainedPosition
-        val trackColor = if (enabled) state.color.copy(alpha = 0.22f) else Color(0xFFE2E8F0)
-        val fillColor = if (enabled || constrainedPosition > 0f) state.color else Color(0xFF94A3B8)
-        drawLine(
-            color = trackColor,
-            start = Offset(startX, centerY),
-            end = Offset(endX, centerY),
-            strokeWidth = trackHeight,
-            cap = StrokeCap.Round,
-        )
-        drawLine(
-            color = fillColor,
-            start = Offset(thumbX, centerY),
-            end = Offset(endX, centerY),
-            strokeWidth = trackHeight,
-            cap = StrokeCap.Round,
-        )
-        drawCircle(Color.White, radius = thumbRadius + 3.dp.toPx(), center = Offset(thumbX, centerY))
-        drawCircle(fillColor, radius = thumbRadius, center = Offset(thumbX, centerY))
-        drawSremSliderIcon(state, Offset(thumbX, centerY), thumbRadius)
+    val trackColor = if (enabled) state.color.copy(alpha = 0.22f) else Color(0xFFE2E8F0)
+    val fillColor = if (enabled || constrainedPosition > 0f) state.color else Color(0xFF94A3B8)
+
+    DragConfirmSlider(
+        position = constrainedPosition,
+        onPositionChange = { nextPosition ->
+            sliderPosition = nextPosition
+            if (!submitted && nextPosition >= 0.995f) {
+                submitted = true
+                sliderPosition = 1f
+                onSubmit()
+            }
+        },
+        enabled = enabled,
+        direction = DragConfirmDirection.RightToLeft,
+        trackColor = trackColor,
+        fillColor = fillColor,
+        onDragStateChange = onDragStateChange,
+        onDragFinished = {
+            if (!submitted && state == SremRequestUiState.Ready) sliderPosition = 0f
+        },
+        modifier = modifier.height(96.dp),
+    ) { center, radius ->
+        drawSremSliderIcon(state, center, radius)
     }
 }
 
@@ -3620,6 +3536,50 @@ private fun SettingsPage(
         ) {
             Text("Save")
         }
+    }
+}
+
+@Composable
+private fun AboutPage() {
+    val context = LocalContext.current
+    fun open(url: String) {
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(Color.White, RoundedCornerShape(8.dp))
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text("C-ITS to go", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Text("Version ${BuildConfig.VERSION_NAME}", color = MaterialTheme.colorScheme.secondary)
+        Text(
+            "CITS-to-go is an experimental, portable C-ITS capture and transmit bridge built around an Android phone and a Seeed Studio XIAO ESP32-C5.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            "It can capture C-ITS packets, stream them to Android over USB, save captures as PCAP, forward packets to MQTT, transmit raw 802.11 frames, and generate configurable ETSI CAM messages from phone location data.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            "The project is heavily inspired by and derived from OpenTrafficMap and is not an official OpenTrafficMap release.",
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            "Source code on Codeberg",
+            modifier = Modifier.clickable { open(CodebergAppUpdateChecker.REPOSITORY_URL) },
+            color = MaterialTheme.colorScheme.primary,
+            textDecoration = TextDecoration.Underline,
+            style = MaterialTheme.typography.bodyMedium,
+        )
+        Text(
+            "OpenTrafficMap",
+            modifier = Modifier.clickable { open("https://opentrafficmap.org") },
+            color = MaterialTheme.colorScheme.primary,
+            textDecoration = TextDecoration.Underline,
+            style = MaterialTheme.typography.bodyMedium,
+        )
     }
 }
 
