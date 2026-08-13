@@ -47,3 +47,10 @@ internal fun resolveSremLaneDirection(map: MapIntersection, firstLaneId: Int, se
         else -> listOf(firstLaneId, secondLaneId)
     }
 }
+
+internal fun MapLane.directionLabel(): String = when {
+    ingress && egress -> "Inbound and outbound"
+    ingress -> "Inbound"
+    egress -> "Outbound"
+    else -> "Direction unavailable"
+}

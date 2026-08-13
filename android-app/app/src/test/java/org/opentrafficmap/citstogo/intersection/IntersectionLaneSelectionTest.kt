@@ -91,6 +91,14 @@ class IntersectionLaneSelectionTest {
         assertEquals(listOf(1, 2), resolveSremLaneDirection(map, 2, 1))
     }
 
+    @Test
+    fun laneDirectionLabelsReflectMapemAttributes() {
+        assertEquals("Inbound", lane(1, ingress = true).directionLabel())
+        assertEquals("Outbound", lane(2, egress = true).directionLabel())
+        assertEquals("Inbound and outbound", lane(3, ingress = true, egress = true).directionLabel())
+        assertEquals("Direction unavailable", lane(4).directionLabel())
+    }
+
     private fun map(lanes: List<MapLane>) = MapIntersection(
         key = IntersectionKey(43, 1_039),
         name = null,

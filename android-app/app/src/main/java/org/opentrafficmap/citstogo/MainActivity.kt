@@ -135,6 +135,7 @@ import org.opentrafficmap.citstogo.intersection.countdownLaneRepresentatives
 import org.opentrafficmap.citstogo.intersection.countdownSignalGroupsForSelection
 import org.opentrafficmap.citstogo.intersection.countdownSideOffset
 import org.opentrafficmap.citstogo.intersection.connectedSremLaneIds
+import org.opentrafficmap.citstogo.intersection.directionLabel
 import org.opentrafficmap.citstogo.intersection.intersectionConnectionVisible
 import org.opentrafficmap.citstogo.intersection.intersectionLaneSelectionAlpha
 import org.opentrafficmap.citstogo.intersection.placeCountdownLabel
@@ -915,7 +916,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private fun chooseReplayFile() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
             .addCategory(Intent.CATEGORY_OPENABLE)
-            .setType("*/*")
+            .setType("application/vnd.tcpdump.pcap")
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
         openPcapLauncher.launch(intent)
     }
@@ -2125,6 +2126,7 @@ private fun IntersectionPageContent(
             )
             SremRequestPanel(
                 snapshot = snapshot,
+                map = map,
                 selectedLaneIds = selectedCrosswalkLaneIds,
                 state = sremUiState,
                 txApproved = txApproved,
@@ -2166,6 +2168,7 @@ private enum class SremRequestUiState(
 @Composable
 private fun SremRequestPanel(
     snapshot: IntersectionSnapshot,
+    map: MapIntersection,
     selectedLaneIds: List<Int>,
     state: SremRequestUiState,
     txApproved: Boolean,
@@ -2206,7 +2209,11 @@ private fun SremRequestPanel(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                selectedPair?.let { "Lane ${it[0]} -> ${it[1]}" } ?: "Lane ${selectedLaneIds.first()} selected",
+                selectedLaneIds.joinToString(" -> ") { laneId ->
+                    val direction = map.lanes.firstOrNull { it.id == laneId }?.directionLabel()
+                        ?: "Direction unavailable"
+                    "Lane $laneId ($direction)"
+                },
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
