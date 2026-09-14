@@ -253,10 +253,9 @@ fun CitsApp(
                         modifier = contentModifier,
                         verticalArrangement = Arrangement.spacedBy(if (selectedPage == AppPage.Home) 10.dp else 14.dp),
                     ) {
-                        val headerSubtitle = if (selectedPage == AppPage.Settings || selectedPage == AppPage.About) {
-                            "Version ${BuildConfig.VERSION_NAME}"
-                        } else {
-                            null
+                        val headerSubtitle = when (selectedPage) {
+                            AppPage.Settings, AppPage.About -> "Version ${BuildConfig.VERSION_NAME}"
+                            else -> null
                         }
                         AppHeader(
                             title = selectedPage.title,
@@ -271,7 +270,6 @@ fun CitsApp(
                                 connectionMode = connectionMode,
                                 onConnectionModeChange = onConnectionModeChange,
                                 status = status,
-                                recentActivity = recentActivity,
                                 onRefresh = onRefresh,
                                 onStart = onStart,
                                 onStop = onStop,
