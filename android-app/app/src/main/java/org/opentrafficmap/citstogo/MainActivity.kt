@@ -571,6 +571,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     private fun requestUsbThenStart() {
         saveSettings()
+        refreshDevices()
         val device = devices.firstOrNull { it.deviceName == selectedDeviceName } ?: devices.firstOrNull()
         if (device == null) {
             startBridge()

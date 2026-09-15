@@ -57,7 +57,7 @@ fun HomePage(
     HomeStatusBanner(status)
     Text("Connection", fontSize = 20.sp, fontWeight = FontWeight.Medium)
     ConnectionTabs(connectionMode, status.replaying, onConnectionModeChange, onRefresh)
-    ConnectionDeviceList(devices, selectedDeviceName, connectionMode, status, onSelectDevice, onRefresh)
+    ConnectionDeviceList(devices, selectedDeviceName, connectionMode, status, onSelectDevice)
     HomeActions(status, onStart, onStop, onStartPcap, onStopPcap, onStartReplay, onStopReplay)
     HomeMetrics(status, packetsPerSecond)
 }
@@ -149,25 +149,7 @@ private fun ConnectionDeviceList(
     connectionMode: ConnectionMode,
     status: BridgeStatus,
     onSelectDevice: (String) -> Unit,
-    onRefresh: () -> Unit,
 ) {
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            if (connectionMode == ConnectionMode.USB) "USB serial" else "Bluetooth",
-            modifier = Modifier.weight(1f),
-            fontSize = 17.sp,
-            fontWeight = FontWeight.Medium,
-        )
-        if (connectionMode == ConnectionMode.USB) {
-            TextButton(onClick = onRefresh, enabled = !status.running && !status.replaying) {
-                Text("Refresh", fontSize = 14.sp)
-            }
-        }
-    }
     val stateText = when {
         status.replaying -> "Using replay file"
         status.running -> status.usbState
