@@ -56,7 +56,12 @@ fun HomePage(
     val packetsPerSecond = rememberPacketRate(status.packets, status.running)
     HomeStatusBanner(status)
     Text("Connection", fontSize = 20.sp, fontWeight = FontWeight.Medium)
-    ConnectionTabs(connectionMode, status.replaying, onConnectionModeChange, onRefresh)
+    ConnectionTabs(
+        selectedMode = connectionMode,
+        locked = status.running || status.replaying,
+        onModeChange = onConnectionModeChange,
+        onRefresh = onRefresh,
+    )
     ConnectionDeviceList(devices, selectedDeviceName, connectionMode, status, onSelectDevice)
     HomeActions(status, onStart, onStop, onStartPcap, onStopPcap, onStartReplay, onStopReplay)
     HomeMetrics(status, packetsPerSecond)
@@ -94,7 +99,7 @@ private fun HomeStatusBanner(status: BridgeStatus) {
 @Composable
 private fun ConnectionTabs(
     selectedMode: ConnectionMode,
-    replaying: Boolean,
+    locked: Boolean,
     onModeChange: (ConnectionMode) -> Unit,
     onRefresh: () -> Unit,
 ) {
@@ -117,7 +122,7 @@ private fun ConnectionTabs(
                     onModeChange(mode)
                     if (mode == ConnectionMode.USB) onRefresh()
                 },
-                enabled = !replaying,
+                enabled = !locked,
                 shape = shape,
                 colors = SegmentedButtonDefaults.colors(
                     activeContainerColor = Color(ContextCompat.getColor(context, R.color.primary)),
