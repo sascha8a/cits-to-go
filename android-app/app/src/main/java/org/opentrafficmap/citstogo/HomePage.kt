@@ -237,7 +237,7 @@ private fun HomeActionButton(
     val context = LocalContext.current
     val containerColor = when {
         stopping -> Color(ContextCompat.getColor(context, R.color.error))
-        actionColor -> Color(0xFF1E40AF)
+        actionColor -> Color(ContextCompat.getColor(context, R.color.info_variant))
         else -> MaterialTheme.colorScheme.primary
     }
     Button(

@@ -48,6 +48,7 @@
 
     <!-- Info Colors -->
     <color name="info">#2563EB</color>
+    <color name="info_variant">#224377</color>
     <color name="info_container">#E5F1FA</color>
     <color name="on_info_container">#315B78</color>
 
