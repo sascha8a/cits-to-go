@@ -7,7 +7,6 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 ANDROID_DIR="$REPO_ROOT/android-app"
 FIRMWARE_DIR="$REPO_ROOT/firmware"
 SIGNING_ENV="$ANDROID_DIR/.env.release"
-IDF_IMAGE="espressif/idf:v6.1-dev@sha256:d63012d35027ba995ffe3f1182407670cf84bd9e95b3242d3ac5e5d6d53b8ff9"
 
 if [[ ! -f "$SIGNING_ENV" ]]; then
   echo "Missing Android signing configuration: $SIGNING_ENV" >&2
@@ -29,13 +28,10 @@ if [[ ! -f "$CITS_RELEASE_STORE_FILE" ]]; then
   exit 1
 fi
 
-for command_name in docker tshark; do
-  if ! command -v "$command_name" >/dev/null 2>&1; then
-    echo "Required command not found: $command_name" >&2
-    echo "Run this script through the Android Nix shell as documented in README.md." >&2
-    exit 1
-  fi
-done
+if ! command -v nix >/dev/null 2>&1; then
+  echo "Required command not found: nix" >&2
+  exit 1
+fi
 
 APP_VERSION="$(sed -n "s/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*['\"]\([^'\"]*\)['\"].*/\1/p" "$ANDROID_DIR/app/build.gradle")"
 if [[ -z "$APP_VERSION" ]]; then
@@ -52,38 +48,29 @@ RELEASE_DIR="$(cd -- "$RELEASE_DIR" && pwd)"
 echo "Building and testing Android v$APP_VERSION"
 (
   cd "$ANDROID_DIR"
-  ./gradlew testDebugUnitTest
-  ./gradlew --stop
-  ./gradlew assembleRelease
+  nix-shell --run "
+    ./gradlew testDebugUnitTest
+    ./gradlew --stop
+    ./gradlew assembleRelease
+    
+    APK_SOURCE=\"$ANDROID_DIR/app/build/outputs/apk/release/app-release.apk\"
+    if [[ ! -f \"\$APK_SOURCE\" ]]; then
+      echo \"Signed release APK was not generated: \$APK_SOURCE\" >&2
+      exit 1
+    fi
+    
+    APKSIGNER=\"\$ANDROID_HOME/build-tools/35.0.0/apksigner\"
+    \"\$APKSIGNER\" verify --verbose --print-certs \"\$APK_SOURCE\"
+    install -m 0644 \"\$APK_SOURCE\" \"$RELEASE_DIR/$APK_NAME\"
+  "
 )
 
-APK_SOURCE="$ANDROID_DIR/app/build/outputs/apk/release/app-release.apk"
-if [[ ! -f "$APK_SOURCE" ]]; then
-  echo "Signed release APK was not generated: $APK_SOURCE" >&2
-  exit 1
-fi
-
-if [[ -n "${ANDROID_HOME:-}" && -x "$ANDROID_HOME/build-tools/35.0.0/apksigner" ]]; then
-  APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
-elif command -v apksigner >/dev/null 2>&1; then
-  APKSIGNER="$(command -v apksigner)"
-else
-  echo "Could not find apksigner" >&2
-  exit 1
-fi
-
-"$APKSIGNER" verify --verbose --print-certs "$APK_SOURCE"
-install -m 0644 "$APK_SOURCE" "$RELEASE_DIR/$APK_NAME"
-
 echo "Building merged ESP32-C5 firmware"
-docker run --rm \
-  --user "$(id -u):$(id -g)" \
-  --volume "$FIRMWARE_DIR:/project" \
-  --volume "$RELEASE_DIR:/release" \
-  --workdir /project \
-  --env "FIRMWARE_NAME=$FIRMWARE_NAME" \
-  "$IDF_IMAGE" \
-  sh -c 'if grep -qx "CONFIG_IDF_TARGET=\"esp32c5\"" sdkconfig 2>/dev/null; then idf.py -B build-release build; else idf.py -B build-release set-target esp32c5 build; fi && cd build-release && esptool --chip esp32c5 merge-bin --format raw -o "/release/$FIRMWARE_NAME" @flash_args'
+(
+  cd "$FIRMWARE_DIR"
+  rm -rf build-release
+  nix develop --command bash -c "if grep -qx 'CONFIG_IDF_TARGET=\"esp32c5\"' sdkconfig 2>/dev/null; then idf.py -B build-release build; else idf.py -B build-release set-target esp32c5 build; fi && cd build-release && esptool --chip esp32c5 merge-bin --format raw -o \"$RELEASE_DIR/$FIRMWARE_NAME\" @flash_args"
+)
 
 if [[ ! -s "$RELEASE_DIR/$FIRMWARE_NAME" ]]; then
   echo "Merged firmware was not generated" >&2
