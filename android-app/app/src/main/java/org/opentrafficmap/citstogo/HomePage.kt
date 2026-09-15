@@ -155,21 +155,6 @@ private fun ConnectionDeviceList(
     status: BridgeStatus,
     onSelectDevice: (String) -> Unit,
 ) {
-    val stateText = when {
-        status.replaying -> "Using replay file"
-        status.running -> status.usbState
-        connectionMode == ConnectionMode.BLUETOOTH -> "Bluetooth receiver"
-        devices.isEmpty() -> "No USB devices detected"
-        selectedDeviceName != null -> devices.firstOrNull { it.deviceName == selectedDeviceName }?.let(::deviceName) ?: selectedDeviceName
-        else -> "Select a USB device"
-    }
-    Text(
-        stateText,
-        color = MaterialTheme.colorScheme.secondary,
-        fontSize = 16.sp,
-        maxLines = 2,
-        overflow = TextOverflow.Ellipsis,
-    )
     if (connectionMode == ConnectionMode.USB && !status.running && !status.replaying && devices.isNotEmpty() && selectedDeviceName == null) {
         devices.forEach { device ->
             TextButton(onClick = { onSelectDevice(device.deviceName) }, modifier = Modifier.fillMaxWidth()) {

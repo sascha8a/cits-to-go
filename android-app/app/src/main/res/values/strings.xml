@@ -5,7 +5,6 @@
 
     <!-- Settings Page -->
     <string name="settings_title">Settings</string>
-    <string name="settings_version_format">Version %s</string>
 
     <!-- MQTT Section -->
     <string name="mqtt_title">MQTT</string>
