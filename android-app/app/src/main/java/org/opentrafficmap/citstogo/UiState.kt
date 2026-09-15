@@ -4,6 +4,7 @@ import android.location.Location
 import androidx.compose.ui.graphics.Color
 import androidx.core.content.ContextCompat
 import kotlin.math.roundToLong
+import org.opentrafficmap.citstogo.flashing.FirmwareRelease
 
 enum class FirmwareFlashingPhase {
     LoadingRelease,
@@ -21,8 +22,9 @@ data class FirmwareFlashingState(
     val firmwareName: String? = null,
     val customFirmware: Boolean = false,
     val deviceName: String? = null,
+    val availableReleases: List<FirmwareRelease> = emptyList(),
     val phase: FirmwareFlashingPhase = FirmwareFlashingPhase.LoadingRelease,
-    val message: String = "Looking for a matching Codeberg release…",
+    val message: String = "Loading the list of firmware releases…",
     val progress: Float = 0f,
 ) {
     val busy: Boolean get() = phase == FirmwareFlashingPhase.Downloading || phase == FirmwareFlashingPhase.Flashing

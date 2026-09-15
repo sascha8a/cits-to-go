@@ -3,6 +3,7 @@ package org.opentrafficmap.citstogo.flashing
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
 
@@ -31,5 +32,21 @@ class Esp32RomFlasherTest {
         assertThrows(IOException::class.java) {
             Esp32RomFlasher(transport).flash(ByteArray(1024)) {}
         }
+    }
+
+    @Test
+    fun reportsNoStatusBeforeTheImagePassesValidation() {
+        val transport = object : EspFlashTransport {
+            override fun write(data: ByteArray) = error("USB must not be accessed")
+            override fun read(buffer: ByteArray, timeoutMs: Int): Int = error("USB must not be accessed")
+            override fun setControlLines(dtr: Boolean, rts: Boolean) = error("USB must not be accessed")
+        }
+        val statuses = mutableListOf<String>()
+
+        assertThrows(IOException::class.java) {
+            Esp32RomFlasher(transport).flash(ByteArray(1024), onProgress = {}, onStatus = { statuses.add(it) })
+        }
+
+        assertTrue(statuses.isEmpty())
     }
 }

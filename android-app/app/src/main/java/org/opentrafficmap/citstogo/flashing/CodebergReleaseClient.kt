@@ -18,39 +18,51 @@ data class FirmwareRelease(
 )
 
 object CodebergReleaseParser {
-    fun findForVersion(json: String, version: String): FirmwareRelease? {
-        val expectedFirmware = "CITS-to-go-firmware-v$version.bin"
+    fun parseReleases(json: String): List<FirmwareRelease> {
         val releases = JSONArray(json)
+        val result = mutableListOf<FirmwareRelease>()
         for (index in 0 until releases.length()) {
             val release = releases.getJSONObject(index)
             if (release.optBoolean("draft") || release.optBoolean("prerelease")) continue
-            val tag = release.optString("tag_name")
-            if (tag.removePrefix("v") != version) continue
-            val assets = release.optJSONArray("assets") ?: continue
-            var firmwareName: String? = null
-            var firmwareUrl: String? = null
-            var firmwareSize = -1L
-            var checksumsUrl: String? = null
-            for (assetIndex in 0 until assets.length()) {
-                val asset = assets.getJSONObject(assetIndex)
-                val name = asset.optString("name")
-                val url = asset.optString("browser_download_url")
-                when (name) {
-                    expectedFirmware -> {
-                        firmwareName = name
-                        firmwareUrl = url
-                        firmwareSize = asset.optLong("size", -1L)
-                    }
-                    "SHA256sum.txt" -> checksumsUrl = url
+            buildRelease(release)?.let(result::add)
+        }
+        return result
+    }
+
+    fun findForVersion(json: String, version: String): FirmwareRelease? =
+        parseReleases(json).firstOrNull { it.tag.removePrefix("v") == version }
+
+    fun findLatest(json: String): FirmwareRelease? = parseReleases(json).firstOrNull()
+
+    private fun buildRelease(release: org.json.JSONObject): FirmwareRelease? {
+        val tag = release.optString("tag_name")
+        if (tag.isBlank()) return null
+        val expectedFirmware = "CITS-to-go-firmware-v${tag.removePrefix("v")}.bin"
+        val assets = release.optJSONArray("assets") ?: return null
+        var firmwareName: String? = null
+        var firmwareUrl: String? = null
+        var firmwareSize = -1L
+        var checksumsUrl: String? = null
+        for (assetIndex in 0 until assets.length()) {
+            val asset = assets.getJSONObject(assetIndex)
+            val name = asset.optString("name")
+            val url = asset.optString("browser_download_url")
+            when (name) {
+                expectedFirmware -> {
+                    firmwareName = name
+                    firmwareUrl = url
+                    firmwareSize = asset.optLong("size", -1L)
                 }
-            }
-            if (firmwareName != null && firmwareUrl != null && checksumsUrl != null &&
-                isTrustedCodebergDownload(firmwareUrl) && isTrustedCodebergDownload(checksumsUrl)
-            ) {
-                return FirmwareRelease(tag, firmwareName, firmwareUrl, firmwareSize, checksumsUrl)
+                "SHA256sum.txt" -> checksumsUrl = url
             }
         }
-        return null
+        return if (firmwareName != null && firmwareUrl != null && checksumsUrl != null &&
+            isTrustedCodebergDownload(firmwareUrl) && isTrustedCodebergDownload(checksumsUrl)
+        ) {
+            FirmwareRelease(tag, firmwareName, firmwareUrl, firmwareSize, checksumsUrl)
+        } else {
+            null
+        }
     }
 
     fun expectedSha256(manifest: String, firmwareName: String): String? =
@@ -69,34 +81,42 @@ object CodebergReleaseParser {
 }
 
 class CodebergReleaseClient {
-    fun findFirmware(version: String): FirmwareRelease {
+    fun listReleases(onStatus: (String) -> Unit = {}): List<FirmwareRelease> {
+        onStatus("Requesting the Codeberg release list…")
         val json = download(
             RELEASES_URL,
             MAX_RELEASE_JSON_BYTES,
         ).toString(StandardCharsets.UTF_8)
-        return CodebergReleaseParser.findForVersion(json, version)
-            ?: throw IOException("No complete firmware release found for app version $version")
+        val releases = CodebergReleaseParser.parseReleases(json)
+        if (releases.isEmpty()) throw IOException("No downloadable firmware releases were found")
+        onStatus("Loaded ${releases.size} firmware release${if (releases.size == 1) "" else "s"}.")
+        return releases
     }
 
     fun downloadAndVerify(
         release: FirmwareRelease,
-        onProgress: (Float) -> Unit,
+        onProgress: (Float) -> Unit = {},
+        onStatus: (String) -> Unit = {},
     ): ByteArray {
         if (release.firmwareSize !in 1..MAX_FIRMWARE_BYTES) {
             throw IOException("Firmware artifact has an invalid size")
         }
+        onStatus("Downloading SHA256sum.txt…")
         val manifest = download(release.checksumsUrl, MAX_CHECKSUM_BYTES)
             .toString(StandardCharsets.UTF_8)
         val expected = CodebergReleaseParser.expectedSha256(manifest, release.firmwareName)
             ?: throw IOException("SHA256sum.txt does not contain ${release.firmwareName}")
+        onStatus("Downloading ${release.firmwareName} (${formatFirmwareSize(release.firmwareSize)})…")
         val firmware = download(release.firmwareUrl, MAX_FIRMWARE_BYTES, onProgress)
         if (firmware.size.toLong() != release.firmwareSize) {
             throw IOException("Firmware download size does not match the release")
         }
+        onStatus("Verifying SHA-256 checksum…")
         val actual = MessageDigest.getInstance("SHA-256").digest(firmware).toHex()
         if (!actual.equals(expected, ignoreCase = true)) {
             throw IOException("Firmware SHA-256 verification failed")
         }
+        onStatus("Checksum verified.")
         return firmware
     }
 

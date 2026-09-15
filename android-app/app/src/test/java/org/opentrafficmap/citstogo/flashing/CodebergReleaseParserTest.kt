@@ -20,6 +20,42 @@ class CodebergReleaseParserTest {
     }
 
     @Test
+    fun findsAnyExplicitVersionIncludingOlderReleases() {
+        val release = CodebergReleaseParser.findForVersion(OLDER, "2.15.0")
+
+        assertEquals("v2.15.0", release?.tag)
+        assertEquals("CITS-to-go-firmware-v2.15.0.bin", release?.firmwareName)
+    }
+
+    @Test
+    fun latestReturnsTheNewestReleaseWithCompleteFirmware() {
+        val release = CodebergReleaseParser.findLatest(OLDER)
+
+        assertEquals("v2.16.0", release?.tag)
+    }
+
+    @Test
+    fun latestSkipsNewerReleasesThatHaveNoFirmwareArtifact() {
+        val release = CodebergReleaseParser.findLatest(SKIPS_EMPTY)
+
+        assertEquals("v2.15.0", release?.tag)
+    }
+
+    @Test
+    fun parseReleasesReturnsCompleteReleasesInOrder() {
+        val releases = CodebergReleaseParser.parseReleases(RELEASES)
+
+        assertEquals(listOf("v2.17.0"), releases.map { it.tag })
+    }
+
+    @Test
+    fun parseReleasesListsEveryVersionWhenPresent() {
+        val releases = CodebergReleaseParser.parseReleases(OLDER)
+
+        assertEquals(listOf("v2.16.0", "v2.15.0"), releases.map { it.tag })
+    }
+
+    @Test
     fun readsChecksumOnlyForNamedFirmware() {
         val expected = "a".repeat(64)
         val manifest = "${"b".repeat(64)}  another.bin\n$expected  CITS-to-go-firmware-v2.17.0.bin\n"
@@ -35,6 +71,29 @@ class CodebergReleaseParserTest {
               {"tag_name":"v2.17.0","draft":false,"prerelease":false,"assets":[
                 {"name":"CITS-to-go-firmware-v2.17.0.bin","size":672288,"browser_download_url":"https://codeberg.org/sascha8a/cits-to-go/releases/download/v2.17.0/CITS-to-go-firmware-v2.17.0.bin"},
                 {"name":"SHA256sum.txt","size":187,"browser_download_url":"https://codeberg.org/sascha8a/cits-to-go/releases/download/v2.17.0/SHA256sum.txt"}
+              ]}
+            ]
+        """.trimIndent()
+
+        val OLDER = """
+            [
+              {"tag_name":"v2.16.0","draft":false,"prerelease":false,"assets":[
+                {"name":"CITS-to-go-firmware-v2.16.0.bin","size":660000,"browser_download_url":"https://codeberg.org/sascha8a/cits-to-go/releases/download/v2.16.0/CITS-to-go-firmware-v2.16.0.bin"},
+                {"name":"SHA256sum.txt","size":187,"browser_download_url":"https://codeberg.org/sascha8a/cits-to-go/releases/download/v2.16.0/SHA256sum.txt"}
+              ]},
+              {"tag_name":"v2.15.0","draft":false,"prerelease":false,"assets":[
+                {"name":"CITS-to-go-firmware-v2.15.0.bin","size":650000,"browser_download_url":"https://codeberg.org/sascha8a/cits-to-go/releases/download/v2.15.0/CITS-to-go-firmware-v2.15.0.bin"},
+                {"name":"SHA256sum.txt","size":187,"browser_download_url":"https://codeberg.org/sascha8a/cits-to-go/releases/download/v2.15.0/SHA256sum.txt"}
+              ]}
+            ]
+        """.trimIndent()
+
+        val SKIPS_EMPTY = """
+            [
+              {"tag_name":"v9.0.0","draft":false,"prerelease":false,"assets":[{"name":"notes.txt","size":10,"browser_download_url":"https://codeberg.org/notes"}]},
+              {"tag_name":"v2.15.0","draft":false,"prerelease":false,"assets":[
+                {"name":"CITS-to-go-firmware-v2.15.0.bin","size":650000,"browser_download_url":"https://codeberg.org/sascha8a/cits-to-go/releases/download/v2.15.0/CITS-to-go-firmware-v2.15.0.bin"},
+                {"name":"SHA256sum.txt","size":187,"browser_download_url":"https://codeberg.org/sascha8a/cits-to-go/releases/download/v2.15.0/SHA256sum.txt"}
               ]}
             ]
         """.trimIndent()

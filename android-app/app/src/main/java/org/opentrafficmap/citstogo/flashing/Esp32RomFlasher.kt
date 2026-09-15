@@ -14,23 +14,32 @@ interface EspFlashTransport {
 class Esp32RomFlasher(private val transport: EspFlashTransport) {
     private val incomingBytes = ArrayDeque<Int>()
 
-    fun flash(firmware: ByteArray, onProgress: (Float) -> Unit) {
+    fun flash(
+        firmware: ByteArray,
+        onStatus: (String) -> Unit = {},
+        onProgress: (Float) -> Unit,
+    ) {
         validateMergedImage(firmware)
+        onStatus("Resetting the ESP32-C5 into the bootloader…")
         enterUsbJtagBootloader()
+        onStatus("Synchronizing with the ROM bootloader…")
         sync()
         val securityInfo = command(GET_SECURITY_INFO, byteArrayOf(), timeoutMs = 3_000)
         if (securityInfo.size < 16 || securityInfo.readUInt32(12) != ESP32_C5_CHIP_ID) {
             throw IOException("Connected Espressif device is not an ESP32-C5")
         }
+        onStatus("Bootloader online. Confirmed ESP32-C5.")
         command(SPI_ATTACH, ByteArray(8))
 
         val blockCount = ceil(firmware.size.toDouble() / FLASH_BLOCK_SIZE).toInt()
         val paddedSize = blockCount * FLASH_BLOCK_SIZE
+        onStatus("Erasing ${formatFirmwareSize(firmware.size.toLong())} of flash…")
         command(
             FLASH_BEGIN,
             words(paddedSize, blockCount, FLASH_BLOCK_SIZE, FLASH_OFFSET, 0),
             timeoutMs = eraseTimeout(firmware.size),
         )
+        onStatus("Writing firmware…")
         for (sequence in 0 until blockCount) {
             val block = ByteArray(FLASH_BLOCK_SIZE) { 0xff.toByte() }
             val sourceOffset = sequence * FLASH_BLOCK_SIZE
@@ -41,6 +50,7 @@ class Esp32RomFlasher(private val transport: EspFlashTransport) {
             onProgress((sequence + 1).toFloat() / blockCount)
         }
 
+        onStatus("Verifying flash contents (MD5)…")
         val remoteMd5 = command(
             SPI_FLASH_MD5,
             words(FLASH_OFFSET, firmware.size, 0, 0),
@@ -48,6 +58,7 @@ class Esp32RomFlasher(private val transport: EspFlashTransport) {
         ).toString(Charsets.US_ASCII).trim().lowercase()
         val localMd5 = MessageDigest.getInstance("MD5").digest(firmware).toHex()
         if (remoteMd5 != localMd5) throw IOException("Flash verification failed")
+        onStatus("Flash verified.")
         runCatching { command(FLASH_END, words(0), timeoutMs = 1_000) }
     }
 

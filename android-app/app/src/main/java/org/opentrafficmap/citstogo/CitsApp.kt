@@ -6,6 +6,8 @@ import org.opentrafficmap.citstogo.ActivityLevel
 import org.opentrafficmap.citstogo.DevicePosition
 import org.opentrafficmap.citstogo.FirmwareFlashingState
 import org.opentrafficmap.citstogo.FlashingPage
+import org.opentrafficmap.citstogo.flashing.FirmwareFlashLogEntry
+import org.opentrafficmap.citstogo.flashing.FirmwareRelease
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
 import org.opentrafficmap.citstogo.IntersectionSortMode
 import org.opentrafficmap.citstogo.TxApprovalPromptState
@@ -132,8 +134,10 @@ fun CitsApp(
     onSendSrem: (IntersectionSnapshot, Int, Int) -> Unit,
     onIntersectionLocationActiveChange: (Boolean) -> Unit,
     flashingState: FirmwareFlashingState,
+    flashingLog: List<FirmwareFlashLogEntry>,
     onFlashingPageActive: (Boolean) -> Unit,
     onRetryFirmwareRelease: () -> Unit,
+    onSelectFirmwareRelease: (FirmwareRelease) -> Unit,
     onChooseCustomFirmware: () -> Unit,
     onUseReleaseFirmware: () -> Unit,
     onFlashFirmware: () -> Unit,
@@ -298,8 +302,10 @@ fun CitsApp(
                             )
                             AppPage.Flashing -> FlashingPage(
                                 state = flashingState,
+                                log = flashingLog,
                                 bridgeRunning = status.running,
                                 onRetryRelease = onRetryFirmwareRelease,
+                                onSelectRelease = onSelectFirmwareRelease,
                                 onChooseCustomFirmware = onChooseCustomFirmware,
                                 onUseReleaseFirmware = onUseReleaseFirmware,
                                 onFlash = onFlashFirmware,
