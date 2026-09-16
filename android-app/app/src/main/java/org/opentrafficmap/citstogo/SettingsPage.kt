@@ -20,6 +20,7 @@ import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Link
+import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.Schedule
@@ -68,6 +69,10 @@ fun SettingsPage(
     bluetoothEnrollmentError: Boolean,
     debugMenuEnabled: Boolean,
     onDebugMenuEnabledChange: (Boolean) -> Unit,
+    stationDiscoveryNotificationEnabled: Boolean,
+    onStationDiscoveryNotificationChange: (Boolean) -> Unit,
+    appUpdateNotificationEnabled: Boolean,
+    onAppUpdateNotificationChange: (Boolean) -> Unit,
     onEnrollBluetooth: () -> Unit,
     onRevokeTxApproval: () -> Unit,
     onSave: (String, String, String, String, SremProfile) -> Unit,
@@ -105,6 +110,13 @@ fun SettingsPage(
             bluetoothEnrollmentMessage = bluetoothEnrollmentMessage,
             bluetoothEnrollmentError = bluetoothEnrollmentError,
             onEnrollBluetooth = onEnrollBluetooth,
+        )
+
+        NotificationsCard(
+            stationDiscoveryNotificationEnabled = stationDiscoveryNotificationEnabled,
+            onStationDiscoveryNotificationChange = onStationDiscoveryNotificationChange,
+            appUpdateNotificationEnabled = appUpdateNotificationEnabled,
+            onAppUpdateNotificationChange = onAppUpdateNotificationChange,
         )
 
         DebugCard(
@@ -523,6 +535,122 @@ private fun BluetoothCard(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun NotificationsCard(
+    stationDiscoveryNotificationEnabled: Boolean,
+    onStationDiscoveryNotificationChange: (Boolean) -> Unit,
+    appUpdateNotificationEnabled: Boolean,
+    onAppUpdateNotificationChange: (Boolean) -> Unit,
+) {
+    val context = LocalContext.current
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(ContextCompat.getColor(context, R.color.card)),
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(ContextCompat.getColor(context, R.color.primary_container))),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Notifications,
+                        contentDescription = null,
+                        tint = Color(ContextCompat.getColor(context, R.color.primary)),
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 12.dp),
+                ) {
+                    Text(
+                        "Notifications",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(ContextCompat.getColor(context, R.color.on_surface)),
+                    )
+                    Text(
+                        "Choose when the app alerts you outside the foreground.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
+                    )
+                }
+            }
+
+            HorizontalDivider(
+                color = Color(ContextCompat.getColor(context, R.color.divider)),
+                modifier = Modifier.padding(vertical = 4.dp),
+            )
+
+            NotificationToggleRow(
+                title = "Station discovery",
+                description = "Notify when a new C-ITS station is discovered.",
+                checked = stationDiscoveryNotificationEnabled,
+                onCheckedChange = onStationDiscoveryNotificationChange,
+            )
+
+            NotificationToggleRow(
+                title = "App updates",
+                description = "Notify when a new release is available on Codeberg.",
+                checked = appUpdateNotificationEnabled,
+                onCheckedChange = onAppUpdateNotificationChange,
+            )
+        }
+    }
+}
+
+@Composable
+private fun NotificationToggleRow(
+    title: String,
+    description: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    val context = LocalContext.current
+
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(
+            modifier = Modifier.weight(1f),
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                color = Color(ContextCompat.getColor(context, R.color.on_surface)),
+            )
+            Text(
+                description,
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
+            )
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+        )
     }
 }
 

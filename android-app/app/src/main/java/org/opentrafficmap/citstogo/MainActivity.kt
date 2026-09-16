@@ -93,6 +93,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var camIntervalMs by mutableStateOf(CitsBridgeService.DEFAULT_CAM_INTERVAL_MS.toString())
     private var txApproved by mutableStateOf(false)
     private var debugMenuEnabled by mutableStateOf(false)
+    private var stationDiscoveryNotificationEnabled by mutableStateOf(true)
+    private var appUpdateNotificationEnabled by mutableStateOf(true)
     private var txApprovalPromptState by mutableStateOf(TxApprovalPromptState.Hidden)
     private var enableCamAfterPermission = false
     private var wantsIntersectionLocation = false
@@ -275,6 +277,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         connectionMode = ConnectionMode.fromWireValue(prefs.getString(PREF_CONNECTION_MODE, null))
         txApproved = prefs.getBoolean(CitsBridgeService.PREF_TX_APPROVED, false)
         debugMenuEnabled = prefs.getBoolean(PREF_DEBUG_MENU_ENABLED, false)
+        stationDiscoveryNotificationEnabled = prefs.getBoolean(CitsBridgeService.PREF_NOTIFY_STATION_DISCOVERY, true)
+        appUpdateNotificationEnabled = prefs.getBoolean(CitsBridgeService.PREF_NOTIFY_APP_UPDATE, true)
         intersectionSortMode = IntersectionSortMode.fromPreference(
             prefs.getString(PREF_INTERSECTION_SORT_MODE, null),
         )
@@ -371,6 +375,20 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         debugMenuEnabled = enabled
                         getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
                             .putBoolean(PREF_DEBUG_MENU_ENABLED, enabled)
+                            .apply()
+                    },
+                    stationDiscoveryNotificationEnabled = stationDiscoveryNotificationEnabled,
+                    onStationDiscoveryNotificationChange = { enabled ->
+                        stationDiscoveryNotificationEnabled = enabled
+                        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+                            .putBoolean(CitsBridgeService.PREF_NOTIFY_STATION_DISCOVERY, enabled)
+                            .apply()
+                    },
+                    appUpdateNotificationEnabled = appUpdateNotificationEnabled,
+                    onAppUpdateNotificationChange = { enabled ->
+                        appUpdateNotificationEnabled = enabled
+                        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+                            .putBoolean(CitsBridgeService.PREF_NOTIFY_APP_UPDATE, enabled)
                             .apply()
                     },
                     txApprovalPromptState = txApprovalPromptState,
@@ -1220,6 +1238,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private fun checkForAppUpdate() {
         val prefs = getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE)
         Thread {
+            if (!prefs.getBoolean(CitsBridgeService.PREF_NOTIFY_APP_UPDATE, true)) return@Thread
             val update = runCatching { CodebergAppUpdateChecker().findUpdate(BuildConfig.VERSION_NAME) }.getOrNull()
                 ?: return@Thread
             if (prefs.getString(PREF_LAST_NOTIFIED_UPDATE_TAG, null) == update.tag) return@Thread

@@ -1301,6 +1301,7 @@ class CitsBridgeService : Service() {
     }
 
     private fun sendStationDiscoveryNotification(macAddress: String) {
+        if (!getSharedPreferences(PREFS, MODE_PRIVATE).getBoolean(PREF_NOTIFY_STATION_DISCOVERY, true)) return
         val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(
             nextStationNotificationId++,
@@ -1604,6 +1605,8 @@ class CitsBridgeService : Service() {
         const val PREF_SREM_PROFILE = "srem_profile"
         const val PREF_VEHICLE_TYPE = "vehicle_type"
         const val PREF_TX_APPROVED = "tx_approved"
+        const val PREF_NOTIFY_STATION_DISCOVERY = "notify_station_discovery"
+        const val PREF_NOTIFY_APP_UPDATE = "notify_app_update"
         const val DEFAULT_MQTT_URI = "mqtts://cits1.opentrafficmap.org"
         const val DEFAULT_MQTT_MAX_QUEUE_LENGTH = 100
         const val DEFAULT_MQTT_MAX_QUEUE_AGE_MS = 200L
