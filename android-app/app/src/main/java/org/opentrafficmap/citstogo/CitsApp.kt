@@ -122,6 +122,10 @@ fun CitsApp(
     onStopReplay: () -> Unit,
     camIntervalMs: String,
     onCamIntervalChange: (String) -> Unit,
+    camRandomizationEnabled: Boolean,
+    onCamRandomizationEnabledChange: (Boolean) -> Unit,
+    camRandomizationIntervalSeconds: String,
+    onCamRandomizationIntervalChange: (String) -> Unit,
     onConfigureCam: (Boolean) -> Unit,
     sremProfile: SremProfile,
     onSremProfileChange: (SremProfile) -> Unit,
@@ -293,6 +297,10 @@ fun CitsApp(
                                 logLine = logLine,
                                 intervalMs = camIntervalMs,
                                 onIntervalChange = onCamIntervalChange,
+                                randomizationEnabled = camRandomizationEnabled,
+                                onRandomizationEnabledChange = onCamRandomizationEnabledChange,
+                                randomizationIntervalSeconds = camRandomizationIntervalSeconds,
+                                onRandomizationIntervalChange = onCamRandomizationIntervalChange,
                                 onConfigure = onConfigureCam,
                             )
                             AppPage.IntersectionView -> IntersectionViewPage(

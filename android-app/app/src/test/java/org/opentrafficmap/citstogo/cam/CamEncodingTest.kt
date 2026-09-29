@@ -1,7 +1,9 @@
 package org.opentrafficmap.citstogo.cam
 
+import java.security.SecureRandom
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Test
 
 class CamEncodingTest {
@@ -27,12 +29,16 @@ class CamEncodingTest {
 
     @Test
     fun completeFrameContainsQosSnapGeoShbBtpAndCam() {
+        val counters = ItsG5FrameBuilder.SequenceCounters(initialWlanSequence = 0x025, initialGbcSequenceId = 0)
         val frame = ItsG5FrameBuilder.camFrame(
-            identity, StationType.PASSENGER_CAR, position, timestamp)
+            identity, StationType.PASSENGER_CAR, position, timestamp, counters)
         assertEquals(119, frame.size)
         assertEquals(0x88, frame[0].toInt() and 0xff)
         assertArrayEquals(ByteArray(6) { 0xff.toByte() }, frame.copyOfRange(4, 10))
         assertArrayEquals(identity.macAddress, frame.copyOfRange(10, 16))
+        val sequenceControl = 0x025 shl 4
+        assertEquals(sequenceControl and 0xff, frame[22].toInt() and 0xff)
+        assertEquals((sequenceControl ushr 8) and 0xff, frame[23].toInt() and 0xff)
         assertEquals(0x89, frame[32].toInt() and 0xff)
         assertEquals(0x47, frame[33].toInt() and 0xff)
         assertEquals(0x11, frame[34].toInt() and 0xff)
@@ -49,8 +55,38 @@ class CamEncodingTest {
     fun rsuUsesCompactRsuHighFrequencyContainer() {
         val cam = CamUperEncoder.encode(identity, StationType.ROAD_SIDE_UNIT, position, timestamp)
         assertEquals(26, cam.size)
-        val frame = ItsG5FrameBuilder.camFrame(identity, StationType.ROAD_SIDE_UNIT, position, timestamp)
+        val frame = ItsG5FrameBuilder.camFrame(
+            identity,
+            StationType.ROAD_SIDE_UNIT,
+            position,
+            timestamp,
+            ItsG5FrameBuilder.SequenceCounters(initialWlanSequence = 0, initialGbcSequenceId = 0),
+        )
         assertEquals(104, frame.size)
         assertEquals(0, frame[41].toInt()) // Stationary flag in GeoNetworking Common header.
+    }
+
+    @Test
+    fun camFramesAdvanceTheWlanSequenceCounterAndWrapAtTwelveBits() {
+        val counters = ItsG5FrameBuilder.SequenceCounters(initialWlanSequence = 0x0ffe, initialGbcSequenceId = 0)
+        val sequences = List(3) {
+            val frame = ItsG5FrameBuilder.camFrame(
+                identity, StationType.PASSENGER_CAR, position, timestamp, counters)
+            val sequenceControl = (frame[22].toInt() and 0xff) or ((frame[23].toInt() and 0xff) shl 8)
+            sequenceControl ushr 4
+        }
+        assertEquals(listOf(0x0ffe, 0x0fff, 0x0000), sequences)
+    }
+
+    @Test
+    fun randomizedPrivacyIdentitiesAreLocalUnicastAndDistinct() {
+        val random = SecureRandom()
+        val first = randomizedCamIdentity(random)
+        val second = randomizedCamIdentity(random)
+        assertEquals(6, first.macAddress.size)
+        // Bit 0 clear (unicast) and bit 1 set (locally administered), matching stored identities.
+        assertEquals(0x02, first.macAddress[0].toInt() and 0x03)
+        assertNotEquals(second.macAddress.toList(), first.macAddress.toList())
+        assertNotEquals(second.stationId, first.stationId)
     }
 }

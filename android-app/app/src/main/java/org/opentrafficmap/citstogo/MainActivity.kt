@@ -92,6 +92,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var currentPosition by mutableStateOf<DevicePosition?>(null)
     private var sremProfile by mutableStateOf(SremProfile.PEDESTRIAN)
     private var camIntervalMs by mutableStateOf(CitsBridgeService.DEFAULT_CAM_INTERVAL_MS.toString())
+    private var camRandomizationEnabled by mutableStateOf(true)
+    private var camRandomizationIntervalSeconds by mutableStateOf(
+        (CitsBridgeService.DEFAULT_CAM_RANDOMIZATION_INTERVAL_MS / 1000).toString(),
+    )
     private var txApproved by mutableStateOf(false)
     private var debugMenuEnabled by mutableStateOf(false)
     private var stationDiscoveryNotificationEnabled by mutableStateOf(true)
@@ -312,6 +316,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             CitsBridgeService.PREF_CAM_INTERVAL_MS,
             CitsBridgeService.DEFAULT_CAM_INTERVAL_MS,
         ).toString()
+        camRandomizationEnabled = prefs.getBoolean(CitsBridgeService.PREF_CAM_RANDOMIZE_MAC, true)
+        camRandomizationIntervalSeconds = (prefs.getInt(
+            CitsBridgeService.PREF_CAM_RANDOMIZATION_INTERVAL_MS,
+            CitsBridgeService.DEFAULT_CAM_RANDOMIZATION_INTERVAL_MS,
+        ) / 1_000).toString()
         status = status.copy(
             discoveredDevices = prefs.getStringSet(CitsBridgeService.PREF_DISCOVERED_MAC_ADDRESSES, emptySet())
                 ?.size
@@ -370,6 +379,10 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     onStopReplay = ::stopReplay,
                     camIntervalMs = camIntervalMs,
                     onCamIntervalChange = { camIntervalMs = it },
+                    camRandomizationEnabled = camRandomizationEnabled,
+                    onCamRandomizationEnabledChange = { camRandomizationEnabled = it },
+                    camRandomizationIntervalSeconds = camRandomizationIntervalSeconds,
+                    onCamRandomizationIntervalChange = { camRandomizationIntervalSeconds = it },
                     onConfigureCam = ::configureCam,
                     sremProfile = sremProfile,
                     onSremProfileChange = { sremProfile = it },
@@ -1017,10 +1030,21 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             ?.coerceIn(CitsBridgeService.MIN_CAM_INTERVAL_MS, CitsBridgeService.MAX_CAM_INTERVAL_MS)
             ?: CitsBridgeService.DEFAULT_CAM_INTERVAL_MS
         camIntervalMs = interval.toString()
+        val randomizationIntervalMs = camRandomizationIntervalSeconds.toLongOrNull()
+            ?.times(1_000L)
+            ?.coerceIn(
+                CitsBridgeService.MIN_CAM_RANDOMIZATION_INTERVAL_MS.toLong(),
+                CitsBridgeService.MAX_CAM_RANDOMIZATION_INTERVAL_MS.toLong(),
+            )
+            ?.toInt()
+            ?: CitsBridgeService.DEFAULT_CAM_RANDOMIZATION_INTERVAL_MS
+        camRandomizationIntervalSeconds = (randomizationIntervalMs / 1_000).toString()
         sendServiceIntent(CitsBridgeService.ACTION_CONFIGURE_CAM) {
             putExtra(CitsBridgeService.EXTRA_CAM_ENABLED, enabled)
             putExtra(CitsBridgeService.EXTRA_CAM_STATION_TYPE, sremProfile.stationType.code)
             putExtra(CitsBridgeService.EXTRA_CAM_INTERVAL_MS, interval)
+            putExtra(CitsBridgeService.EXTRA_CAM_RANDOMIZE_MAC, camRandomizationEnabled)
+            putExtra(CitsBridgeService.EXTRA_CAM_RANDOMIZATION_INTERVAL_MS, randomizationIntervalMs)
         }
     }
 

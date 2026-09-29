@@ -30,7 +30,11 @@ class SremEncodingTest {
 
     @Test
     fun sremFrameExtractsAsMessageNineOnSremPort() {
-        val frame = ItsG5FrameBuilder.sremFrame(identity, request)
+        val frame = ItsG5FrameBuilder.sremFrame(
+            identity,
+            request,
+            ItsG5FrameBuilder.SequenceCounters(initialWlanSequence = 0, initialGbcSequenceId = 0),
+        )
         val packet = ItsFrameExtractor.extract(frame)
 
         requireNotNull(packet)

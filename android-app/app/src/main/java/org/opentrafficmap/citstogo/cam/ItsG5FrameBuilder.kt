@@ -1,6 +1,7 @@
 package org.opentrafficmap.citstogo.cam
 
 import java.io.ByteArrayOutputStream
+import java.security.SecureRandom
 import java.util.concurrent.atomic.AtomicInteger
 import org.opentrafficmap.citstogo.srem.SremIdentity
 import org.opentrafficmap.citstogo.srem.SremRequest
@@ -11,11 +12,31 @@ object ItsG5FrameBuilder {
     private const val SREM_PORT = 2007
     private const val GEONETWORKING_ETHERTYPE = 0x8947
 
+    /**
+     * Per-identity transmit sequence counters. A station that keeps broadcasting after a MAC
+     * change with a continuing counter ramp is still trivially trackable, so each randomized
+     * identity starts from fresh random counter values.
+     */
+    class SequenceCounters(initialWlanSequence: Int, initialGbcSequenceId: Int) {
+        private val wlanSequence = AtomicInteger(initialWlanSequence and 0x0fff)
+        private val gbcSequence = AtomicInteger(initialGbcSequenceId and 0xffff)
+
+        fun nextWlanSequence(): Int = wlanSequence.getAndIncrement() and 0x0fff
+
+        fun nextGbcSequenceId(): Int = gbcSequence.getAndIncrement() and 0xffff
+
+        companion object {
+            fun randomized(random: SecureRandom = SecureRandom()): SequenceCounters =
+                SequenceCounters(random.nextInt(0x1000), random.nextInt(0x1_0000))
+        }
+    }
+
     fun camFrame(
         identity: CamIdentity,
         stationType: StationType,
         position: CamPosition,
         nowUnixMs: Long,
+        counters: SequenceCounters,
     ): ByteArray {
         val cam = CamUperEncoder.encode(identity, stationType, position, nowUnixMs)
         return shbFrame(
@@ -30,21 +51,28 @@ object ItsG5FrameBuilder {
             positionAccurate = position.positionAccurate,
             nowUnixMs = nowUnixMs,
             qosTid = 3,
+            counters = counters,
         )
     }
 
     fun sremFrame(
         identity: CamIdentity,
         request: SremRequest,
+        counters: SequenceCounters,
     ): ByteArray {
         val srem = SremUperEncoder.encode(
             SremIdentity(identity.stationId, identity.macAddress),
             request,
         )
-        return gbcSremFrame(identity, request, srem)
+        return gbcSremFrame(identity, request, srem, counters)
     }
 
-    private fun gbcSremFrame(identity: CamIdentity, request: SremRequest, payload: ByteArray): ByteArray {
+    private fun gbcSremFrame(
+        identity: CamIdentity,
+        request: SremRequest,
+        payload: ByteArray,
+        counters: SequenceCounters,
+    ): ByteArray {
         val btp = ByteArrayOutputStream().apply {
             putU16(SREM_PORT)
             putU16(0)
@@ -69,7 +97,7 @@ object ItsG5FrameBuilder {
             putU16(btp.size)
             write(4)
             write(0)
-            putU16(gbcSequence.getAndIncrement() and 0xffff)
+            putU16(counters.nextGbcSequenceId())
             putU16(0)
             write(gnAddress(request.profile.stationType, identity.macAddress))
             putU32(CamUperEncoder.timestampIts(request.nowUnixMs) and 0xffff_ffffL)
@@ -91,7 +119,7 @@ object ItsG5FrameBuilder {
             write(BROADCAST)
             write(identity.macAddress)
             write(BROADCAST)
-            val sequenceControl = (wlanSequence.getAndIncrement() and 0x0fff) shl 4
+            val sequenceControl = counters.nextWlanSequence() shl 4
             write(sequenceControl and 0xff)
             write((sequenceControl ushr 8) and 0xff)
             write(0x21) // TID 1, ACK policy 1.
@@ -114,6 +142,7 @@ object ItsG5FrameBuilder {
         positionAccurate: Boolean,
         nowUnixMs: Long,
         qosTid: Int,
+        counters: SequenceCounters,
     ): ByteArray {
         val btp = ByteArrayOutputStream().apply {
             putU16(btpDestinationPort)
@@ -155,7 +184,11 @@ object ItsG5FrameBuilder {
             write(BROADCAST)
             write(macAddress)
             write(BROADCAST)
-            write(byteArrayOf(0, 0, (qosTid and 0x0f).toByte(), 0))
+            val sequenceControl = counters.nextWlanSequence() shl 4
+            write(sequenceControl and 0xff)
+            write((sequenceControl ushr 8) and 0xff)
+            write(qosTid and 0x0f)
+            write(0)
             // LLC/SNAP with GeoNetworking EtherType.
             write(byteArrayOf(0xaa.toByte(), 0xaa.toByte(), 0x03, 0, 0, 0))
             putU16(GEONETWORKING_ETHERTYPE)
@@ -183,6 +216,4 @@ object ItsG5FrameBuilder {
     private val BROADCAST = ByteArray(6) { 0xff.toByte() }
     private val GEONETWORKING_LATITUDE_RANGE = -899_999_999..899_999_999
     private val GEONETWORKING_LONGITUDE_RANGE = -1_799_999_999..1_799_999_999
-    private val gbcSequence = AtomicInteger()
-    private val wlanSequence = AtomicInteger()
 }

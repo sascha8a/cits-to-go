@@ -30,6 +30,7 @@ import org.opentrafficmap.citstogo.cam.CamIdentity
 import org.opentrafficmap.citstogo.cam.CamPosition
 import org.opentrafficmap.citstogo.cam.ItsG5FrameBuilder
 import org.opentrafficmap.citstogo.cam.StationType
+import org.opentrafficmap.citstogo.cam.randomizedCamIdentity
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
 import org.opentrafficmap.citstogo.intersection.IntersectionStateStore
@@ -94,11 +95,16 @@ class CitsBridgeService : Service() {
     private val nextSremSequenceNumber = AtomicLong(1)
     private val pendingTx = ConcurrentHashMap<Long, PendingTx>()
     private val pendingSremRequests = ConcurrentHashMap<Int, PendingSremRequest>()
+    private lateinit var baseCamIdentity: CamIdentity
     private lateinit var camIdentity: CamIdentity
+    private var camSequenceCounters = ItsG5FrameBuilder.SequenceCounters.randomized()
     @Volatile private var lastLocation: Location? = null
     private var camEnabled = false
     private var camStationType = StationType.PEDESTRIAN
     private var camIntervalMs = DEFAULT_CAM_INTERVAL_MS
+    private var camMacRandomizationEnabled = true
+    private var camRandomizationIntervalMs = DEFAULT_CAM_RANDOMIZATION_INTERVAL_MS
+    private var lastCamIdentityRotationElapsedMs = 0L
     private var lastCamGeneratedElapsedMs = 0L
     private var lastCamLocation: Location? = null
     private val intersectionStore = IntersectionStateStore()
@@ -158,6 +164,7 @@ class CitsBridgeService : Service() {
             if (!camEnabled) return
             val elapsedMs = SystemClock.elapsedRealtime()
             val wallClockMs = System.currentTimeMillis()
+            rotateCamIdentityIfDue(elapsedMs)
             val sampledLocation = lastLocation?.takeIf {
                 it.time in (wallClockMs - MAX_LOCATION_AGE_MS)..(wallClockMs + 1_000L)
             }
@@ -175,6 +182,7 @@ class CitsBridgeService : Service() {
                 camStationType,
                 CamPosition.fromLocation(sampledLocation),
                 referenceTimeMs,
+                camSequenceCounters,
             )
             if (queueTransmit(packet, TxKind.Cam)) {
                 lastCamGeneratedElapsedMs = elapsedMs
@@ -182,6 +190,25 @@ class CitsBridgeService : Service() {
             }
             handler.postDelayed(this, CAM_TRIGGER_CHECK_MS)
         }
+    }
+
+    /**
+     * Applies the CAM privacy mode: while randomization is enabled the station periodically
+     * switches to a fresh MAC address, station ID, and randomized transmit sequence counters so
+     * receivers cannot correlate successive CAMs into one tracked vehicle trail. The first CAM
+     * after enabling already uses a rotated identity so the stored identity is never transmitted.
+     */
+    private fun rotateCamIdentityIfDue(nowElapsedMs: Long) {
+        if (!camMacRandomizationEnabled) return
+        if (lastCamIdentityRotationElapsedMs != 0L &&
+            nowElapsedMs - lastCamIdentityRotationElapsedMs < camRandomizationIntervalMs
+        ) return
+        camIdentity = randomizedCamIdentity()
+        camSequenceCounters = ItsG5FrameBuilder.SequenceCounters.randomized()
+        lastCamIdentityRotationElapsedMs = nowElapsedMs
+        lastCamGeneratedElapsedMs = 0L
+        lastCamLocation = null
+        publishStatus("CAM identity randomized to ${formatMac(camIdentity.macAddress)}")
     }
 
     private fun camGenerationDue(nowElapsedMs: Long, location: Location?): Boolean {
@@ -221,7 +248,8 @@ class CitsBridgeService : Service() {
         locationManager = getSystemService(LOCATION_SERVICE) as LocationManager
         spool = MqttSpool(this)
         nodeId = loadOrCreateNodeId()
-        camIdentity = loadOrCreateCamIdentity()
+        baseCamIdentity = loadOrCreateCamIdentity()
+        camIdentity = baseCamIdentity
         loadCamSettings()
         loadMqttSettings()
         discoveredMacAddresses.addAll(loadDiscoveredMacAddresses())
@@ -267,6 +295,8 @@ class CitsBridgeService : Service() {
                 intent.getBooleanExtra(EXTRA_CAM_ENABLED, false),
                 StationType.selectableFromCode(intent.getIntExtra(EXTRA_CAM_STATION_TYPE, StationType.PEDESTRIAN.code)),
                 intent.getIntExtra(EXTRA_CAM_INTERVAL_MS, DEFAULT_CAM_INTERVAL_MS),
+                intent.getBooleanExtra(EXTRA_CAM_RANDOMIZE_MAC, camMacRandomizationEnabled),
+                intent.getIntExtra(EXTRA_CAM_RANDOMIZATION_INTERVAL_MS, camRandomizationIntervalMs),
             )
             ACTION_SEND_SREM -> sendSrem(intent)
             ACTION_REVOKE_TX_APPROVAL -> revokeTxApproval()
@@ -354,7 +384,7 @@ class CitsBridgeService : Service() {
     private fun stopBridge() {
         connectionWanted = false
         mqttEnabled = false
-        configureCam(false, camStationType, camIntervalMs)
+        configureCam(false, camStationType, camIntervalMs, camMacRandomizationEnabled, camRandomizationIntervalMs)
         closeSerial("Connection stopped")
         runCatching { mqttClient.close() }
         stopPcap(log = false)
@@ -869,7 +899,7 @@ class CitsBridgeService : Service() {
             packageRequestUnixMs = packageRequestTimeMs,
         )
         val packet = try {
-            ItsG5FrameBuilder.sremFrame(camIdentity, request)
+            ItsG5FrameBuilder.sremFrame(camIdentity, request, camSequenceCounters)
         } catch (e: Exception) {
             status = status.copy(
                 lastError = "SREM encode failed: ${e.message}",
@@ -914,7 +944,13 @@ class CitsBridgeService : Service() {
         }
     }
 
-    private fun configureCam(enabled: Boolean, stationType: StationType, requestedIntervalMs: Int) {
+    private fun configureCam(
+        enabled: Boolean,
+        stationType: StationType,
+        requestedIntervalMs: Int,
+        randomizeIdentity: Boolean,
+        requestedRandomizationIntervalMs: Int,
+    ) {
         if (enabled && !hasTxApproval()) {
             camEnabled = false
             getSharedPreferences(PREFS, MODE_PRIVATE).edit()
@@ -926,11 +962,16 @@ class CitsBridgeService : Service() {
         }
         camStationType = if (stationType in StationType.selectable) stationType else StationType.PEDESTRIAN
         camIntervalMs = requestedIntervalMs.coerceIn(MIN_CAM_INTERVAL_MS, MAX_CAM_INTERVAL_MS)
+        camMacRandomizationEnabled = randomizeIdentity
+        camRandomizationIntervalMs = requestedRandomizationIntervalMs
+            .coerceIn(MIN_CAM_RANDOMIZATION_INTERVAL_MS, MAX_CAM_RANDOMIZATION_INTERVAL_MS)
         camEnabled = enabled
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
             .putBoolean(PREF_CAM_ENABLED, camEnabled)
             .putInt(PREF_VEHICLE_TYPE, camStationType.code)
             .putInt(PREF_CAM_INTERVAL_MS, camIntervalMs)
+            .putBoolean(PREF_CAM_RANDOMIZE_MAC, camMacRandomizationEnabled)
+            .putInt(PREF_CAM_RANDOMIZATION_INTERVAL_MS, camRandomizationIntervalMs)
             .apply()
         handler.removeCallbacks(camBroadcaster)
         if (camEnabled) {
@@ -943,6 +984,9 @@ class CitsBridgeService : Service() {
             promoteCamForeground()
             lastCamGeneratedElapsedMs = 0
             lastCamLocation = null
+            // A zero rotation stamp makes the first broadcaster tick start from a fresh identity.
+            lastCamIdentityRotationElapsedMs = 0L
+            if (!camMacRandomizationEnabled) camIdentity = baseCamIdentity
             handler.post(camBroadcaster)
         } else {
             stopLocationUpdates()
@@ -1490,16 +1534,16 @@ class CitsBridgeService : Service() {
         if (storedId in 0..0xffff_ffffL && storedMac != null) {
             return CamIdentity(storedId, storedMac)
         }
-        val random = SecureRandom()
-        val stationId = random.nextInt().toLong() and 0xffff_ffffL
-        val mac = ByteArray(6).also(random::nextBytes)
-        mac[0] = ((mac[0].toInt() and 0xfc) or 0x02).toByte()
+        val identity = randomizedCamIdentity()
         prefs.edit()
-            .putLong(PREF_CAM_STATION_ID, stationId)
-            .putString(PREF_CAM_MAC, mac.joinToString(":") { "%02x".format(it) })
+            .putLong(PREF_CAM_STATION_ID, identity.stationId)
+            .putString(PREF_CAM_MAC, formatMac(identity.macAddress))
             .apply()
-        return CamIdentity(stationId, mac)
+        return identity
     }
+
+    private fun formatMac(address: ByteArray): String =
+        address.joinToString(":") { "%02x".format(it) }
 
     private fun parseMac(value: String): ByteArray? {
         val parts = value.split(":")
@@ -1519,6 +1563,10 @@ class CitsBridgeService : Service() {
         camStationType = StationType.selectableFromCode(vehicleTypeCode)
         camIntervalMs = prefs.getInt(PREF_CAM_INTERVAL_MS, DEFAULT_CAM_INTERVAL_MS)
             .coerceIn(MIN_CAM_INTERVAL_MS, MAX_CAM_INTERVAL_MS)
+        camMacRandomizationEnabled = prefs.getBoolean(PREF_CAM_RANDOMIZE_MAC, true)
+        camRandomizationIntervalMs = prefs
+            .getInt(PREF_CAM_RANDOMIZATION_INTERVAL_MS, DEFAULT_CAM_RANDOMIZATION_INTERVAL_MS)
+            .coerceIn(MIN_CAM_RANDOMIZATION_INTERVAL_MS, MAX_CAM_RANDOMIZATION_INTERVAL_MS)
         // Never resume RF transmission merely because the process was recreated.
         camEnabled = false
     }
@@ -1616,6 +1664,8 @@ class CitsBridgeService : Service() {
         const val EXTRA_CAM_SENT = "camSent"
         const val EXTRA_CAM_STATION_TYPE = "camStationType"
         const val EXTRA_CAM_INTERVAL_MS = "camIntervalMs"
+        const val EXTRA_CAM_RANDOMIZE_MAC = "camRandomizeMac"
+        const val EXTRA_CAM_RANDOMIZATION_INTERVAL_MS = "camRandomizationIntervalMs"
         const val EXTRA_SREM_STATE = "sremState"
         const val EXTRA_SREM_SUMMARY = "sremSummary"
         const val EXTRA_SREM_REQUEST_ID = "sremRequestId"
@@ -1653,6 +1703,8 @@ class CitsBridgeService : Service() {
         const val PREF_CAM_ENABLED = "cam_enabled"
         const val PREF_CAM_STATION_TYPE = "cam_station_type"
         const val PREF_CAM_INTERVAL_MS = "cam_interval_ms"
+        const val PREF_CAM_RANDOMIZE_MAC = "cam_randomize_mac"
+        const val PREF_CAM_RANDOMIZATION_INTERVAL_MS = "cam_randomization_interval_ms"
         const val PREF_CAM_STATION_ID = "cam_station_id"
         const val PREF_CAM_MAC = "cam_mac"
         const val PREF_SREM_PROFILE = "srem_profile"
@@ -1666,6 +1718,9 @@ class CitsBridgeService : Service() {
         const val DEFAULT_CAM_INTERVAL_MS = 500
         const val MIN_CAM_INTERVAL_MS = 100
         const val MAX_CAM_INTERVAL_MS = 1_000
+        const val DEFAULT_CAM_RANDOMIZATION_INTERVAL_MS = 60_000
+        const val MIN_CAM_RANDOMIZATION_INTERVAL_MS = 1_000
+        const val MAX_CAM_RANDOMIZATION_INTERVAL_MS = 600_000
         const val INTERSECTION_MAX_AGE_MS = 30_000L
 
         private const val CHANNEL_ID = "cits_bridge"

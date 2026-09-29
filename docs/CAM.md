@@ -10,8 +10,28 @@ The Android generator produces this complete raw frame:
 4. BTP-B with destination port 2001 and port-info 0.
 5. UPER-encoded CAM Release 1.
 
-The CAM header uses protocol version 2 and CAM message ID 2. The stable random
-station ID and locally administered MAC/MID are stored in app preferences.
+The CAM header uses protocol version 2 and CAM message ID 2. A locally
+administered MAC/MID and a stable random station ID are stored in app
+preferences.
+
+## Privacy identity randomization
+
+Following the practice of vehicle OBU privacy modes, CAM broadcast can rotate
+its radio identity on a timer (enabled by default, configurable 1–600 s on the
+CAM page):
+
+- Each rotation generates a fresh locally administered random MAC address and
+  a fresh random CAM station ID, so neither the link-layer address nor the
+  payload station ID links CAMs across rotations.
+- The IEEE 802.11 sequence counter and the GeoNetworking GBC sequence ID are
+  reseeded to random values with every rotation; a continuing counter ramp
+  would otherwise re-identify the station.
+- CAM frames now carry an incrementing sequence number (they previously always
+  sent zero), and the first rotation happens when broadcast starts, so the
+  stored identity is never transmitted while randomization is on.
+- After each rotation the next CAM is generated immediately; the rotation
+  interval is therefore the maximum lifetime of a broadcast identity.
+- Turning the toggle off makes broadcast use the stored identity again.
 
 ## Data population
 

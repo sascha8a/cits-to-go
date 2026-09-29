@@ -12,6 +12,7 @@ import org.opentrafficmap.citstogo.cam.CamIdentity
 import org.opentrafficmap.citstogo.cam.CamPosition
 import org.opentrafficmap.citstogo.cam.ItsG5FrameBuilder
 import org.opentrafficmap.citstogo.cam.StationType
+import org.opentrafficmap.citstogo.cam.randomizedCamIdentity
 import org.opentrafficmap.citstogo.srem.SremRequest
 import org.opentrafficmap.citstogo.srem.SremPosition
 import org.opentrafficmap.citstogo.srem.SremProfile
@@ -22,6 +23,7 @@ class WiresharkPacketValidationTest {
         macAddress = byteArrayOf(0x02, 1, 2, 3, 4, 5),
     )
     private val timestamp = 1_785_242_510_349L
+    private val counters = ItsG5FrameBuilder.SequenceCounters(initialWlanSequence = 0x0f0, initialGbcSequenceId = 0x0fa0)
     private val availablePosition = CamPosition(
         latitude = 482_024_036,
         longitude = 163_691_773,
@@ -42,7 +44,13 @@ class WiresharkPacketValidationTest {
         StationType.entries.forEach { stationType ->
             assertWellFormed(
                 label = "CAM ${stationType.name}",
-                frame = ItsG5FrameBuilder.camFrame(identity, stationType, availablePosition, timestamp),
+                frame = ItsG5FrameBuilder.camFrame(
+                    identity,
+                    stationType,
+                    availablePosition,
+                    timestamp,
+                    counters,
+                ),
                 expectedProtocol = "CAM",
                 expectedMessageId = 2,
                 expectedBtpPort = 2_001,
@@ -60,12 +68,51 @@ class WiresharkPacketValidationTest {
                     stationType,
                     CamPosition.unavailable(),
                     timestamp,
+                    counters,
                 ),
                 expectedProtocol = "CAM",
                 expectedMessageId = 2,
                 expectedBtpPort = 2_001,
             )
         }
+    }
+
+    @Test
+    fun camFramesFromRotatedPrivacyIdentityAreWellFormed() {
+        val rotatedIdentity = randomizedCamIdentity()
+        val rotatedCounters = ItsG5FrameBuilder.SequenceCounters.randomized()
+        val first = ItsG5FrameBuilder.camFrame(
+            rotatedIdentity,
+            StationType.PASSENGER_CAR,
+            availablePosition,
+            timestamp,
+            rotatedCounters,
+        )
+        val second = ItsG5FrameBuilder.camFrame(
+            rotatedIdentity,
+            StationType.PASSENGER_CAR,
+            availablePosition,
+            timestamp + 100L,
+            rotatedCounters,
+        )
+        assertWellFormed(
+            label = "CAM after identity rotation",
+            frame = first,
+            expectedProtocol = "CAM",
+            expectedMessageId = 2,
+            expectedBtpPort = 2_001,
+        )
+        assertWellFormed(
+            label = "CAM after identity rotation, second frame",
+            frame = second,
+            expectedProtocol = "CAM",
+            expectedMessageId = 2,
+            expectedBtpPort = 2_001,
+        )
+        // The rotated address is unicast and locally administered, like the stored identity.
+        assertEquals(0x02, first[10].toInt() and 0x03)
+        // Successive frames carry an incrementing IEEE 802.11 sequence number, not a constant.
+        assertEquals((wlanSequenceNumber(first) + 1) % 0x1000, wlanSequenceNumber(second))
     }
 
     @Test
@@ -91,7 +138,7 @@ class WiresharkPacketValidationTest {
 
             assertWellFormed(
                 label = "SREM ${profile.name}",
-                frame = ItsG5FrameBuilder.sremFrame(identity, request),
+                frame = ItsG5FrameBuilder.sremFrame(identity, request, counters),
                 expectedProtocol = "SREM",
                 expectedMessageId = 9,
                 expectedBtpPort = 2_007,
@@ -99,6 +146,11 @@ class WiresharkPacketValidationTest {
                 expectedRole = if (profile.basicVehicleRole.isExtension) 23 else profile.basicVehicleRole.value,
             )
         }
+    }
+
+    private fun wlanSequenceNumber(frame: ByteArray): Int {
+        val sequenceControl = (frame[22].toInt() and 0xff) or ((frame[23].toInt() and 0xff) shl 8)
+        return sequenceControl ushr 4
     }
 
     private fun assertWellFormed(

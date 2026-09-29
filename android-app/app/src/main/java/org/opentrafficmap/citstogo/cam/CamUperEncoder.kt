@@ -2,6 +2,7 @@ package org.opentrafficmap.citstogo.cam
 
 import android.location.Location
 import android.os.Build
+import java.security.SecureRandom
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
@@ -14,6 +15,18 @@ data class CamIdentity(
         require(stationId in 0..0xffff_ffffL)
         require(macAddress.size == 6)
     }
+}
+
+/**
+ * Fresh locally administered MAC address and random station ID, following the privacy practice
+ * of periodically rotating the identifiers a station exposes. The MAC keeps the unicast bit
+ * clear and the locally-administered bit set, matching the phone's stored identity format.
+ */
+fun randomizedCamIdentity(random: SecureRandom = SecureRandom()): CamIdentity {
+    val stationId = random.nextInt().toLong() and 0xffff_ffffL
+    val mac = ByteArray(6).also(random::nextBytes)
+    mac[0] = ((mac[0].toInt() and 0xfc) or 0x02).toByte()
+    return CamIdentity(stationId, mac)
 }
 
 data class CamPosition(
