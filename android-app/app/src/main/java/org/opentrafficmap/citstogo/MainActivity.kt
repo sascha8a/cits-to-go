@@ -25,6 +25,7 @@ import android.os.Bundle
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.OpenableColumns
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.ActivityResult
@@ -99,6 +100,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var txApproved by mutableStateOf(false)
     private var debugMenuEnabled by mutableStateOf(false)
     private var themeMode by mutableStateOf(ThemeMode.System)
+    private var displayAlwaysOnEnabled by mutableStateOf(false)
     private var stationDiscoveryNotificationEnabled by mutableStateOf(true)
     private var appUpdateNotificationEnabled by mutableStateOf(true)
     private var txApprovalPromptState by mutableStateOf(TxApprovalPromptState.Hidden)
@@ -284,6 +286,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         txApproved = prefs.getBoolean(CitsBridgeService.PREF_TX_APPROVED, false)
         debugMenuEnabled = prefs.getBoolean(PREF_DEBUG_MENU_ENABLED, false)
         themeMode = ThemeMode.fromPreference(prefs.getString(PREF_THEME_MODE, null))
+        displayAlwaysOnEnabled = prefs.getBoolean(PREF_DISPLAY_ALWAYS_ON, false)
+        applyDisplayAlwaysOn()
         stationDiscoveryNotificationEnabled = prefs.getBoolean(CitsBridgeService.PREF_NOTIFY_STATION_DISCOVERY, true)
         appUpdateNotificationEnabled = prefs.getBoolean(CitsBridgeService.PREF_NOTIFY_APP_UPDATE, true)
         intersectionSortMode = IntersectionSortMode.fromPreference(
@@ -402,6 +406,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
                             .putString(PREF_THEME_MODE, mode.name)
                             .apply()
+                    },
+                    displayAlwaysOnEnabled = displayAlwaysOnEnabled,
+                    onDisplayAlwaysOnEnabledChange = { enabled ->
+                        displayAlwaysOnEnabled = enabled
+                        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+                            .putBoolean(PREF_DISPLAY_ALWAYS_ON, enabled)
+                            .apply()
+                        applyDisplayAlwaysOn()
                     },
                     stationDiscoveryNotificationEnabled = stationDiscoveryNotificationEnabled,
                     onStationDiscoveryNotificationChange = { enabled ->
@@ -1131,6 +1143,18 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         }
     }
 
+    /**
+     * Applies the Display Always On preference. The window flag keeps the screen awake only while
+     * this activity is in the foreground, so the phone sleeps normally as soon as the app leaves it.
+     */
+    private fun applyDisplayAlwaysOn() {
+        if (displayAlwaysOnEnabled) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
     private fun setIntersectionLocationActive(active: Boolean) {
         wantsIntersectionLocation = active
         if (active) {
@@ -1349,6 +1373,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         private const val PREF_INTERSECTION_SORT_MODE = "intersection_sort_mode"
         private const val PREF_DEBUG_MENU_ENABLED = "debug_menu_enabled"
         private const val PREF_THEME_MODE = "theme_mode"
+        private const val PREF_DISPLAY_ALWAYS_ON = "display_always_on"
         private const val INTERSECTION_LOCATION_MIN_TIME_MS = 500L
         private const val TX_SHAKE_THRESHOLD_G = 2.7f
         private const val TX_SHAKE_COOLDOWN_MS = 1_200L

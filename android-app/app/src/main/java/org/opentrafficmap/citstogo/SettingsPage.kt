@@ -23,6 +23,7 @@ import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.BrightnessAuto
+import androidx.compose.material.icons.rounded.BrightnessHigh
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.LightMode
@@ -78,6 +79,8 @@ fun SettingsPage(
     onDebugMenuEnabledChange: (Boolean) -> Unit,
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
+    displayAlwaysOnEnabled: Boolean,
+    onDisplayAlwaysOnEnabledChange: (Boolean) -> Unit,
     stationDiscoveryNotificationEnabled: Boolean,
     onStationDiscoveryNotificationChange: (Boolean) -> Unit,
     appUpdateNotificationEnabled: Boolean,
@@ -97,11 +100,6 @@ fun SettingsPage(
         Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        AppearanceCard(
-            themeMode = themeMode,
-            onThemeModeChange = onThemeModeChange,
-        )
-
         MqttCard(
             mqttUri = draftMqttUri,
             onMqttUriChange = { draftMqttUri = it },
@@ -133,6 +131,13 @@ fun SettingsPage(
             onStationDiscoveryNotificationChange = onStationDiscoveryNotificationChange,
             appUpdateNotificationEnabled = appUpdateNotificationEnabled,
             onAppUpdateNotificationChange = onAppUpdateNotificationChange,
+        )
+
+        AppearanceCard(
+            themeMode = themeMode,
+            onThemeModeChange = onThemeModeChange,
+            displayAlwaysOnEnabled = displayAlwaysOnEnabled,
+            onDisplayAlwaysOnEnabledChange = onDisplayAlwaysOnEnabledChange,
         )
 
         DebugCard(
@@ -576,6 +581,8 @@ private fun BluetoothCard(
 private fun AppearanceCard(
     themeMode: ThemeMode,
     onThemeModeChange: (ThemeMode) -> Unit,
+    displayAlwaysOnEnabled: Boolean,
+    onDisplayAlwaysOnEnabledChange: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
 
@@ -622,7 +629,7 @@ private fun AppearanceCard(
                         color = Color(ContextCompat.getColor(context, R.color.on_surface)),
                     )
                     Text(
-                        "Choose the light or dark colour theme.",
+                        "Choose the colour theme and display behaviour.",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
                     )
@@ -646,6 +653,19 @@ private fun AppearanceCard(
                     onSelect = { onThemeModeChange(mode) },
                 )
             }
+
+            HorizontalDivider(
+                color = Color(ContextCompat.getColor(context, R.color.divider)),
+                modifier = Modifier.padding(vertical = 4.dp),
+            )
+
+            SettingToggleRow(
+                icon = Icons.Rounded.BrightnessHigh,
+                title = "Display Always On",
+                description = "Keep the phone awake and the screen on while the app is in the foreground.",
+                checked = displayAlwaysOnEnabled,
+                onCheckedChange = onDisplayAlwaysOnEnabledChange,
+            )
         }
     }
 }
@@ -753,14 +773,14 @@ private fun NotificationsCard(
                 modifier = Modifier.padding(vertical = 4.dp),
             )
 
-            NotificationToggleRow(
+            SettingToggleRow(
                 title = "Station discovery",
                 description = "Notify when a new C-ITS station is discovered.",
                 checked = stationDiscoveryNotificationEnabled,
                 onCheckedChange = onStationDiscoveryNotificationChange,
             )
 
-            NotificationToggleRow(
+            SettingToggleRow(
                 title = "App updates",
                 description = "Notify when a new release is available on Codeberg.",
                 checked = appUpdateNotificationEnabled,
@@ -771,11 +791,12 @@ private fun NotificationsCard(
 }
 
 @Composable
-private fun NotificationToggleRow(
+private fun SettingToggleRow(
     title: String,
     description: String,
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
+    icon: ImageVector? = null,
 ) {
     val context = LocalContext.current
 
@@ -783,6 +804,15 @@ private fun NotificationToggleRow(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (icon != null) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(modifier = Modifier.size(12.dp))
+        }
         Column(
             modifier = Modifier.weight(1f),
         ) {
