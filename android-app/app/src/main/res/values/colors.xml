@@ -45,12 +45,21 @@
     <color name="success_variant">#047857</color>
     <color name="success_container">#E0F2EF</color>
     <color name="on_success_container">#0F9D83</color>
+    <color name="on_success">#FFFFFF</color>
 
     <!-- Info Colors -->
     <color name="info">#2563EB</color>
     <color name="info_variant">#224377</color>
     <color name="info_container">#E5F1FA</color>
     <color name="on_info_container">#315B78</color>
+    <color name="on_info">#FFFFFF</color>
+    <color name="on_info_variant">#FFFFFF</color>
+    <color name="on_secondary_variant">#FFFFFF</color>
+    <color name="on_warning">#FFFFFF</color>
+
+    <!-- Intersection Map Paint -->
+    <color name="lane_backing">#FFFFFF</color>
+    <color name="on_phase_active">#FFFFFF</color>
 
     <!-- UI Components -->
     <color name="card">#FFFFFF</color>

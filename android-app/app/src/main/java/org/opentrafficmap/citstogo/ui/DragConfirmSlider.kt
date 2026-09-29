@@ -31,6 +31,7 @@ fun DragConfirmSlider(
     direction: DragConfirmDirection,
     trackColor: Color,
     fillColor: Color,
+    thumbRingColor: Color = Color.White,
     modifier: Modifier = Modifier,
     onDragStateChange: (Boolean) -> Unit = {},
     onDragFinished: () -> Unit = {},
@@ -96,7 +97,7 @@ fun DragConfirmSlider(
         val fillStart = if (direction == DragConfirmDirection.LeftToRight) Offset(startX, centerY) else Offset(thumbX, centerY)
         val fillEnd = if (direction == DragConfirmDirection.LeftToRight) Offset(thumbX, centerY) else Offset(endX, centerY)
         drawLine(fillColor, fillStart, fillEnd, trackHeight, StrokeCap.Round)
-        drawCircle(Color.White, thumbRadius + 3.dp.toPx(), Offset(thumbX, centerY))
+        drawCircle(thumbRingColor, thumbRadius + 3.dp.toPx(), Offset(thumbX, centerY))
         drawCircle(fillColor, thumbRadius, Offset(thumbX, centerY))
         drawThumbContent(Offset(thumbX, centerY), thumbRadius)
     }

@@ -76,6 +76,11 @@ private fun HomeStatusBanner(status: BridgeStatus) {
     } else {
         Color(ContextCompat.getColor(context, R.color.secondary_variant))
     }
+    val bannerInk = if (status.running) {
+        Color(ContextCompat.getColor(context, R.color.on_success))
+    } else {
+        Color(ContextCompat.getColor(context, R.color.on_secondary_variant))
+    }
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(8.dp),
@@ -87,11 +92,11 @@ private fun HomeStatusBanner(status: BridgeStatus) {
         ) {
             Text(
                 if (status.running) "Capture active" else "Capture stopped",
-                color = Color.White,
+                color = bannerInk,
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold,
             )
-            Text(detail, color = Color.White.copy(alpha = .9f), fontSize = 14.sp)
+            Text(detail, color = bannerInk.copy(alpha = .9f), fontSize = 14.sp)
         }
     }
 }
@@ -126,7 +131,7 @@ private fun ConnectionTabs(
                 shape = shape,
                 colors = SegmentedButtonDefaults.colors(
                     activeContainerColor = Color(ContextCompat.getColor(context, R.color.primary)),
-                    activeContentColor = Color.White,
+                    activeContentColor = Color(ContextCompat.getColor(context, R.color.on_primary)),
                     inactiveContainerColor = Color.Transparent,
                     inactiveContentColor = Color(ContextCompat.getColor(context, R.color.secondary)),
                     disabledActiveContainerColor = Color(ContextCompat.getColor(context, R.color.divider)),
@@ -212,6 +217,11 @@ private fun HomeActionButton(
         actionColor -> Color(ContextCompat.getColor(context, R.color.info_variant))
         else -> MaterialTheme.colorScheme.primary
     }
+    val contentColor = when {
+        stopping -> Color(ContextCompat.getColor(context, R.color.on_error))
+        actionColor -> Color(ContextCompat.getColor(context, R.color.on_info_variant))
+        else -> Color(ContextCompat.getColor(context, R.color.on_primary))
+    }
     Button(
         onClick = onClick,
         enabled = enabled,
@@ -219,7 +229,7 @@ private fun HomeActionButton(
         shape = RoundedCornerShape(7.dp),
         colors = ButtonDefaults.buttonColors(
             containerColor = containerColor,
-            contentColor = Color.White,
+            contentColor = contentColor,
             disabledContainerColor = Color(ContextCompat.getColor(context, R.color.divider)),
             disabledContentColor = Color(ContextCompat.getColor(context, R.color.disabled)),
         ),
@@ -245,10 +255,11 @@ private fun HomeMetrics(status: BridgeStatus, packetsPerSecond: Double) {
 
 @Composable
 private fun HomeMetric(label: String, value: Long, detail: String?, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
     Card(
         modifier = modifier,
         shape = RoundedCornerShape(7.dp),
-        colors = CardDefaults.cardColors(containerColor = Color.White),
+        colors = CardDefaults.cardColors(containerColor = Color(ContextCompat.getColor(context, R.color.card))),
     ) {
         Column(
             Modifier.padding(horizontal = 11.dp, vertical = 15.dp),

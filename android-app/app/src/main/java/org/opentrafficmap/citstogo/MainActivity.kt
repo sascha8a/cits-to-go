@@ -98,6 +98,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     )
     private var txApproved by mutableStateOf(false)
     private var debugMenuEnabled by mutableStateOf(false)
+    private var themeMode by mutableStateOf(ThemeMode.System)
     private var stationDiscoveryNotificationEnabled by mutableStateOf(true)
     private var appUpdateNotificationEnabled by mutableStateOf(true)
     private var txApprovalPromptState by mutableStateOf(TxApprovalPromptState.Hidden)
@@ -282,6 +283,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         connectionMode = ConnectionMode.fromWireValue(prefs.getString(PREF_CONNECTION_MODE, null))
         txApproved = prefs.getBoolean(CitsBridgeService.PREF_TX_APPROVED, false)
         debugMenuEnabled = prefs.getBoolean(PREF_DEBUG_MENU_ENABLED, false)
+        themeMode = ThemeMode.fromPreference(prefs.getString(PREF_THEME_MODE, null))
         stationDiscoveryNotificationEnabled = prefs.getBoolean(CitsBridgeService.PREF_NOTIFY_STATION_DISCOVERY, true)
         appUpdateNotificationEnabled = prefs.getBoolean(CitsBridgeService.PREF_NOTIFY_APP_UPDATE, true)
         intersectionSortMode = IntersectionSortMode.fromPreference(
@@ -338,7 +340,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         refreshDevices()
         selectedDeviceName = selectedDeviceName ?: devices.firstOrNull()?.deviceName
         setContent {
-            CitsTheme {
+            CitsTheme(themeMode = themeMode) {
                 CitsApp(
                     devices = devices.toList(),
                     selectedDeviceName = selectedDeviceName,
@@ -392,6 +394,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         debugMenuEnabled = enabled
                         getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
                             .putBoolean(PREF_DEBUG_MENU_ENABLED, enabled)
+                            .apply()
+                    },
+                    themeMode = themeMode,
+                    onThemeModeChange = { mode ->
+                        themeMode = mode
+                        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+                            .putString(PREF_THEME_MODE, mode.name)
                             .apply()
                     },
                     stationDiscoveryNotificationEnabled = stationDiscoveryNotificationEnabled,
@@ -1339,6 +1348,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         private const val PREF_CONNECTION_MODE = "connectionMode"
         private const val PREF_INTERSECTION_SORT_MODE = "intersection_sort_mode"
         private const val PREF_DEBUG_MENU_ENABLED = "debug_menu_enabled"
+        private const val PREF_THEME_MODE = "theme_mode"
         private const val INTERSECTION_LOCATION_MIN_TIME_MS = 500L
         private const val TX_SHAKE_THRESHOLD_G = 2.7f
         private const val TX_SHAKE_COOLDOWN_MS = 1_200L

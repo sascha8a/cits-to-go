@@ -22,8 +22,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import java.util.Locale
 
 @Composable
@@ -155,10 +157,11 @@ private fun DebugSection(
     title: String,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val context = LocalContext.current
     Column(
         Modifier
             .fillMaxWidth()
-            .background(Color.White, RoundedCornerShape(8.dp))
+            .background(Color(ContextCompat.getColor(context, R.color.card)), RoundedCornerShape(8.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {

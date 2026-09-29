@@ -232,10 +232,11 @@ private fun IntersectionPageContent(
     }
     val selectedPair = selectedCrosswalkLaneIds.takeIf { it.size == 2 }
     val sremUiState = sremUiState(status, snapshot, selectedCrosswalkLaneIds, spat)
+    val context = LocalContext.current
     Column(
         Modifier
             .fillMaxWidth()
-            .background(Color.White, RoundedCornerShape(8.dp))
+            .background(Color(ContextCompat.getColor(context, R.color.card)), RoundedCornerShape(8.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
@@ -442,13 +443,14 @@ private fun SremRequestSlider(
         direction = DragConfirmDirection.RightToLeft,
         trackColor = trackColor,
         fillColor = fillColor,
+        thumbRingColor = state.onColor(context),
         onDragStateChange = onDragStateChange,
         onDragFinished = {
             if (!submitted && state == SremRequestUiState.Ready) sliderPosition = 0f
         },
         modifier = modifier.height(96.dp),
     ) { center, radius ->
-        drawSremSliderIcon(state, center, radius)
+        drawSremSliderIcon(state, center, radius, state.onColor(context))
     }
 }
 
@@ -456,8 +458,9 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSremSliderIcon(
     state: SremRequestUiState,
     center: Offset,
     radius: Float,
+    ink: Color,
 ) {
-    val white = Color.White
+    val white = ink
     val strokeWidth = 4.dp.toPx()
     when (state) {
         SremRequestUiState.WalkActive,
@@ -721,7 +724,11 @@ private fun IntersectionRenderer(
     onCrosswalkLaneTap: (MapLane) -> Unit,
 ) {
     val signalGroups = spat?.movementsBySignalGroup.orEmpty()
-    val canvasBackground = Color(0xFFF8FAFC)
+    val context = LocalContext.current
+    fun paletteColor(resId: Int) = Color(ContextCompat.getColor(context, resId))
+    fun phaseColor(state: MovementPhaseState) = paletteColor(state.phaseColorResId())
+    fun baseColor(type: LaneType) = paletteColor(type.baseColorResId())
+    val canvasBackground = paletteColor(R.color.surface)
     var zoomScale by rememberSaveable(map.key.toString(), map.revision) { mutableStateOf(1f) }
     var panX by rememberSaveable(map.key.toString(), map.revision) { mutableStateOf(0f) }
     var panY by rememberSaveable(map.key.toString(), map.revision) { mutableStateOf(0f) }
@@ -880,20 +887,20 @@ private fun IntersectionRenderer(
                 val accuracyRadius = (accuracy * 100f * scale * zoomScale)
                     .coerceIn(10.dp.toPx(), 48.dp.toPx())
                 drawCircle(
-                    color = Color(0xFF2563EB).copy(alpha = 0.08f),
+                    color = paletteColor(R.color.info).copy(alpha = 0.08f),
                     radius = accuracyRadius,
                     center = center,
                 )
                 drawCircle(
-                    color = Color(0xFF2563EB).copy(alpha = 0.24f),
+                    color = paletteColor(R.color.info).copy(alpha = 0.24f),
                     radius = accuracyRadius,
                     center = center,
                     style = Stroke(width = 1.dp.toPx()),
                 )
             }
-            drawCircle(Color.White, radius = 8.dp.toPx(), center = center)
-            drawCircle(Color(0xFF2563EB), radius = 6.dp.toPx(), center = center)
-            drawCircle(Color.White, radius = 2.dp.toPx(), center = center)
+            drawCircle(paletteColor(R.color.on_info), radius = 8.dp.toPx(), center = center)
+            drawCircle(paletteColor(R.color.info), radius = 6.dp.toPx(), center = center)
+            drawCircle(paletteColor(R.color.on_info), radius = 2.dp.toPx(), center = center)
         }
 
         fun drawLocationEdgeArrow(direction: Offset) {
@@ -917,15 +924,15 @@ private fun IntersectionRenderer(
                 lineTo(base.x - normal.x * markerHalfWidth, base.y - normal.y * markerHalfWidth)
                 close()
             }
-            drawCircle(Color.White.copy(alpha = 0.92f), radius = 17.dp.toPx(), center = tip - unit * 9.dp.toPx())
-            drawPath(arrow, Color.White, style = Stroke(width = 5.dp.toPx(), join = StrokeJoin.Round))
-            drawPath(arrow, Color(0xFF2563EB))
+            drawCircle(paletteColor(R.color.on_info).copy(alpha = 0.92f), radius = 17.dp.toPx(), center = tip - unit * 9.dp.toPx())
+            drawPath(arrow, paletteColor(R.color.on_info), style = Stroke(width = 5.dp.toPx(), join = StrokeJoin.Round))
+            drawPath(arrow, paletteColor(R.color.info))
         }
 
         val lanesById = map.lanes.associateBy { it.id }
         fun connectionColorFor(lane: MapLane, connection: LaneConnection): Color {
             val phase = connection.signalGroup?.let { signalGroups[it]?.currentEvent?.state }
-            return phase?.phaseColor() ?: lane.laneType.baseColor()
+            return phase?.let { phaseColor(it) } ?: baseColor(lane.laneType)
         }
 
         fun laneSelectionAlpha(lane: MapLane): Float {
@@ -1023,7 +1030,7 @@ private fun IntersectionRenderer(
             val width: Float,
             val pathEffect: PathEffect? = null,
             val backingWidth: Float? = null,
-            val backingColor: Color = Color.White.copy(alpha = 0.84f),
+            val backingColor: Color = paletteColor(R.color.lane_backing).copy(alpha = 0.84f),
             val centerGapWidth: Float? = null,
             val unsignalizedAlpha: Float = 0.72f,
         )
@@ -1034,21 +1041,21 @@ private fun IntersectionRenderer(
                 width = 5.dp.toPx(),
                 pathEffect = crosswalkDash,
                 backingWidth = 8.dp.toPx(),
-                backingColor = Color.White.copy(alpha = 0.76f),
+                backingColor = paletteColor(R.color.lane_backing).copy(alpha = 0.76f),
                 unsignalizedAlpha = 0.76f,
             )
             LaneType.Bike -> LaneVisualStyle(
                 width = 3.5.dp.toPx(),
                 pathEffect = bikeDash,
                 backingWidth = 5.5.dp.toPx(),
-                backingColor = Color.White.copy(alpha = 0.58f),
+                backingColor = paletteColor(R.color.lane_backing).copy(alpha = 0.58f),
                 unsignalizedAlpha = 0.42f,
             )
             LaneType.Sidewalk -> LaneVisualStyle(
                 width = 3.dp.toPx(),
                 pathEffect = sidewalkDash,
                 backingWidth = 5.dp.toPx(),
-                backingColor = Color.White.copy(alpha = 0.5f),
+                backingColor = paletteColor(R.color.lane_backing).copy(alpha = 0.5f),
                 unsignalizedAlpha = 0.28f,
             )
             LaneType.Median -> LaneVisualStyle(
@@ -1064,7 +1071,7 @@ private fun IntersectionRenderer(
             LaneType.TrackedVehicle -> LaneVisualStyle(
                 width = 6.dp.toPx(),
                 backingWidth = 8.dp.toPx(),
-                backingColor = Color.White.copy(alpha = 0.54f),
+                backingColor = paletteColor(R.color.lane_backing).copy(alpha = 0.54f),
                 centerGapWidth = 3.dp.toPx(),
                 unsignalizedAlpha = 0.4f,
             )
@@ -1141,7 +1148,7 @@ private fun IntersectionRenderer(
 
         map.lanes.sortedBy { renderOrder(it.laneType) }.forEach { lane ->
             if (lane.nodes.size < 2) return@forEach
-            val color = lane.laneType.baseColor()
+            val color = baseColor(lane.laneType)
             val path = lanePath(lane)
             val style = styleFor(lane.laneType)
             val selectionAlpha = laneSelectionAlpha(lane)
@@ -1155,7 +1162,7 @@ private fun IntersectionRenderer(
             if (lane.id in selectedCrosswalkLaneIds) {
                 drawPath(
                     path = path,
-                    color = Color(0xFF0F766E),
+                    color = paletteColor(R.color.primary),
                     style = Stroke(
                         width = style.width + 7.dp.toPx(),
                         cap = StrokeCap.Round,
@@ -1164,7 +1171,7 @@ private fun IntersectionRenderer(
                 )
                 drawPath(
                     path = path,
-                    color = Color.White,
+                    color = paletteColor(R.color.on_primary),
                     style = Stroke(
                         width = style.width + 3.dp.toPx(),
                         cap = StrokeCap.Round,
@@ -1238,7 +1245,7 @@ private fun IntersectionRenderer(
         }
         if (zoomScale >= LANE_TIMING_ZOOM_THRESHOLD || selectedCrosswalkLaneIds.isNotEmpty()) {
             val textPaint = AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
-                color = Color.White.toArgb()
+                color = paletteColor(R.color.on_phase_active).toArgb()
                 textAlign = AndroidPaint.Align.LEFT
                 textSize = 12.dp.toPx()
                 typeface = AndroidTypeface.create(AndroidTypeface.DEFAULT, AndroidTypeface.BOLD)
@@ -1290,12 +1297,12 @@ private fun IntersectionRenderer(
                 val deemphasized = emphasizedSignalGroups.isNotEmpty() &&
                     representative.signalGroup !in emphasizedSignalGroups
                 drawRoundRect(
-                    color = event.state.phaseColor().copy(alpha = if (deemphasized) 0.16f else 0.94f),
+                    color = phaseColor(event.state).copy(alpha = if (deemphasized) 0.16f else 0.94f),
                     topLeft = topLeft,
                     size = Size(labelWidth, labelHeight),
                     cornerRadius = CornerRadius(5.dp.toPx(), 5.dp.toPx()),
                 )
-                textPaint.color = (if (deemphasized) Color(0xFF64748B) else Color.White).toArgb()
+                textPaint.color = (if (deemphasized) paletteColor(R.color.on_surface_variant) else paletteColor(R.color.on_phase_active)).toArgb()
                 drawContext.canvas.nativeCanvas.drawText(
                     label,
                     topLeft.x + horizontalPadding,
@@ -1329,6 +1336,7 @@ private fun IntersectionRenderer(
 
 @Composable
 private fun SignalTimingPanel(snapshot: IntersectionSnapshot?, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
     val map = snapshot?.map
     val spat = snapshot?.spat
     val movements = spat?.movements.orEmpty()
@@ -1344,7 +1352,7 @@ private fun SignalTimingPanel(snapshot: IntersectionSnapshot?, modifier: Modifie
     Column(
         modifier
             .fillMaxWidth()
-            .background(Color.White, RoundedCornerShape(8.dp))
+            .background(Color(ContextCompat.getColor(context, R.color.card)), RoundedCornerShape(8.dp))
             .padding(14.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -1397,7 +1405,11 @@ private fun SignalTimingPanel(snapshot: IntersectionSnapshot?, modifier: Modifie
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Canvas(Modifier.width(18.dp).height(18.dp)) {
-                        drawCircle(event?.state?.phaseColor() ?: Color(0xFF94A3B8), radius = 6.dp.toPx())
+                        drawCircle(
+                            event?.state?.let { Color(ContextCompat.getColor(context, it.phaseColorResId())) }
+                                ?: Color(ContextCompat.getColor(context, R.color.lane_other)),
+                            radius = 6.dp.toPx(),
+                        )
                     }
                     Text(event?.state?.label ?: "Unknown")
                 }
@@ -1411,28 +1423,28 @@ private fun SignalTimingPanel(snapshot: IntersectionSnapshot?, modifier: Modifie
     }
 }
 
-private fun MovementPhaseState.phaseColor(): Color = when (this) {
+private fun MovementPhaseState.phaseColorResId(): Int = when (this) {
     MovementPhaseState.StopAndRemain,
-    MovementPhaseState.StopThenProceed -> Color(0xFFDC2626) // phase_stop
+    MovementPhaseState.StopThenProceed -> R.color.phase_stop
     MovementPhaseState.PreMovement,
     MovementPhaseState.PermissiveClearance,
     MovementPhaseState.ProtectedClearance,
-    MovementPhaseState.CautionConflictingTraffic -> Color(0xFFD97706) // phase_caution
+    MovementPhaseState.CautionConflictingTraffic -> R.color.phase_caution
     MovementPhaseState.PermissiveAllowed,
-    MovementPhaseState.ProtectedAllowed -> Color(0xFF16A34A) // phase_allowed
+    MovementPhaseState.ProtectedAllowed -> R.color.phase_allowed
     MovementPhaseState.Dark,
     MovementPhaseState.Unavailable,
-    MovementPhaseState.Unknown -> Color(0xFF64748B) // phase_unknown
+    MovementPhaseState.Unknown -> R.color.phase_unknown
 }
 
-private fun LaneType.baseColor(): Color = when (this) {
-    LaneType.Vehicle -> Color(0xFF334155) // lane_vehicle
-    LaneType.Crosswalk -> Color(0xFF7C3AED) // lane_crosswalk
-    LaneType.Bike -> Color(0xFF0891B2) // lane_bike
-    LaneType.Sidewalk -> Color(0xFF64748B) // lane_sidewalk
-    LaneType.TrackedVehicle -> Color(0xFFA16207) // lane_tracked_vehicle
-    LaneType.Parking -> Color(0xFF475569) // lane_parking
+private fun LaneType.baseColorResId(): Int = when (this) {
+    LaneType.Vehicle -> R.color.lane_vehicle
+    LaneType.Crosswalk -> R.color.lane_crosswalk
+    LaneType.Bike -> R.color.lane_bike
+    LaneType.Sidewalk -> R.color.lane_sidewalk
+    LaneType.TrackedVehicle -> R.color.lane_tracked_vehicle
+    LaneType.Parking -> R.color.lane_parking
     LaneType.Median,
     LaneType.Striping,
-    LaneType.Other -> Color(0xFF94A3B8) // lane_other
+    LaneType.Other -> R.color.lane_other
 }

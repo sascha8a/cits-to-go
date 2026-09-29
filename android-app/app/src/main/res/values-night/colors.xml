@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Dark variants of the semantic UI tokens declared in ../values/colors.xml.
+    Layer hierarchy mirrors the light theme: background < surface < card < surface_variant.
+    Data-visualisation colours (lane_*, phase_*), confetti and the launcher background are
+    deliberately not overridden: they carry protocol meaning and stay constant in both themes.
+-->
+<resources>
+    <!-- Primary Brand Colors -->
+    <color name="primary">#2DD4BF</color>
+    <color name="primary_variant">#5EEAD4</color>
+    <color name="primary_container">#12403B</color>
+    <color name="on_primary">#03251F</color>
+    <color name="on_primary_container">#99F6E4</color>
+
+    <!-- Secondary Colors -->
+    <color name="secondary">#94A3B8</color>
+    <color name="secondary_variant">#7C8DA6</color>
+    <color name="secondary_container">#1E293B</color>
+    <color name="on_secondary">#0F172A</color>
+    <color name="on_secondary_container">#CBD5E1</color>
+
+    <!-- Tertiary Colors -->
+    <color name="tertiary">#FBBF24</color>
+    <color name="tertiary_container">#4A2E0A</color>
+    <color name="on_tertiary">#241503</color>
+
+    <!-- Background & Surface -->
+    <color name="background">#0B1320</color>
+    <color name="surface">#101A2B</color>
+    <color name="surface_variant">#1C2B47</color>
+    <color name="on_surface">#E6EDF6</color>
+    <color name="on_surface_variant">#97A6BC</color>
+
+    <!-- Error Colors -->
+    <color name="error">#F87171</color>
+    <color name="error_container">#4C1E22</color>
+    <color name="error_light">#5C2327</color>
+    <color name="on_error">#2A060A</color>
+    <color name="on_error_container">#FCA5A5</color>
+
+    <!-- Warning Colors -->
+    <color name="warning">#F59E0B</color>
+    <color name="warning_container">#453006</color>
+    <color name="on_warning_container">#FCD34D</color>
+
+    <!-- Success Colors -->
+    <color name="success">#4ADE80</color>
+    <color name="success_variant">#34D399</color>
+    <color name="success_container">#0E3B2F</color>
+    <color name="on_success_container">#6EE7B7</color>
+    <color name="on_success">#052E16</color>
+
+    <!-- Info Colors -->
+    <color name="info">#60A5FA</color>
+    <color name="info_variant">#93C5FD</color>
+    <color name="info_container">#1A3352</color>
+    <color name="on_info_container">#BFDBFE</color>
+    <color name="on_info">#0B2545</color>
+    <color name="on_info_variant">#0F172A</color>
+    <color name="on_secondary_variant">#101A2B</color>
+    <color name="on_warning">#3B2405</color>
+
+    <!-- Intersection Map Paint -->
+    <color name="lane_backing">#253450</color>
+    <color name="on_phase_active">#0B1320</color>
+
+    <!-- UI Components -->
+    <color name="card">#16233B</color>
+    <color name="divider">#24334D</color>
+    <color name="border">#3B4C68</color>
+    <color name="border_active">#2DD4BF</color>
+    <color name="disabled">#55657E</color>
+
+    <!-- Status Indicator -->
+    <color name="status_indicator_active">#2DD4BF</color>
+    <color name="status_indicator_inactive">#64748B</color>
+
+    <!-- Lane Types (Intersection View): lightness inverted so roads stay readable on the dark canvas -->
+    <color name="lane_vehicle">#C3CFDF</color>
+    <color name="lane_crosswalk">#A78BFA</color>
+    <color name="lane_bike">#22D3EE</color>
+    <color name="lane_sidewalk">#93A5BC</color>
+    <color name="lane_tracked_vehicle">#F59E0B</color>
+    <color name="lane_parking">#A9B9CE</color>
+    <color name="lane_other">#6E7F96</color>
+
+    <!-- Movement Phases -->
+    <color name="phase_stop">#F87171</color>
+    <color name="phase_caution">#FBBF24</color>
+    <color name="phase_allowed">#4ADE80</color>
+    <color name="phase_unknown">#94A3B8</color>
+</resources>

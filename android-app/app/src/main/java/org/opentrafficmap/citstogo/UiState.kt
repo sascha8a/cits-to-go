@@ -94,25 +94,29 @@ enum class SremRequestUiState(
     val label: String,
     val detail: String,
     val colorResId: Int,
+    val onColorResId: Int,
 ) {
-    SelectFirst("Select inbound lane", "Tap any MAPEM lane in the intersection view.", R.color.secondary),
-    SelectSecond("Select connected outbound lane", "Lanes without a declared local connection are dimmed.", R.color.primary),
-    NotReady("Cannot request yet", "Start capture, approve TX, and wait for a fresh location.", R.color.warning),
-    Ready("Slide left to request green", "The request will be sent as an SREM.", R.color.primary),
-    Queued("Request queued", "Waiting for firmware transmit acknowledgement.", R.color.info),
-    Transmitted("SREM transmitted", "Waiting for response or signal change.", R.color.info),
-    Acknowledged("Request acknowledged", "The controller reported that it received the request.", R.color.info),
-    Processing("Controller processing", "The controller is processing the request.", R.color.info),
-    WatchOtherTraffic("Watch other traffic", "The controller granted limited priority with caution.", R.color.warning),
-    Granted("Request granted", "Waiting for the requested movement to become active.", R.color.success),
-    WalkActive("Requested movement active", "SPATEM reports a permitted movement phase.", R.color.success),
-    Rejected("Request rejected", "The controller rejected this request.", R.color.error),
-    UnknownResponse("Response unclear", "The controller response could not be classified.", R.color.warning),
-    Failed("Request failed", "The SREM could not be transmitted.", R.color.error),
-    TimedOut("No response observed", "No matching signal change was seen in time.", R.color.warning),
+    SelectFirst("Select inbound lane", "Tap any MAPEM lane in the intersection view.", R.color.secondary, R.color.on_secondary),
+    SelectSecond("Select connected outbound lane", "Lanes without a declared local connection are dimmed.", R.color.primary, R.color.on_primary),
+    NotReady("Cannot request yet", "Start capture, approve TX, and wait for a fresh location.", R.color.warning, R.color.on_warning),
+    Ready("Slide left to request green", "The request will be sent as an SREM.", R.color.primary, R.color.on_primary),
+    Queued("Request queued", "Waiting for firmware transmit acknowledgement.", R.color.info, R.color.on_info),
+    Transmitted("SREM transmitted", "Waiting for response or signal change.", R.color.info, R.color.on_info),
+    Acknowledged("Request acknowledged", "The controller reported that it received the request.", R.color.info, R.color.on_info),
+    Processing("Controller processing", "The controller is processing the request.", R.color.info, R.color.on_info),
+    WatchOtherTraffic("Watch other traffic", "The controller granted limited priority with caution.", R.color.warning, R.color.on_warning),
+    Granted("Request granted", "Waiting for the requested movement to become active.", R.color.success, R.color.on_success),
+    WalkActive("Requested movement active", "SPATEM reports a permitted movement phase.", R.color.success, R.color.on_success),
+    Rejected("Request rejected", "The controller rejected this request.", R.color.error, R.color.on_error),
+    UnknownResponse("Response unclear", "The controller response could not be classified.", R.color.warning, R.color.on_warning),
+    Failed("Request failed", "The SREM could not be transmitted.", R.color.error, R.color.on_error),
+    TimedOut("No response observed", "No matching signal change was seen in time.", R.color.warning, R.color.on_warning),
 }
 
 fun SremRequestUiState.color(context: android.content.Context): Color = Color(ContextCompat.getColor(context, colorResId))
+
+/** Ink colour for content drawn on top of [color]. */
+fun SremRequestUiState.onColor(context: android.content.Context): Color = Color(ContextCompat.getColor(context, onColorResId))
 
 enum class ActivityLevel { INFO, WARN, ERROR }
 

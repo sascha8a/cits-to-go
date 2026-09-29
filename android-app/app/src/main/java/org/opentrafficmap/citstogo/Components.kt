@@ -326,7 +326,7 @@ fun ActionControls(
                         ButtonDefaults.buttonColors()
                     },
                 ) {
-                    HomeIcon(if (status.running) HomeIcon.STOP else HomeIcon.CAPTURE, Color.White, Modifier.size(18.dp))
+                    HomeIcon(if (status.running) HomeIcon.STOP else HomeIcon.CAPTURE, Color(ContextCompat.getColor(context, R.color.on_error)), Modifier.size(18.dp))
                     Text(if (status.running) "Stop capture" else "Start capture", fontSize = 13.sp, modifier = Modifier.padding(start = 7.dp))
                 }
                 OutlinedButton(
@@ -627,6 +627,7 @@ fun TxApprovalSlider(
         direction = DragConfirmDirection.LeftToRight,
         trackColor = if (enabled) Color(ContextCompat.getColor(context, R.color.error_container)) else Color(ContextCompat.getColor(context, R.color.error_container)),
         fillColor = Color(ContextCompat.getColor(context, R.color.error)),
+        thumbRingColor = Color(ContextCompat.getColor(context, R.color.on_error)),
         onDragStateChange = onDragStateChange,
         modifier = modifier.height(96.dp),
     ) { center, _ ->
@@ -634,9 +635,10 @@ fun TxApprovalSlider(
         val arrowHead = 8.dp.toPx()
         val arrowStart = Offset(center.x - arrowLength / 2f, center.y)
         val arrowEnd = Offset(center.x + arrowLength / 2f, center.y)
-        drawLine(Color.White, arrowStart, arrowEnd, 4.dp.toPx(), StrokeCap.Round)
-        drawLine(Color.White, arrowEnd, Offset(arrowEnd.x - arrowHead, arrowEnd.y - arrowHead), 4.dp.toPx(), StrokeCap.Round)
-        drawLine(Color.White, arrowEnd, Offset(arrowEnd.x - arrowHead, arrowEnd.y + arrowHead), 4.dp.toPx(), StrokeCap.Round)
+        val ink = Color(ContextCompat.getColor(context, R.color.on_error))
+        drawLine(ink, arrowStart, arrowEnd, 4.dp.toPx(), StrokeCap.Round)
+        drawLine(ink, arrowEnd, Offset(arrowEnd.x - arrowHead, arrowEnd.y - arrowHead), 4.dp.toPx(), StrokeCap.Round)
+        drawLine(ink, arrowEnd, Offset(arrowEnd.x - arrowHead, arrowEnd.y + arrowHead), 4.dp.toPx(), StrokeCap.Round)
     }
 }
 

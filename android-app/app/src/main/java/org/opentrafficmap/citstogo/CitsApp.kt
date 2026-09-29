@@ -15,8 +15,15 @@ import org.opentrafficmap.citstogo.BuildConfig
 
 import org.opentrafficmap.citstogo.bridge.BridgeStatus
 import org.opentrafficmap.citstogo.bridge.ConnectionMode
+import android.content.Context
+import android.content.res.Configuration
+import android.os.Build
+import android.view.ContextThemeWrapper
+import android.view.View
+import android.view.WindowInsetsController
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -47,6 +54,7 @@ import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
@@ -64,6 +72,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -72,18 +81,113 @@ import kotlinx.coroutines.delay
 import org.opentrafficmap.citstogo.srem.SremProfile
 
 @Composable
-fun CitsTheme(content: @Composable () -> Unit) {
-    val context = LocalContext.current
-    MaterialTheme(
-        colorScheme = lightColorScheme(
-            primary = Color(ContextCompat.getColor(context, R.color.primary)),
-            secondary = Color(ContextCompat.getColor(context, R.color.secondary)),
-            tertiary = Color(ContextCompat.getColor(context, R.color.tertiary)),
-            surface = Color(ContextCompat.getColor(context, R.color.surface)),
-            background = Color(ContextCompat.getColor(context, R.color.background)),
-        ),
-        content = content,
-    )
+fun CitsTheme(themeMode: ThemeMode = ThemeMode.System, content: @Composable () -> Unit) {
+    val darkTheme = resolveDarkTheme(themeMode, isSystemInDarkTheme())
+    val baseContext = LocalContext.current
+    val context = appThemeContext(baseContext, darkTheme)
+    fun paletteColor(resId: Int) = Color(ContextCompat.getColor(context, resId))
+
+    val colorScheme = if (darkTheme) {
+        darkColorScheme(
+            primary = paletteColor(R.color.primary),
+            onPrimary = paletteColor(R.color.on_primary),
+            primaryContainer = paletteColor(R.color.primary_container),
+            onPrimaryContainer = paletteColor(R.color.on_primary_container),
+            secondary = paletteColor(R.color.secondary),
+            onSecondary = paletteColor(R.color.on_secondary),
+            secondaryContainer = paletteColor(R.color.secondary_container),
+            onSecondaryContainer = paletteColor(R.color.on_secondary_container),
+            tertiary = paletteColor(R.color.tertiary),
+            onTertiary = paletteColor(R.color.on_tertiary),
+            tertiaryContainer = paletteColor(R.color.tertiary_container),
+            background = paletteColor(R.color.background),
+            onBackground = paletteColor(R.color.on_surface),
+            surface = paletteColor(R.color.surface),
+            onSurface = paletteColor(R.color.on_surface),
+            surfaceVariant = paletteColor(R.color.surface_variant),
+            onSurfaceVariant = paletteColor(R.color.on_surface_variant),
+            error = paletteColor(R.color.error),
+            onError = paletteColor(R.color.on_error),
+            errorContainer = paletteColor(R.color.error_container),
+            onErrorContainer = paletteColor(R.color.on_error_container),
+            outline = paletteColor(R.color.border),
+            outlineVariant = paletteColor(R.color.divider),
+        )
+    } else {
+        lightColorScheme(
+            primary = paletteColor(R.color.primary),
+            onPrimary = paletteColor(R.color.on_primary),
+            primaryContainer = paletteColor(R.color.primary_container),
+            onPrimaryContainer = paletteColor(R.color.on_primary_container),
+            secondary = paletteColor(R.color.secondary),
+            onSecondary = paletteColor(R.color.on_secondary),
+            secondaryContainer = paletteColor(R.color.secondary_container),
+            onSecondaryContainer = paletteColor(R.color.on_secondary_container),
+            tertiary = paletteColor(R.color.tertiary),
+            onTertiary = paletteColor(R.color.on_tertiary),
+            tertiaryContainer = paletteColor(R.color.tertiary_container),
+            background = paletteColor(R.color.background),
+            onBackground = paletteColor(R.color.on_surface),
+            surface = paletteColor(R.color.surface),
+            onSurface = paletteColor(R.color.on_surface),
+            surfaceVariant = paletteColor(R.color.surface_variant),
+            onSurfaceVariant = paletteColor(R.color.on_surface_variant),
+            error = paletteColor(R.color.error),
+            onError = paletteColor(R.color.on_error),
+            errorContainer = paletteColor(R.color.error_container),
+            onErrorContainer = paletteColor(R.color.on_error_container),
+            outline = paletteColor(R.color.border),
+            outlineVariant = paletteColor(R.color.divider),
+        )
+    }
+
+    val view = LocalView.current
+    LaunchedEffect(darkTheme) {
+        applyStatusBarAppearance(view, darkTheme)
+    }
+
+    // All screen composables resolve their R.color tokens through LocalContext, so providing the
+    // night-override context here flips the entire palette live without recreating the activity.
+    CompositionLocalProvider(LocalContext provides context) {
+        MaterialTheme(colorScheme = colorScheme, content = content)
+    }
+}
+
+/**
+ * Returns a context serving the night colour palette when [darkTheme] differs from the device's
+ * current night mode, and [baseContext] unchanged when they agree. The override uses the same
+ * configuration mechanism AppCompat employs for per-app night mode.
+ */
+@Composable
+private fun appThemeContext(baseContext: Context, darkTheme: Boolean): Context {
+    val nightMask = Configuration.UI_MODE_NIGHT_MASK
+    val wantedNight = if (darkTheme) Configuration.UI_MODE_NIGHT_YES else Configuration.UI_MODE_NIGHT_NO
+    val currentNight = baseContext.resources.configuration.uiMode and nightMask
+    if (currentNight == wantedNight) return baseContext
+    return remember(baseContext, darkTheme) {
+        // Theme resource id 0 keeps the theme of the wrapped base context.
+        ContextThemeWrapper(baseContext, 0).apply {
+            applyOverrideConfiguration(
+                Configuration(baseContext.resources.configuration).apply {
+                    uiMode = (uiMode and nightMask.inv()) or wantedNight
+                },
+            )
+        }
+    }
+}
+
+@Suppress("DEPRECATION")
+private fun applyStatusBarAppearance(view: View, darkTheme: Boolean) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        val lightIcons = if (darkTheme) 0 else WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+        view.windowInsetsController?.setSystemBarsAppearance(
+            lightIcons,
+            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
+        )
+    } else {
+        val flag = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+        view.systemUiVisibility = if (darkTheme) view.systemUiVisibility and flag.inv() else view.systemUiVisibility or flag
+    }
 }
 
 @Composable
@@ -132,6 +236,8 @@ fun CitsApp(
     txApproved: Boolean,
     debugMenuEnabled: Boolean,
     onDebugMenuEnabledChange: (Boolean) -> Unit,
+    themeMode: ThemeMode,
+    onThemeModeChange: (ThemeMode) -> Unit,
     stationDiscoveryNotificationEnabled: Boolean,
     onStationDiscoveryNotificationChange: (Boolean) -> Unit,
     appUpdateNotificationEnabled: Boolean,
@@ -339,6 +445,8 @@ fun CitsApp(
                                 bluetoothEnrollmentError = bluetoothEnrollmentError,
                                 debugMenuEnabled = debugMenuEnabled,
                                 onDebugMenuEnabledChange = onDebugMenuEnabledChange,
+                                themeMode = themeMode,
+                                onThemeModeChange = onThemeModeChange,
                                 stationDiscoveryNotificationEnabled = stationDiscoveryNotificationEnabled,
                                 onStationDiscoveryNotificationChange = onStationDiscoveryNotificationChange,
                                 appUpdateNotificationEnabled = appUpdateNotificationEnabled,
