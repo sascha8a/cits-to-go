@@ -95,6 +95,8 @@ fun CitsApp(
     onConnectionModeChange: (ConnectionMode) -> Unit,
     mqttUri: String,
     onMqttUriChange: (String) -> Unit,
+    mqttEnabled: Boolean,
+    onMqttEnabledChange: (Boolean) -> Unit,
     nodeId: String,
     onNodeIdChange: (String) -> Unit,
     maxQueueLength: String,
@@ -316,6 +318,8 @@ fun CitsApp(
                             )
                             AppPage.Settings -> SettingsPage(
                                 mqttUri = mqttUri,
+                                mqttEnabled = mqttEnabled,
+                                onMqttEnabledChange = onMqttEnabledChange,
                                 nodeId = nodeId,
                                 maxQueueLength = maxQueueLength,
                                 maxQueueAgeSeconds = maxQueueAgeSeconds,

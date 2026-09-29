@@ -81,6 +81,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var connectionMode by mutableStateOf(ConnectionMode.USB)
     private var status by mutableStateOf(BridgeStatus())
     private var mqttUri by mutableStateOf("")
+    private var mqttEnabled by mutableStateOf(true)
     private var nodeId by mutableStateOf("")
     private var maxQueueLength by mutableStateOf("")
     private var maxQueueAgeSeconds by mutableStateOf("")
@@ -283,6 +284,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             prefs.getString(PREF_INTERSECTION_SORT_MODE, null),
         )
         mqttUri = prefs.getString(CitsBridgeService.PREF_MQTT_URI, CitsBridgeService.DEFAULT_MQTT_URI).orEmpty()
+        mqttEnabled = prefs.getBoolean(CitsBridgeService.PREF_MQTT_ENABLED, true)
         nodeId = prefs.getString(CitsBridgeService.PREF_NODE_ID, null) ?: createAndStoreNodeId()
         maxQueueLength = prefs.getInt(
             CitsBridgeService.PREF_MQTT_MAX_QUEUE_LENGTH,
@@ -341,6 +343,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     },
                     mqttUri = mqttUri,
                     onMqttUriChange = { mqttUri = it },
+                    mqttEnabled = mqttEnabled,
+                    onMqttEnabledChange = ::updateMqttEnabled,
                     nodeId = nodeId,
                     onNodeIdChange = { nodeId = it },
                     maxQueueLength = maxQueueLength,
@@ -935,6 +939,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             .putExtra(CitsBridgeService.EXTRA_CONNECTION_MODE, connectionMode.wireValue)
             .putExtra(CitsBridgeService.EXTRA_DEVICE_NAME, selectedDeviceName.orEmpty())
             .putExtra(CitsBridgeService.EXTRA_MQTT_URI, mqttUri)
+            .putExtra(CitsBridgeService.EXTRA_MQTT_ENABLED, mqttEnabled)
             .putExtra(CitsBridgeService.EXTRA_NODE_ID, nodeId)
             .putExtra(CitsBridgeService.EXTRA_MQTT_MAX_QUEUE_LENGTH, parseMaxQueueLength(maxQueueLength))
             .putExtra(CitsBridgeService.EXTRA_MQTT_MAX_QUEUE_AGE_MS, parseMaxQueueAgeMs(maxQueueAgeSeconds))
@@ -1209,6 +1214,22 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             .putLong(CitsBridgeService.PREF_MQTT_MAX_QUEUE_AGE_MS, parsedMaxQueueAgeMs)
             .putInt(CitsBridgeService.PREF_VEHICLE_TYPE, sremProfile.preferenceCode)
             .apply()
+    }
+
+    /**
+     * Stores the MQTT switch and tells a running capture to connect or disconnect right away, so
+     * CAM only reception tests do not need a restart. The value is read again on the next start.
+     */
+    private fun updateMqttEnabled(enabled: Boolean) {
+        mqttEnabled = enabled
+        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+            .putBoolean(CitsBridgeService.PREF_MQTT_ENABLED, enabled)
+            .apply()
+        if (status.running) {
+            sendServiceIntent(CitsBridgeService.ACTION_SET_MQTT_ENABLED) {
+                putExtra(CitsBridgeService.EXTRA_MQTT_ENABLED, enabled)
+            }
+        }
     }
 
     private fun parseMaxQueueLength(value: String): Int =

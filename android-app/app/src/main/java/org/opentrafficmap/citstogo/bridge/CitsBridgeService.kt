@@ -73,6 +73,7 @@ class CitsBridgeService : Service() {
     private var connectionWanted = false
     private var connectionMode = ConnectionMode.USB
     private var mqttEnabled = false
+    private var mqttEnabledByUser = true
     private var mqttConnecting = AtomicBoolean(false)
     private var mqttFlushing = AtomicBoolean(false)
     private var mqttReconnectDelayMs = 1_000L
@@ -222,7 +223,7 @@ class CitsBridgeService : Service() {
         nodeId = loadOrCreateNodeId()
         camIdentity = loadOrCreateCamIdentity()
         loadCamSettings()
-        loadMqttQueueSettings()
+        loadMqttSettings()
         discoveredMacAddresses.addAll(loadDiscoveredMacAddresses())
         discoveredDevices = discoveredMacAddresses.size.toLong()
         createNotificationChannel()
@@ -245,11 +246,15 @@ class CitsBridgeService : Service() {
                 intent.getStringExtra(EXTRA_NODE_ID).orEmpty(),
                 intent.getIntExtra(EXTRA_MQTT_MAX_QUEUE_LENGTH, mqttMaxQueueLength),
                 intent.getLongExtra(EXTRA_MQTT_MAX_QUEUE_AGE_MS, mqttMaxQueueAgeMs),
+                intent.getBooleanExtra(EXTRA_MQTT_ENABLED, mqttEnabledByUser),
             )
             ACTION_STOP -> {
                 stopBridge()
                 stopSelf()
             }
+            ACTION_SET_MQTT_ENABLED -> setMqttEnabledByUser(
+                intent.getBooleanExtra(EXTRA_MQTT_ENABLED, true),
+            )
             ACTION_START_PCAP -> startPcap(intent.getStringExtra(EXTRA_PCAP_URI).orEmpty())
             ACTION_STOP_PCAP -> stopPcap(log = true)
             ACTION_START_REPLAY -> startReplay(
@@ -288,6 +293,7 @@ class CitsBridgeService : Service() {
         requestedNodeId: String,
         requestedMaxQueueLength: Int,
         requestedMaxQueueAgeMs: Long,
+        requestedMqttEnabledByUser: Boolean,
     ) {
         stopReplay(log = false)
         startElapsedMs = SystemClock.elapsedRealtime()
@@ -299,13 +305,50 @@ class CitsBridgeService : Service() {
         }
         updateMqttQueueSettings(requestedMaxQueueLength, requestedMaxQueueAgeMs)
         mqttUri = requestedMqttUri.trim()
-        mqttEnabled = mqttUri.isNotEmpty()
-        mqttReconnectDelayMs = 1_000
+        mqttEnabledByUser = requestedMqttEnabledByUser
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(PREF_MQTT_ENABLED, mqttEnabledByUser)
+            .apply()
+        applyMqttEnablement()
         connectionWanted = true
         acquireWakeLock()
         openConnection()
-        if (mqttEnabled) ensureMqttConnected()
-        publishStatus("Capture started")
+        publishStatus(if (mqttEnabled) "Capture started" else "Capture started without MQTT")
+    }
+
+    private fun setMqttEnabledByUser(enabled: Boolean) {
+        mqttEnabledByUser = enabled
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean(PREF_MQTT_ENABLED, enabled)
+            .apply()
+        if (!connectionWanted) {
+            publishStatus(null)
+            return
+        }
+        applyMqttEnablement()
+        publishStatus(
+            when {
+                mqttEnabled -> "MQTT enabled"
+                !enabled -> "MQTT disabled"
+                else -> "MQTT enabled. Enter a broker URL to connect."
+            },
+        )
+    }
+
+    /**
+     * Reconciles the live MQTT connection with the settings. Called when the bridge starts and
+     * whenever the setting changes so the toggle takes effect without restarting the capture.
+     */
+    private fun applyMqttEnablement() {
+        val wasEnabled = mqttEnabled
+        mqttEnabled = mqttForwardingEnabled(mqttEnabledByUser, mqttUri)
+        if (mqttEnabled) {
+            if (!wasEnabled) mqttReconnectDelayMs = 1_000
+            ensureMqttConnected()
+            return
+        }
+        if (wasEnabled) runCatching { mqttClient.close() }
+        status = status.copy(mqttState = "Disabled")
     }
 
     private fun stopBridge() {
@@ -1070,9 +1113,15 @@ class CitsBridgeService : Service() {
                 status = status.copy(mqttState = "Connecting")
                 publishStatus(null)
                 mqttClient.connect(mqttUri, nodeId, BuildConfig.VERSION_NAME)
-                mqttReconnectDelayMs = 1_000
-                status = status.copy(mqttState = "Connected", packetTopic = "its/$nodeId/packet", lastError = "")
-                publishStatus("MQTT connected")
+                if (!mqttEnabled) {
+                    // The setting was turned off while the handshake was in flight.
+                    runCatching { mqttClient.close() }
+                    status = status.copy(mqttState = "Disabled")
+                } else {
+                    mqttReconnectDelayMs = 1_000
+                    status = status.copy(mqttState = "Connected", packetTopic = "its/$nodeId/packet", lastError = "")
+                    publishStatus("MQTT connected")
+                }
             } catch (e: Exception) {
                 runCatching { mqttClient.close() }
                 status = status.copy(mqttState = "Reconnecting", lastError = "MQTT connect failed: ${e.message}")
@@ -1486,8 +1535,9 @@ class CitsBridgeService : Service() {
             .apply()
     }
 
-    private fun loadMqttQueueSettings() {
+    private fun loadMqttSettings() {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        mqttEnabledByUser = prefs.getBoolean(PREF_MQTT_ENABLED, true)
         mqttMaxQueueLength = prefs.getInt(PREF_MQTT_MAX_QUEUE_LENGTH, DEFAULT_MQTT_MAX_QUEUE_LENGTH).coerceAtLeast(1)
         mqttMaxQueueAgeMs = prefs.getLong(PREF_MQTT_MAX_QUEUE_AGE_MS, DEFAULT_MQTT_MAX_QUEUE_AGE_MS).coerceAtLeast(0L)
     }
@@ -1521,6 +1571,7 @@ class CitsBridgeService : Service() {
         const val ACTION_STOP_PCAP = "org.opentrafficmap.citstogo.action.STOP_PCAP"
         const val ACTION_START_REPLAY = "org.opentrafficmap.citstogo.action.START_REPLAY"
         const val ACTION_STOP_REPLAY = "org.opentrafficmap.citstogo.action.STOP_REPLAY"
+        const val ACTION_SET_MQTT_ENABLED = "org.opentrafficmap.citstogo.action.SET_MQTT_ENABLED"
         const val ACTION_REQUEST_STATUS = "org.opentrafficmap.citstogo.action.REQUEST_STATUS"
         const val ACTION_CONFIGURE_CAM = "org.opentrafficmap.citstogo.action.CONFIGURE_CAM"
         const val ACTION_SEND_SREM = "org.opentrafficmap.citstogo.action.SEND_SREM"
@@ -1531,6 +1582,7 @@ class CitsBridgeService : Service() {
         const val EXTRA_CONNECTION_MODE = "connectionMode"
         const val EXTRA_DEVICE_NAME = "deviceName"
         const val EXTRA_MQTT_URI = "mqttUri"
+        const val EXTRA_MQTT_ENABLED = "mqttEnabled"
         const val EXTRA_NODE_ID = "nodeId"
         const val EXTRA_MQTT_MAX_QUEUE_LENGTH = "mqttMaxQueueLength"
         const val EXTRA_MQTT_MAX_QUEUE_AGE_MS = "mqttMaxQueueAgeMs"
@@ -1594,6 +1646,7 @@ class CitsBridgeService : Service() {
         const val PREFS = "cits_to_go"
         const val PREF_NODE_ID = "node_id"
         const val PREF_MQTT_URI = "mqtt_uri"
+        const val PREF_MQTT_ENABLED = "mqtt_enabled"
         const val PREF_MQTT_MAX_QUEUE_LENGTH = "mqtt_max_queue_length"
         const val PREF_MQTT_MAX_QUEUE_AGE_MS = "mqtt_max_queue_age_ms"
         const val PREF_DISCOVERED_MAC_ADDRESSES = "discovered_mac_addresses"

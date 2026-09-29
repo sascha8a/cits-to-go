@@ -7,14 +7,21 @@
 }:
 
 let
-  buildToolsVersion = "34.0.0";
+  # AGP 8.7.3 wants its own default build tools (34.0.0) next to the compileSdk 35 platform, and
+  # scripts/build-release.sh signs with $ANDROID_HOME/build-tools/35.0.0/apksigner. Dropping 34.0.0
+  # makes Gradle try to install it into the read-only store, so both versions stay listed.
+  buildToolsVersions = [ "34.0.0" "35.0.0" ];
+
+  # The aapt2 binaries Google ships are not patchable on NixOS, so AGP is pointed at this SDK's copy.
+  aapt2BuildToolsVersion = "35.0.0";
 
   androidComposition = pkgs.androidenv.composeAndroidPackages {
-    platformVersions = [ "34" "35" ];
-    buildToolsVersions = [ "34.0.0" "35.0.0" ];
+    platformVersions = [ "35" ];
+    inherit buildToolsVersions;
 
-    # Useful for Gradle / adb
-    includeEmulator = true;
+    # platform-tools (adb) is always part of the composition. AVDs are not needed: the app is
+    # tested on real hardware, so the emulator and its system images stay out of the closure.
+    includeEmulator = false;
     includeSystemImages = false;
     includeSources = false;
     includeNDK = false;
@@ -25,7 +32,6 @@ in
 
 pkgs.mkShell {
   packages = with pkgs; [
-    android-studio
     androidSdk
     fastlane
     gradle
@@ -33,15 +39,16 @@ pkgs.mkShell {
     wireshark-cli
   ];
 
+  # AGP resolves the SDK from ANDROID_HOME, so nothing in the project pins a Nix store path.
   ANDROID_HOME = "${androidSdk}/libexec/android-sdk";
-  ANDROID_SDK_ROOT = "${androidSdk}/libexec/android-sdk";
   JAVA_HOME = "${pkgs.jdk17}";
 
+  # The aapt2 binaries Google ships are not patchable on NixOS, so point AGP at this SDK's copy.
   GRADLE_OPTS =
-    "-Dorg.gradle.project.android.aapt2FromMavenOverride=${androidSdk}/libexec/android-sdk/build-tools/${buildToolsVersion}/aapt2";
+    "-Dorg.gradle.project.android.aapt2FromMavenOverride=${androidSdk}/libexec/android-sdk/build-tools/${aapt2BuildToolsVersion}/aapt2";
 
   shellHook = ''
-    export PATH="$ANDROID_HOME/platform-tools:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/tools:$ANDROID_HOME/tools/bin:$PATH"
+    export PATH="$ANDROID_HOME/platform-tools:$PATH"
 
     echo "Android SDK: $ANDROID_HOME"
     echo "Build tools available:"

@@ -58,6 +58,8 @@ import org.opentrafficmap.citstogo.srem.SremProfile
 @Composable
 fun SettingsPage(
     mqttUri: String,
+    mqttEnabled: Boolean,
+    onMqttEnabledChange: (Boolean) -> Unit,
     nodeId: String,
     maxQueueLength: String,
     maxQueueAgeSeconds: String,
@@ -91,6 +93,8 @@ fun SettingsPage(
         MqttCard(
             mqttUri = draftMqttUri,
             onMqttUriChange = { draftMqttUri = it },
+            mqttEnabled = mqttEnabled,
+            onMqttEnabledChange = onMqttEnabledChange,
             nodeId = draftNodeId,
             onNodeIdChange = { draftNodeId = it },
             maxQueueLength = draftMaxQueueLength,
@@ -156,6 +160,8 @@ fun SettingsPage(
 private fun MqttCard(
     mqttUri: String,
     onMqttUriChange: (String) -> Unit,
+    mqttEnabled: Boolean,
+    onMqttEnabledChange: (Boolean) -> Unit,
     nodeId: String,
     onNodeIdChange: (String) -> Unit,
     maxQueueLength: String,
@@ -192,7 +198,11 @@ private fun MqttCard(
                     Icon(
                         imageVector = Icons.Rounded.Cloud,
                         contentDescription = null,
-                        tint = Color(ContextCompat.getColor(context, R.color.primary)),
+                        tint = if (mqttEnabled) {
+                            Color(ContextCompat.getColor(context, R.color.primary))
+                        } else {
+                            Color(ContextCompat.getColor(context, R.color.disabled))
+                        },
                         modifier = Modifier.size(22.dp),
                     )
                 }
@@ -208,11 +218,19 @@ private fun MqttCard(
                         color = Color(ContextCompat.getColor(context, R.color.on_surface)),
                     )
                     Text(
-                        "Connect to the broker and identify this node",
+                        if (mqttEnabled) {
+                            "Connect to the broker and identify this node"
+                        } else {
+                            "Disabled. Capture, PCAP, and CAM keep working without a broker"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
                     )
                 }
+                Switch(
+                    checked = mqttEnabled,
+                    onCheckedChange = onMqttEnabledChange,
+                )
             }
 
             HorizontalDivider(
@@ -223,6 +241,7 @@ private fun MqttCard(
             OutlinedTextField(
                 value = mqttUri,
                 onValueChange = onMqttUriChange,
+                enabled = mqttEnabled,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 label = { Text("Broker URL") },
@@ -240,6 +259,7 @@ private fun MqttCard(
             OutlinedTextField(
                 value = nodeId,
                 onValueChange = onNodeIdChange,
+                enabled = mqttEnabled,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 label = { Text("Node ID") },
@@ -260,6 +280,7 @@ private fun MqttCard(
                 OutlinedTextField(
                     value = maxQueueLength,
                     onValueChange = onMaxQueueLengthChange,
+                    enabled = mqttEnabled,
                     modifier = Modifier.weight(1f),
                     singleLine = true,
                     label = { Text("Max queue length") },
@@ -277,6 +298,7 @@ private fun MqttCard(
                 OutlinedTextField(
                     value = maxQueueAgeSeconds,
                     onValueChange = onMaxQueueAgeSecondsChange,
+                    enabled = mqttEnabled,
                     modifier = Modifier.weight(1f),
                     singleLine = true,
                     label = { Text("Max queue age") },

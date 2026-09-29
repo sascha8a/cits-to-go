@@ -114,6 +114,15 @@ QoS:     0 by default
 Retain:  false
 ```
 
+### Turning MQTT off
+
+The MQTT card on the settings page has a switch. Turning it off stops the app from connecting to a
+broker and from publishing packets. Packet reception, the intersection view, PCAP recording, and
+CAM/SREM transmission keep working, which is useful when a node is tested over the air without a
+data connection.
+
+The switch is stored, so it also applies to the next capture. If a capture is already running, the
+app disconnects from the broker right away and reconnects when the switch is turned back on.
 
 ---
 
