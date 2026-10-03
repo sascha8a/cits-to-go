@@ -16,10 +16,21 @@ class IntersectionStateStore {
                 diagnostics = diagnostics.copy(
                     itsPacketsExtracted = diagnostics.itsPacketsExtracted + 1,
                     securedItsPackets = diagnostics.securedItsPackets + if (extraction.packet.geonetworkingSecured) 1 else 0,
+                    securedGeoNetworkingFrames = diagnostics.securedGeoNetworkingFrames +
+                        if (extraction.packet.geonetworkingSecured) 1 else 0,
                 )
                 extraction.packet
             }
             ItsExtractionResult.NotGeoNetworking -> return null
+            is ItsExtractionResult.Malformed -> {
+                diagnostics = diagnostics.copy(
+                    malformedGeoNetworkingFrames = diagnostics.malformedGeoNetworkingFrames + 1,
+                    securedGeoNetworkingFrames = diagnostics.securedGeoNetworkingFrames +
+                        if (extraction.secured) 1 else 0,
+                    lastExtractionIssue = extraction.reason,
+                )
+                return null
+            }
             is ItsExtractionResult.Unsupported -> {
                 diagnostics = diagnostics.copy(
                     unsupportedGeoNetworkingFrames = diagnostics.unsupportedGeoNetworkingFrames + 1,

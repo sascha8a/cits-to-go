@@ -2,6 +2,7 @@ package org.opentrafficmap.citstogo.intersection
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -70,9 +71,55 @@ class ItsFrameExtractorTest {
         assertEquals(6, packet.payload.size)
     }
 
+    @Test
+    fun malformedSecuredEnvelopeReportsDecodeErrorNotUnsupported() {
+        val frame = syntheticSecuredEnvelope(nh = 2, trailing = ByteArray(48))
+
+        val result = ItsFrameExtractor.extractDetailed(frame)
+
+        assertTrue("secured NH=2 must be a decode error, not 'unsupported'", result is ItsExtractionResult.Malformed)
+        val malformed = result as ItsExtractionResult.Malformed
+        assertTrue(malformed.secured)
+        assertNull(ItsFrameExtractor.extract(frame))
+    }
+
+    @Test
+    fun basicNextHeaderOutsideSupportedEncodingsIsUnsupportedNotMalformed() {
+        val frame = syntheticSecuredEnvelope(nh = 3, trailing = ByteArray(48))
+
+        val result = ItsFrameExtractor.extractDetailed(frame)
+
+        assertTrue("NH=3 must be reported as unsupported", result is ItsExtractionResult.Unsupported)
+        assertEquals(3, (result as ItsExtractionResult.Unsupported).nextHeader)
+    }
+
+    @Test
+    fun stateStoreSeparatesMalformedSecuredFromUnsupportedProtocol() {
+        val store = IntersectionStateStore()
+
+        store.accept(syntheticSecuredEnvelope(nh = 2, trailing = ByteArray(48)), 1_000L)
+        store.accept(syntheticSecuredEnvelope(nh = 3, trailing = ByteArray(48)), 1_001L)
+
+        val diagnostics = store.diagnostics()
+        assertEquals(2L, diagnostics.framesInspected)
+        assertEquals(0L, diagnostics.itsPacketsExtracted)
+        assertEquals(1L, diagnostics.securedGeoNetworkingFrames)
+        assertEquals(0L, diagnostics.securedItsPackets)
+        assertEquals(1L, diagnostics.malformedGeoNetworkingFrames)
+        assertEquals(1L, diagnostics.unsupportedGeoNetworkingFrames)
+    }
+
     private fun fixture(name: String): ByteArray = requireNotNull(
         javaClass.getResourceAsStream("/intersection/$name"),
     ).use { it.readBytes() }
+
+    private fun syntheticSecuredEnvelope(nh: Int, trailing: ByteArray): ByteArray {
+        val snap = byteArrayOf(
+            0xaa.toByte(), 0xaa.toByte(), 0x03, 0x00, 0x00, 0x00, 0x89.toByte(), 0x47,
+        )
+        val basic = byteArrayOf(nh.toByte(), 0x00, 0x01, 0x01)
+        return ByteArray(24) + snap + basic + trailing
+    }
 
     private fun syntheticUnsecuredSpatem(): ByteArray {
         val snap = byteArrayOf(

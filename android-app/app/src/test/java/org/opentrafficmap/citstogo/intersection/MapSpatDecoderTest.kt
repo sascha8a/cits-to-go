@@ -73,8 +73,6 @@ class MapSpatDecoderTest {
                 intersectionConnectionVisible(
                     laneId = lane.id,
                     connectedLaneId = connectedLane.id,
-                    signalized = connection.signalGroup in spatGroups,
-                    alwaysVisible = true,
                     selectedLaneIds = emptyList(),
                 ),
             )
@@ -106,6 +104,42 @@ class MapSpatDecoderTest {
         assertEquals(2, packet.protocolVersion)
         assertEquals(MapSpatDecoder.MESSAGE_ID_SPATEM, packet.messageId)
         assertEquals(1039L, packet.stationId)
+    }
+
+    @Test
+    fun wiednerResselgasseStructuralConnectorsRenderWithoutSpatem() {
+        val store = IntersectionStateStore()
+        pcapFrames("cits-1791023048252.pcap").forEachIndexed { index, frame -> store.accept(frame, 1_000L + index) }
+
+        val snapshot = store.activeSnapshots(1_000L, Long.MAX_VALUE / 2)
+            .firstOrNull { it.map?.key == IntersectionKey(17153, 4036) }
+        val map = requireNotNull(snapshot?.map) { "Wiedner Hauptstraße – Resselgasse (17153/4036) not decoded" }
+
+        // This intersection is carried by MAPEM only: there is no matching SPATEM, so no connection is
+        // signalized. Before the fix the renderer drew only signalized connectors, leaving the lanes
+        // visually disconnected.
+        val spatGroups = snapshot.spat?.movements?.map { it.signalGroup }?.toSet().orEmpty()
+        assertTrue(spatGroups.isEmpty())
+
+        val lanesById = map.lanes.associateBy { it.id }
+        val structuralConnections = map.lanes.flatMap { lane ->
+            lane.connections
+                .filter { it.remoteIntersection == null && lanesById.containsKey(it.laneId) }
+                .mapNotNull { connection ->
+                    val target = lanesById.getValue(connection.laneId)
+                    if (lane.nodes.size < 2 || target.nodes.size < 2) return@mapNotNull null
+                    Triple(lane, target, connection)
+                }
+        }
+        assertTrue("expected resolvable MAPEM topology in the capture", structuralConnections.isNotEmpty())
+
+        structuralConnections.forEach { (lane, target, connection) ->
+            assertTrue(
+                "lane ${lane.id}->${connection.laneId} must render a connector even without a SPATEM",
+                intersectionConnectionVisible(lane.id, connection.laneId, selectedLaneIds = emptyList()),
+            )
+            assertNotNull("lane ${lane.id}->${connection.laneId} must join across its gap", laneConnector(lane, target))
+        }
     }
 
     @Test
@@ -249,6 +283,176 @@ class MapSpatDecoderTest {
         assertTrue(map.lanes.any { lane -> lane.nodes.any { it.stopLine } })
     }
 
+    @Test
+    fun decodesCumulativeNodeXyAndResolvesConnectingLane() {
+        val packet = syntheticTwoLaneMapem()
+        val map = MapSpatDecoder.decodeMap(packet, 1_000L).single()
+
+        assertEquals(IntersectionKey(43, 4036), map.key)
+        assertEquals(2, map.lanes.size)
+
+        val laneA = map.lanes.first { it.id == 1 }
+        val laneB = map.lanes.first { it.id == 2 }
+
+        // Node-XY values are cumulative deltas, not each resolved against the intersection origin.
+        assertEquals(
+            listOf(LaneNode(0, 0), LaneNode(100, 0), LaneNode(100, 100)),
+            laneA.nodes,
+        )
+        assertEquals(
+            listOf(LaneNode(150, 100), LaneNode(150, 200)),
+            laneB.nodes,
+        )
+
+        val connection = laneA.connections.single()
+        assertEquals(2, connection.laneId)
+        assertEquals(7, connection.connectionId)
+        assertNull(connection.remoteIntersection)
+
+        // The topology connector joins the nearest endpoint pair (A's last to B's first, 50 cm apart).
+        val connector = requireNotNull(laneConnector(laneA, laneB))
+        assertEquals(LaneConnectorKind.Draw, connector.kind)
+        assertEquals(50.0, connector.gapCm, 0.001)
+        assertEquals(Float2(100f, 100f), connector.start)
+        assertEquals(Float2(150f, 100f), connector.end)
+    }
+
+    private fun syntheticTwoLaneMapem(): ItsPacket {
+        val writer = TestBitWriter()
+        // MapData optionality.
+        writer.bit(false) // extension
+        writer.bit(false) // timeStamp
+        writer.bit(false) // layerType
+        writer.bit(false) // layerId
+        writer.bit(true)  // intersections
+        writer.bit(false) // roadSegments
+        writer.bit(false) // dataParameters
+        writer.bit(false) // restrictionList
+        writer.bit(false) // regionalExtension
+        writer.constrained(0, 0, 127) // layerType (read unconditionally by the decoder)
+        writer.constrained(1, 1, 32) // one intersection
+
+        // IntersectionGeometry optionality.
+        writer.bit(false) // extension
+        writer.bit(false) // name
+        writer.bit(false) // laneWidth
+        writer.bit(false) // speedLimits
+        writer.bit(false) // preemptPriority
+        writer.bit(false) // regional
+        writer.bit(true) // IntersectionReferenceID.region present
+        writer.constrained(43, 0, 65_535)
+        writer.constrained(4_036, 0, 65_535)
+        writer.constrained(1, 0, 127) // revision
+        writer.bit(false) // Position3D extension
+        writer.bit(false) // elevation absent
+        writer.bit(false) // regional absent
+        writer.constrained(0, -900_000_000, 900_000_001) // latitude
+        writer.constrained(0, -1_800_000_000, 1_800_000_001) // longitude
+        writer.constrained(2, 1, 255) // two lanes
+
+        vehicleLane(writer, laneId = 1, ingress = true, egress = false, nodes = listOf(0 to 0, 100 to 0, 0 to 100), connectsTo = listOf(2 to 7))
+        vehicleLane(writer, laneId = 2, ingress = false, egress = true, nodes = listOf(150 to 100, 0 to 100), connectsTo = emptyList())
+
+        return ItsPacket(
+            destinationPort = MapSpatDecoder.BTP_PORT_MAPEM,
+            protocolVersion = 2,
+            messageId = MapSpatDecoder.MESSAGE_ID_MAPEM,
+            stationId = 4_036,
+            bodyOffset = 6,
+            payload = ByteArray(6) + writer.toByteArray(),
+            sourceLatitude = null,
+            sourceLongitude = null,
+        )
+    }
+
+    private fun vehicleLane(
+        writer: TestBitWriter,
+        laneId: Int,
+        ingress: Boolean,
+        egress: Boolean,
+        nodes: List<Pair<Int, Int>>,
+        connectsTo: List<Pair<Int, Int>>,
+    ) {
+        // GenericLane optionality.
+        writer.bit(false) // extension
+        writer.bit(false) // name
+        writer.bit(false) // approach (ingress id)
+        writer.bit(false) // egressApproach
+        writer.bit(false) // maneuvers
+        writer.bit(connectsTo.isNotEmpty()) // connectsTo
+        writer.bit(false) // overlays
+        writer.bit(false) // regional
+        writer.constrained(laneId, 0, 255)
+
+        // LaneAttributes: regional absent, then ingress/egress flags.
+        writer.bit(false) // regional
+        writer.bit(ingress)
+        writer.bit(egress)
+        writer.bits(0, 10) // laneAttributes absent BIT STRING (prohibited)
+        writer.bit(false) // LaneTypeAttributes extension
+        writer.bits(0, 3) // choice: vehicle
+        writer.bit(false) // BIT STRING extensible
+        writer.bits(0, 8) // vehicle-prohibited bits
+
+        // NodeListXY.
+        writer.bit(false) // extension
+        writer.bits(0, 1) // choice: NodeListXY
+        writer.constrained(nodes.size, 2, 63)
+        nodes.forEach { (x, y) ->
+            writer.bit(false) // Node-XY extension
+            writer.bit(false) // attributes absent
+            writer.bits(0, 3) // offset choice 0: 1 cm, 10-bit signed
+            writer.constrained(x, -512, 511)
+            writer.constrained(y, -512, 511)
+        }
+
+        if (connectsTo.isNotEmpty()) {
+            writer.constrained(connectsTo.size, 1, 16)
+            connectsTo.forEach { (targetLane, connectionId) ->
+                writer.bit(false) // remoteIntersection absent
+                writer.bit(false) // signalGroup absent
+                writer.bit(false) // userClass absent
+                writer.bit(true) // connectionId present
+                writer.bit(false) // maneuver absent
+                writer.constrained(targetLane, 0, 255)
+                writer.constrained(connectionId, 0, 255)
+            }
+        }
+    }
+
+    @Test
+    fun decodedMapemConnectionsResolveAndExposeConnectableGeometry() {
+        val frames = pcapFrames("cits-1785487825313.pcap")
+        val store = IntersectionStateStore()
+        store.accept(frames[24], 1_000)
+        store.accept(frames[25], 1_001)
+        store.accept(frames[117], 1_002)
+        val map = requireNotNull(store.closest(null)?.map)
+        assertEquals(IntersectionKey(43, 4003), map.key)
+
+        val lanesById = map.lanes.associateBy { it.id }
+        val localConnections = map.lanes.flatMap { lane ->
+            lane.connections.filter { it.remoteIntersection == null }.map { lane to it }
+        }
+        assertTrue(localConnections.isNotEmpty())
+
+        // After merging the split MAPEM parts, every local connectsTo reference resolves to a real lane,
+        // and each resolved pair yields a projection-independent connector (nearest endpoint pair).
+        // Junction connectors legitimately span more than 8 m (far-side lanes), so distance is informational
+        // only and is never used to drop a connection.
+        var resolvableWithGeometry = 0
+        for ((lane, connection) in localConnections) {
+            val target = lanesById[connection.laneId]
+            assertNotNull("connection ${lane.id}->${connection.laneId} did not resolve", target)
+            if (lane.nodes.size >= 2 && target!!.nodes.size >= 2) {
+                val connector = requireNotNull(laneConnector(lane, target))
+                assertTrue(connector.gapCm.isFinite())
+                resolvableWithGeometry++
+            }
+        }
+        assertTrue(resolvableWithGeometry > 0)
+    }
+
     private fun pcapFrames(fileName: String = "cits-1785335702733.pcap"): List<ByteArray> {
         val pcap = listOf(
             File("../$fileName"),
@@ -341,6 +545,9 @@ class MapSpatDecoderTest {
             val width = if (range <= 1) 0 else 64 - java.lang.Long.numberOfLeadingZeros(range - 1)
             bits(value - minimum, width)
         }
+
+        fun constrained(value: Int, minimum: Int, maximum: Int) =
+            constrained(value.toLong(), minimum.toLong(), maximum.toLong())
 
         fun bits(value: Long, width: Int) {
             require(width in 0..64)

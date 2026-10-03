@@ -99,7 +99,9 @@ fun DebugPage(
         } else {
             DebugRow("Frames inspected", intersections.framesInspected.toString())
             DebugRow("ITS packets extracted", intersections.itsPacketsExtracted.toString())
+            DebugRow("Secured GN", intersections.securedGeoNetworkingFrames.toString())
             DebugRow("Secured ITS packets", intersections.securedItsPackets.toString())
+            DebugRow("Malformed GeoNetworking", intersections.malformedGeoNetworkingFrames.toString())
             DebugRow("Other / unsupported GN", intersections.unsupportedGeoNetworkingFrames.toString())
             DebugRow("MAPEM decoded", "${intersections.mapemDecoded}/${intersections.mapemSeen}")
             DebugRow("MAPEM failures", intersections.mapemDecodeFailures.toString())

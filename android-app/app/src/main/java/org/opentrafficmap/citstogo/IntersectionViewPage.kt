@@ -86,25 +86,34 @@ import kotlin.math.sqrt
 import kotlinx.coroutines.delay
 import org.opentrafficmap.citstogo.bridge.BridgeStatus
 import org.opentrafficmap.citstogo.bridge.CitsBridgeService
+import org.opentrafficmap.citstogo.intersection.ConnectionTapTarget
 import org.opentrafficmap.citstogo.intersection.CountdownLabelBounds
+import org.opentrafficmap.citstogo.intersection.Float2
 import org.opentrafficmap.citstogo.intersection.LaneConnection
 import org.opentrafficmap.citstogo.intersection.LaneNode
 import org.opentrafficmap.citstogo.intersection.LaneType
 import org.opentrafficmap.citstogo.intersection.MapIntersection
 import org.opentrafficmap.citstogo.intersection.MapLane
 import org.opentrafficmap.citstogo.intersection.MovementPhaseState
+import org.opentrafficmap.citstogo.intersection.SelectedMovement
 import org.opentrafficmap.citstogo.intersection.SpatIntersection
-import org.opentrafficmap.citstogo.intersection.connectedSremLaneIds
 import org.opentrafficmap.citstogo.intersection.countdownLaneRepresentatives
 import org.opentrafficmap.citstogo.intersection.countdownSignalGroupsForSelection
 import org.opentrafficmap.citstogo.intersection.countdownSideOffset
+import org.opentrafficmap.citstogo.intersection.connectedSremLaneIds
+import org.opentrafficmap.citstogo.intersection.cubicBezierPolyline
 import org.opentrafficmap.citstogo.intersection.directionLabel
 import org.opentrafficmap.citstogo.intersection.intersectionConnectionVisible
 import org.opentrafficmap.citstogo.intersection.intersectionLaneSelectionAlpha
+import org.opentrafficmap.citstogo.intersection.isSelectableFor
+import org.opentrafficmap.citstogo.intersection.laneConnector
+import org.opentrafficmap.citstogo.intersection.nearestConnectionTarget
+import org.opentrafficmap.citstogo.intersection.nextSremSelection
+import org.opentrafficmap.citstogo.intersection.outgoingConnectionMovements
 import org.opentrafficmap.citstogo.intersection.placeCountdownLabel
-import org.opentrafficmap.citstogo.intersection.resolveSremLaneDirection
 import org.opentrafficmap.citstogo.intersection.roadConnectionControlPoints
 import org.opentrafficmap.citstogo.intersection.secondsUntilChange
+import org.opentrafficmap.citstogo.intersection.selectableLaneIds
 import org.opentrafficmap.citstogo.srem.SremProfile
 
 private const val INTERSECTION_MAX_ZOOM = 6f
@@ -233,6 +242,13 @@ private fun IntersectionPageContent(
     val selectedPair = selectedCrosswalkLaneIds.takeIf { it.size == 2 }
     val sremUiState = sremUiState(status, snapshot, selectedCrosswalkLaneIds, spat)
     val context = LocalContext.current
+    LaunchedEffect(sremProfile, map?.key, map?.revision) {
+        val current = selectedCrosswalkLaneIds
+        val incompatible = map != null && current.any { laneId ->
+            map.lanes.firstOrNull { it.id == laneId }?.isSelectableFor(sremProfile) != true
+        }
+        if (incompatible) selectedCrosswalkLaneIds = emptyList()
+    }
     Column(
         Modifier
             .fillMaxWidth()
@@ -263,13 +279,20 @@ private fun IntersectionPageContent(
         if (map == null) {
             Text("SPATEM received; waiting for matching MAPEM geometry.", color = MaterialTheme.colorScheme.secondary)
         } else {
+            Text(
+                "Only ${sremProfile.displayName.lowercase()} lanes can be selected for the request; " +
+                    "lanes for other vehicle types stay visible for orientation but are dimmed.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.secondary,
+            )
             IntersectionRenderer(
                 map = map,
                 spat = spat,
                 currentPosition = currentPosition,
+                sremProfile = sremProfile,
                 selectedCrosswalkLaneIds = selectedCrosswalkLaneIds,
-                onCrosswalkLaneTap = { lane ->
-                    selectedCrosswalkLaneIds = nextCrosswalkSelection(map, selectedCrosswalkLaneIds, lane.id)
+                onSelectionChange = { nextSelection ->
+                    selectedCrosswalkLaneIds = nextSelection
                 },
             )
             SremRequestPanel(
@@ -636,39 +659,36 @@ private fun clampIntersectionPan(
     )
 }
 
-private fun nextCrosswalkSelection(
-    map: MapIntersection,
-    selectedLaneIds: List<Int>,
-    tappedLaneId: Int,
-): List<Int> {
-    val tappedLane = map.lanes.firstOrNull { it.id == tappedLaneId }
-        ?: return selectedLaneIds
-    if (selectedLaneIds.isEmpty()) return listOf(tappedLane.id)
-    val firstLaneId = selectedLaneIds.first()
-    if (tappedLane.id == firstLaneId) return emptyList()
-    if (selectedLaneIds.size == 1) {
-        return if (tappedLane.id in connectedSremLaneIds(map, firstLaneId)) {
-            resolveSremLaneDirection(map, firstLaneId, tappedLane.id)
-        } else {
-            listOf(tappedLane.id)
-        }
+private class IntersectionProjection(
+    private val minX: Float,
+    private val minY: Float,
+    private val scale: Float,
+    private val canvasHeight: Float,
+    private val zoomScale: Float,
+    private val pan: Offset,
+    private val paddingPx: Float,
+) {
+    fun point(xCm: Float, yCm: Float): Offset {
+        val base = Offset(
+            x = paddingPx + (xCm - minX) * scale,
+            y = canvasHeight - paddingPx - (yCm - minY) * scale,
+        )
+        return Offset(
+            x = base.x * zoomScale + pan.x,
+            y = base.y * zoomScale + pan.y,
+        )
     }
-    return listOf(tappedLane.id)
+
+    fun point(node: LaneNode): Offset = point(node.xCm.toFloat(), node.yCm.toFloat())
 }
 
-private fun connectedCrosswalkLaneIds(map: MapIntersection, laneId: Int): Set<Int> {
-    return connectedSremLaneIds(map, laneId)
-}
-
-private fun hitTestCrosswalkLane(
+private fun buildIntersectionProjection(
     map: MapIntersection,
     canvasSize: IntSize,
     zoomScale: Float,
     pan: Offset,
-    tap: Offset,
     paddingPx: Float,
-    hitSlopPx: Float,
-): MapLane? {
+): IntersectionProjection? {
     if (canvasSize.width <= 0 || canvasSize.height <= 0) return null
     val allNodes = map.lanes.flatMap { it.nodes }
     if (allNodes.isEmpty()) return null
@@ -679,28 +699,100 @@ private fun hitTestCrosswalkLane(
     val width = (maxX - minX).coerceAtLeast(1f)
     val height = (maxY - minY).coerceAtLeast(1f)
     val scale = minOf((canvasSize.width - paddingPx * 2) / width, (canvasSize.height - paddingPx * 2) / height)
+    return IntersectionProjection(minX, minY, scale, canvasSize.height.toFloat(), zoomScale, pan, paddingPx)
+}
 
-    fun point(node: LaneNode): Offset {
-        val base = Offset(
-            x = paddingPx + (node.xCm - minX) * scale,
-            y = canvasSize.height - paddingPx - (node.yCm - minY) * scale,
-        )
-        return Offset(
-            x = base.x * zoomScale + pan.x,
-            y = base.y * zoomScale + pan.y,
-        )
+private fun hitTestCrosswalkLane(
+    map: MapIntersection,
+    projection: IntersectionProjection,
+    tap: Offset,
+    hitSlopPx: Float,
+): MapLane? = map.lanes
+    .filter { it.nodes.size >= 2 }
+    .mapNotNull { lane ->
+        val distance = lane.nodes.zipWithNext().minOf { (start, end) ->
+            distanceToSegment(tap, projection.point(start), projection.point(end)).toDouble()
+        }.toFloat()
+        if (distance <= hitSlopPx) lane to distance else null
     }
+    .minByOrNull { it.second }
+    ?.first
 
-    return map.lanes
-        .filter { it.nodes.size >= 2 }
-        .mapNotNull { lane ->
-            val distance = lane.nodes.zipWithNext().minOf { (start, end) ->
-                distanceToSegment(tap, point(start), point(end)).toDouble()
-            }.toFloat()
-            if (distance <= hitSlopPx) lane to distance else null
-        }
-        .minByOrNull { it.second }
-        ?.first
+/**
+ * Builds the tap targets for the outgoing connections of the currently selected inbound lane, using
+ * the same screen-space Bézier geometry the renderer draws. Connections that are incompatible with
+ * the vehicle type or whose destination lane does not resolve are excluded by the domain layer.
+ */
+private fun connectionTapTargets(
+    map: MapIntersection,
+    projection: IntersectionProjection,
+    profile: SremProfile,
+    inboundLaneId: Int,
+    controlDistancePx: Float,
+): List<ConnectionTapTarget> {
+    val lanesById = map.lanes.associateBy { it.id }
+    return outgoingConnectionMovements(map, profile, inboundLaneId).mapNotNull { movement ->
+        val source = lanesById[movement.inboundLaneId] ?: return@mapNotNull null
+        val target = lanesById[movement.outboundLaneId] ?: return@mapNotNull null
+        val connector = laneConnector(source, target) ?: return@mapNotNull null
+        val start = projection.point(connector.start.x, connector.start.y)
+        val startAdjacent = projection.point(connector.startAdjacent.x, connector.startAdjacent.y)
+        val end = projection.point(connector.end.x, connector.end.y)
+        val endAdjacent = projection.point(connector.endAdjacent.x, connector.endAdjacent.y)
+        val controls = roadConnectionControlPoints(
+            startX = start.x,
+            startY = start.y,
+            startAdjacentX = startAdjacent.x,
+            startAdjacentY = startAdjacent.y,
+            endX = end.x,
+            endY = end.y,
+            endAdjacentX = endAdjacent.x,
+            endAdjacentY = endAdjacent.y,
+            maxControlDistance = controlDistancePx,
+        )
+        val polyline = cubicBezierPolyline(
+            start = Float2(start.x, start.y),
+            control1 = Float2(controls.startX, controls.startY),
+            control2 = Float2(controls.endX, controls.endY),
+            end = Float2(end.x, end.y),
+        )
+        ConnectionTapTarget(movement, polyline)
+    }
+}
+
+private fun selectedMovementForConnection(targets: List<ConnectionTapTarget>, tap: Offset, slopPx: Float): SelectedMovement? =
+    nearestConnectionTarget(
+        targets = targets,
+        tap = Float2(tap.x, tap.y),
+        slopPx = slopPx,
+    )?.movement
+
+/**
+ * Resolves a single tap to the next selection state, applying the plan's precedence: a tap that lands
+ * on a rendered connection from the selected inbound lane completes the movement through the connection
+ * path; otherwise the tap falls back to lane hit-testing. Both paths funnel through the shared
+ * movement/selection reducers, so they always produce the same canonical `[inbound, outbound]` pair.
+ * Returns null when nothing selectable was hit (the caller leaves the selection unchanged).
+ */
+private fun resolveIntersectionTap(
+    map: MapIntersection,
+    profile: SremProfile,
+    selectedLaneIds: List<Int>,
+    projection: IntersectionProjection?,
+    tap: Offset,
+    hitSlopPx: Float,
+    connectionSlopPx: Float,
+    controlDistancePx: Float,
+): List<Int>? {
+    if (projection == null) return null
+    val inboundLaneId = selectedLaneIds.singleOrNull()
+    if (inboundLaneId != null) {
+        val targets = connectionTapTargets(map, projection, profile, inboundLaneId, controlDistancePx)
+        val movement = selectedMovementForConnection(targets, tap, connectionSlopPx)
+        if (movement != null) return movement.lanePair
+    }
+    val lane = hitTestCrosswalkLane(map, projection, tap, hitSlopPx) ?: return null
+    return nextSremSelection(map, profile, selectedLaneIds, lane.id)
 }
 
 private fun distanceToSegment(point: Offset, start: Offset, end: Offset): Float {
@@ -720,8 +812,9 @@ private fun IntersectionRenderer(
     map: MapIntersection,
     spat: SpatIntersection?,
     currentPosition: DevicePosition?,
+    sremProfile: SremProfile,
     selectedCrosswalkLaneIds: List<Int>,
-    onCrosswalkLaneTap: (MapLane) -> Unit,
+    onSelectionChange: (List<Int>) -> Unit,
 ) {
     val signalGroups = spat?.movementsBySignalGroup.orEmpty()
     val context = LocalContext.current
@@ -737,9 +830,20 @@ private fun IntersectionRenderer(
     var lastTapPosition by remember { mutableStateOf<Offset?>(null) }
     var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
     val firstSelectedLaneId = selectedCrosswalkLaneIds.firstOrNull()
-    val selectableSecondLaneIds = remember(map, firstSelectedLaneId) {
-        firstSelectedLaneId?.let { connectedCrosswalkLaneIds(map, it) }.orEmpty()
+    val selectableSecondLaneIds = remember(map, firstSelectedLaneId, sremProfile) {
+        firstSelectedLaneId?.let { connectedSremLaneIds(map, it, sremProfile) }.orEmpty()
     }
+    val selectableFirstLaneIds = remember(map, sremProfile) { selectableLaneIds(map, sremProfile) }
+    val currentSelectedLaneIds by rememberUpdatedState(selectedCrosswalkLaneIds)
+    val currentProfile by rememberUpdatedState(sremProfile)
+    // Connections leaving the currently selected inbound lane that are tappable for this vehicle type.
+    val activeConnectionMovements = remember(map, firstSelectedLaneId, sremProfile) {
+        if (selectedCrosswalkLaneIds.size == 1 && firstSelectedLaneId != null) {
+            outgoingConnectionMovements(map, sremProfile, firstSelectedLaneId).map { it.lanePair to it }
+        } else {
+            emptyList()
+        }
+    }.toMap()
     fun updateTransform(nextScale: Float, nextPan: Offset) {
         val constrainedScale = nextScale.coerceIn(1f, INTERSECTION_MAX_ZOOM)
         val constrainedPan = clampIntersectionPan(
@@ -798,17 +902,22 @@ private fun IntersectionRenderer(
                             if (!isQuickScale && movedDistance <= tapSlop && event.changes.any { !it.pressed }) {
                                 val upTimeMs = event.changes.maxOf { it.uptimeMillis }
                                 if (upTimeMs - downTimeMs <= TAP_TIMEOUT_MS) {
-                                    hitTestCrosswalkLane(
+                                    resolveIntersectionTap(
                                         map = map,
-                                        canvasSize = canvasSize,
-                                        zoomScale = zoomScale,
-                                        pan = Offset(panX, panY),
+                                        profile = currentProfile,
+                                        selectedLaneIds = currentSelectedLaneIds,
+                                        projection = buildIntersectionProjection(
+                                            map = map,
+                                            canvasSize = canvasSize,
+                                            zoomScale = zoomScale,
+                                            pan = Offset(panX, panY),
+                                            paddingPx = 28.dp.toPx(),
+                                        ),
                                         tap = downPosition,
-                                        paddingPx = 28.dp.toPx(),
                                         hitSlopPx = 18.dp.toPx(),
-                                    )?.let { lane ->
-                                        onCrosswalkLaneTap(lane)
-                                    }
+                                        connectionSlopPx = 24.dp.toPx(),
+                                        controlDistancePx = 96.dp.toPx() * zoomScale,
+                                    )?.let(onSelectionChange)
                                     lastTapUpMs = upTimeMs
                                     lastTapPosition = downPosition
                                 }
@@ -936,10 +1045,12 @@ private fun IntersectionRenderer(
         }
 
         fun laneSelectionAlpha(lane: MapLane): Float {
+            // While a selection is active keep vehicle-type-compatible lanes at full emphasis and dim the
+            // rest; before any selection every lane is shown normally so the full layout stays readable.
             return intersectionLaneSelectionAlpha(
                 laneId = lane.id,
                 selectedLaneIds = selectedCrosswalkLaneIds,
-                selectableLaneIds = selectableSecondLaneIds,
+                selectableLaneIds = selectableSecondLaneIds + selectableFirstLaneIds,
             )
         }
 
@@ -984,37 +1095,14 @@ private fun IntersectionRenderer(
             return if (viewportOverflow(firstSide) <= viewportOverflow(secondSide)) firstSide else secondSide
         }
 
+        // Builds a lane's polyline by projecting each decoded node into screen space. Node coordinates
+        // are in lane-centimetre space; the `point(...)` transform maps them into the current viewport.
         fun lanePath(lane: MapLane): Path = Path().apply {
             val first = lane.nodes.first()
             moveTo(point(first.xCm, first.yCm).x, point(first.xCm, first.yCm).y)
             lane.nodes.drop(1).forEach { node ->
                 val p = point(node.xCm, node.yCm)
                 lineTo(p.x, p.y)
-            }
-        }
-
-        class LaneEndpoint(val point: Offset, val adjacent: Offset)
-
-        fun laneEndpoints(lane: MapLane): List<LaneEndpoint> = listOf(
-            LaneEndpoint(
-                point = point(lane.nodes.first().xCm, lane.nodes.first().yCm),
-                adjacent = point(lane.nodes[1].xCm, lane.nodes[1].yCm),
-            ),
-            LaneEndpoint(
-                point = point(lane.nodes.last().xCm, lane.nodes.last().yCm),
-                adjacent = point(lane.nodes[lane.nodes.lastIndex - 1].xCm, lane.nodes[lane.nodes.lastIndex - 1].yCm),
-            ),
-        )
-
-        fun closestEndpointPair(first: MapLane, second: MapLane): Pair<LaneEndpoint, LaneEndpoint> {
-            val firstEndpoints = laneEndpoints(first)
-            val secondEndpoints = laneEndpoints(second)
-            return firstEndpoints.flatMap { firstPoint ->
-                secondEndpoints.map { secondPoint -> firstPoint to secondPoint }
-            }.minBy { (firstPoint, secondPoint) ->
-                val dx = firstPoint.point.x - secondPoint.point.x
-                val dy = firstPoint.point.y - secondPoint.point.y
-                dx * dx + dy * dy
             }
         }
 
@@ -1202,38 +1290,67 @@ private fun IntersectionRenderer(
                 val connectionIsVisible = intersectionConnectionVisible(
                     laneId = lane.id,
                     connectedLaneId = connectedLane.id,
-                    signalized = connection.signalGroup?.let(signalGroups::containsKey) == true,
-                    alwaysVisible = lane.laneType == LaneType.TrackedVehicle ||
-                        connectedLane.laneType == LaneType.TrackedVehicle,
                     selectedLaneIds = selectedCrosswalkLaneIds,
                 )
                 if (!connectionIsVisible) return@forEach
                 val connectionKey = minOf(lane.id, connectedLane.id) to maxOf(lane.id, connectedLane.id)
                 if (!drawnConnections.add(connectionKey)) return@forEach
-                val (start, end) = closestEndpointPair(lane, connectedLane)
+                val connector = laneConnector(lane, connectedLane)
+                if (connector == null) {
+                    // A resolvable MAPEM connection with a degenerate lane (fewer than two nodes) cannot be
+                    // drawn. Long spans are legitimate (a junction connects far-side lanes), so distance is
+                    // never a reason to hide a connector.
+                    return@forEach
+                }
+                val start = point(connector.start.x, connector.start.y)
+                val startAdjacent = point(connector.startAdjacent.x, connector.startAdjacent.y)
+                val end = point(connector.end.x, connector.end.y)
+                val endAdjacent = point(connector.endAdjacent.x, connector.endAdjacent.y)
                 val controls = roadConnectionControlPoints(
-                    startX = start.point.x,
-                    startY = start.point.y,
-                    startAdjacentX = start.adjacent.x,
-                    startAdjacentY = start.adjacent.y,
-                    endX = end.point.x,
-                    endY = end.point.y,
-                    endAdjacentX = end.adjacent.x,
-                    endAdjacentY = end.adjacent.y,
+                    startX = start.x,
+                    startY = start.y,
+                    startAdjacentX = startAdjacent.x,
+                    startAdjacentY = startAdjacent.y,
+                    endX = end.x,
+                    endY = end.y,
+                    endAdjacentX = endAdjacent.x,
+                    endAdjacentY = endAdjacent.y,
                     maxControlDistance = 96.dp.toPx() * zoomScale,
                 )
                 val path = Path().apply {
-                    moveTo(start.point.x, start.point.y)
+                    moveTo(start.x, start.y)
                     cubicTo(
                         controls.startX,
                         controls.startY,
                         controls.endX,
                         controls.endY,
-                        end.point.x,
-                        end.point.y,
+                        end.x,
+                        end.y,
                     )
                 }
-                val connectionAlpha = if (selectedCrosswalkLaneIds.isEmpty()) 0.58f else 0.92f
+                val signalized = connection.signalGroup?.let(signalGroups::containsKey) == true
+                val tram = lane.laneType == LaneType.TrackedVehicle || connectedLane.laneType == LaneType.TrackedVehicle
+                // Selected movement connections stand out; at rest signalized/tram connectors lead and
+                // plain MAPEM topology connectors stay visible but recede, so nothing looks disconnected.
+                val connectionAlpha = when {
+                    selectedCrosswalkLaneIds.isNotEmpty() -> 0.92f
+                    signalized || tram -> 0.66f
+                    else -> 0.40f
+                }
+                // Emphasize connections that are currently tappable targets (leaving the selected inbound
+                // lane and compatible with the vehicle type) so the lane -> connection path is discoverable.
+                val isActiveTapTarget = activeConnectionMovements.containsKey(listOf(lane.id, connectedLane.id))
+                if (isActiveTapTarget) {
+                    drawPath(
+                        path = path,
+                        color = paletteColor(R.color.primary).copy(alpha = 0.5f),
+                        style = Stroke(
+                            width = style.width + 9.dp.toPx(),
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round,
+                        ),
+                    )
+                }
                 drawStyledPath(
                     path = path,
                     style = style,

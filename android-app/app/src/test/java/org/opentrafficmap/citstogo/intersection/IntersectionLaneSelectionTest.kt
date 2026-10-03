@@ -1,7 +1,10 @@
 package org.opentrafficmap.citstogo.intersection
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.opentrafficmap.citstogo.srem.SremProfile
 
 class IntersectionLaneSelectionTest {
     @Test
@@ -24,42 +27,35 @@ class IntersectionLaneSelectionTest {
     }
 
     @Test
-    fun onlySignalizedConnectionsAreVisibleBeforeSelection() {
-        assertEquals(true, intersectionConnectionVisible(10, 11, signalized = true, selectedLaneIds = emptyList()))
-        assertEquals(false, intersectionConnectionVisible(10, 11, signalized = false, selectedLaneIds = emptyList()))
+    fun everyResolvableConnectionIsVisibleBeforeSelection() {
+        // A MAPEM topology connector must render even without a matching SPATEM, otherwise lanes such as
+        // Wiedner Hauptstraße – Resselgasse look disconnected because no signal group is present.
+        assertEquals(true, intersectionConnectionVisible(10, 11, selectedLaneIds = emptyList()))
     }
 
     @Test
-    fun structuralConnectionsCanRemainVisibleWithoutAValidSignalGroup() {
-        assertEquals(
-            true,
-            intersectionConnectionVisible(
-                10,
-                11,
-                signalized = false,
-                alwaysVisible = true,
-                selectedLaneIds = emptyList(),
-            ),
-        )
+    fun structuralConnectionWithoutSignalGroupRemainsVisible() {
+        assertEquals(true, intersectionConnectionVisible(10, 20, selectedLaneIds = emptyList()))
     }
 
     @Test
-    fun firstSelectionShowsOnlyItsConnections() {
-        assertEquals(true, intersectionConnectionVisible(10, 11, signalized = false, selectedLaneIds = listOf(10)))
-        assertEquals(true, intersectionConnectionVisible(10, 11, signalized = false, selectedLaneIds = listOf(11)))
-        assertEquals(false, intersectionConnectionVisible(20, 21, signalized = true, selectedLaneIds = listOf(10)))
+    fun firstSelectionEmphasizesOnlyItsConnections() {
+        assertEquals(true, intersectionConnectionVisible(10, 11, selectedLaneIds = listOf(10)))
+        assertEquals(true, intersectionConnectionVisible(10, 11, selectedLaneIds = listOf(11)))
+        assertEquals(false, intersectionConnectionVisible(20, 21, selectedLaneIds = listOf(10)))
     }
 
     @Test
-    fun completeSelectionShowsOnlyChosenConnection() {
+    fun completeSelectionEmphasizesOnlyChosenConnection() {
         val selected = listOf(10, 11)
 
-        assertEquals(true, intersectionConnectionVisible(10, 11, signalized = false, selectedLaneIds = selected))
-        assertEquals(false, intersectionConnectionVisible(10, 12, signalized = true, selectedLaneIds = selected))
+        assertEquals(true, intersectionConnectionVisible(10, 11, selectedLaneIds = selected))
+        assertEquals(false, intersectionConnectionVisible(10, 12, selectedLaneIds = selected))
     }
 
     @Test
-    fun everyGenericLaneTypeCanBeSelectedWhenConnected() {
+    fun everyGenericLaneTypeRemainsInRawConnectivitySet() {
+        // The connectivity set drives what stays *visible* for orientation, independent of vehicle type.
         val targetLanes = LaneType.entries.mapIndexed { index, type -> lane(index + 2, type) }
         val source = lane(
             id = 1,
@@ -69,6 +65,61 @@ class IntersectionLaneSelectionTest {
         val map = map(listOf(source) + targetLanes)
 
         assertEquals(targetLanes.map { it.id }.toSet(), connectedSremLaneIds(map, source.id))
+    }
+
+    @Test
+    fun vehicleTypeFilteringRestrictsSelectableOutboundLanes() {
+        val targets = LaneType.entries.mapIndexed { index, type -> lane(index + 2, type) }
+        val vehicleSource = lane(
+            id = 1,
+            type = LaneType.Vehicle,
+            connections = targets.map { LaneConnection(it.id, null, null, null) },
+        )
+        val map = map(listOf(vehicleSource) + targets)
+
+        // A road vehicle may only hand off to a compatible vehicle lane.
+        assertEquals(
+            setOf(LaneType.entries.indexOf(LaneType.Vehicle) + 2),
+            connectedSremLaneIds(map, vehicleSource.id, SremProfile.PASSENGER_CAR),
+        )
+    }
+
+    @Test
+    fun incompatibleInboundLaneHasNoSelectableConnections() {
+        val tram = lane(id = 1, type = LaneType.TrackedVehicle, connections = listOf(LaneConnection(2, null, null, null)))
+        val vehicle = lane(id = 2, type = LaneType.Vehicle)
+        val map = map(listOf(tram, vehicle))
+
+        assertEquals(emptySet<Int>(), connectedSremLaneIds(map, tram.id, SremProfile.PASSENGER_CAR))
+    }
+
+    @Test
+    fun selectableLaneIdsCoversEveryCompatibleLaneType() {
+        val lanes = LaneType.entries.mapIndexed { index, type -> lane(index + 1, type) }
+        val map = map(lanes)
+
+        val pedestrian = selectableLaneIds(map, SremProfile.PEDESTRIAN)
+        assertTrue(pedestrian.contains(lanes[LaneType.Crosswalk.ordinal].id))
+        assertTrue(pedestrian.contains(lanes[LaneType.Sidewalk.ordinal].id))
+        assertFalse(pedestrian.contains(lanes[LaneType.Vehicle.ordinal].id))
+
+        assertEquals(setOf(lanes[LaneType.TrackedVehicle.ordinal].id), selectableLaneIds(map, SremProfile.TRAM))
+        assertEquals(setOf(lanes[LaneType.Bike.ordinal].id), selectableLaneIds(map, SremProfile.BICYCLE))
+        assertEquals(setOf(lanes[LaneType.Vehicle.ordinal].id), selectableLaneIds(map, SremProfile.PASSENGER_CAR))
+    }
+
+    @Test
+    fun laneTypeCompatibilityMatchesThePlanTable() {
+        assertTrue(LaneType.Crosswalk.isSelectableFor(SremProfile.PEDESTRIAN))
+        assertTrue(LaneType.Sidewalk.isSelectableFor(SremProfile.PEDESTRIAN))
+        assertFalse(LaneType.TrackedVehicle.isSelectableFor(SremProfile.PEDESTRIAN))
+        assertTrue(LaneType.TrackedVehicle.isSelectableFor(SremProfile.TRAM))
+        assertFalse(LaneType.Vehicle.isSelectableFor(SremProfile.TRAM))
+        assertTrue(LaneType.Bike.isSelectableFor(SremProfile.BICYCLE))
+        assertFalse(LaneType.Crosswalk.isSelectableFor(SremProfile.BICYCLE))
+        assertTrue(LaneType.Vehicle.isSelectableFor(SremProfile.PASSENGER_CAR))
+        assertTrue(LaneType.Vehicle.isSelectableFor(SremProfile.HEAVY_TRUCK))
+        assertTrue(LaneType.Vehicle.isSelectableFor(SremProfile.PUBLIC_TRANSPORT_BUS))
     }
 
     @Test

@@ -11,7 +11,20 @@ internal data class GeoNetworkingTransportPayload(
 internal sealed interface GeoNetworkingParseResult {
     data class Success(val payload: GeoNetworkingTransportPayload) : GeoNetworkingParseResult
     data object NotGeoNetworking : GeoNetworkingParseResult
-    data class Unsupported(val reason: String, val secured: Boolean) : GeoNetworkingParseResult
+
+    /**
+     * The GeoNetworking Basic Header carries a next-header value outside the encodings this app
+     * understands (anything other than Common Header `1` or Secured Packet `2`). This is a protocol
+     * classification, never a decode error.
+     */
+    data class Unsupported(val reason: String, val nextHeader: Int) : GeoNetworkingParseResult
+
+    /**
+     * A recognised GeoNetworking envelope (Common Header or Secured Packet) whose contents could not
+     * be decoded. Kept distinct from [Unsupported] so the Debug screen never reports a valid
+     * `NH = 2` secured packet as an unsupported protocol value.
+     */
+    data class Malformed(val reason: String, val secured: Boolean) : GeoNetworkingParseResult
 }
 
 /**
@@ -36,18 +49,26 @@ internal object GeoNetworkingFrameParser {
 
         val basicOffset = snapOffset + SNAP_GEONETWORKING.size
         if (frame.size < basicOffset + BASIC_HEADER_LEN) {
-            return GeoNetworkingParseResult.Unsupported("Truncated GeoNetworking Basic Header", secured = false)
+            return GeoNetworkingParseResult.Malformed("Truncated GeoNetworking Basic Header", secured = false)
         }
 
         val basicNextHeader = frame[basicOffset].toInt() and 0x0f
         return when (basicNextHeader) {
-            BASIC_NEXT_HEADER_COMMON -> parseCommonAt(frame, basicOffset + BASIC_HEADER_LEN, secured = false)
-                ?: GeoNetworkingParseResult.Unsupported("Unsupported GeoNetworking Common/Extended Header", secured = false)
+            BASIC_NEXT_HEADER_COMMON -> when (val inner = parseCommon(frame, basicOffset + BASIC_HEADER_LEN, secured = false)) {
+                is CommonParseResult.Ok -> GeoNetworkingParseResult.Success(inner.payload)
+                CommonParseResult.Malformed ->
+                    GeoNetworkingParseResult.Malformed("Malformed GeoNetworking Common/Extended Header", secured = false)
+                CommonParseResult.UnsupportedHeader ->
+                    GeoNetworkingParseResult.Unsupported(
+                        "Unsupported GeoNetworking Common/Extended Header",
+                        nextHeader = basicNextHeader,
+                    )
+            }
 
             BASIC_NEXT_HEADER_SECURED -> locateSecuredCommon(frame, basicOffset + BASIC_HEADER_LEN)
             else -> GeoNetworkingParseResult.Unsupported(
                 "Unsupported GeoNetworking Basic Header next-header $basicNextHeader",
-                secured = false,
+                nextHeader = basicNextHeader,
             )
         }
     }
@@ -59,73 +80,76 @@ internal object GeoNetworkingFrameParser {
         )
         var candidate: GeoNetworkingTransportPayload? = null
         for (commonOffset in securedPayloadOffset until scanEndExclusive) {
-            val parsed = parseCommon(frame, commonOffset, secured = true) ?: continue
+            val parsed = parseCommon(frame, commonOffset, secured = true)
+            if (parsed !is CommonParseResult.Ok) continue
             if (candidate != null) {
-                return GeoNetworkingParseResult.Unsupported(
+                return GeoNetworkingParseResult.Malformed(
                     "Ambiguous secured GeoNetworking payload",
                     secured = true,
                 )
             }
-            candidate = parsed
+            candidate = parsed.payload
         }
         return candidate?.let(GeoNetworkingParseResult::Success)
-            ?: GeoNetworkingParseResult.Unsupported(
+            ?: GeoNetworkingParseResult.Malformed(
                 "Secured GeoNetworking payload does not contain a supported BTP-B Common Header",
                 secured = true,
             )
     }
 
-    private fun parseCommonAt(
-        frame: ByteArray,
-        commonOffset: Int,
-        secured: Boolean,
-    ): GeoNetworkingParseResult? = parseCommon(frame, commonOffset, secured)?.let(GeoNetworkingParseResult::Success)
+    private sealed interface CommonParseResult {
+        data class Ok(val payload: GeoNetworkingTransportPayload) : CommonParseResult
+        data object Malformed : CommonParseResult
+        data object UnsupportedHeader : CommonParseResult
+    }
 
     private fun parseCommon(
         frame: ByteArray,
         commonOffset: Int,
         secured: Boolean,
-    ): GeoNetworkingTransportPayload? {
-        if (frame.size < commonOffset + COMMON_HEADER_LEN) return null
+    ): CommonParseResult {
+        if (frame.size < commonOffset + COMMON_HEADER_LEN) return CommonParseResult.Malformed
 
         val commonNextHeader = (frame[commonOffset].toInt() ushr 4) and 0x0f
-        if (commonNextHeader != COMMON_NEXT_HEADER_BTP_B) return null
+        if (commonNextHeader != COMMON_NEXT_HEADER_BTP_B) return CommonParseResult.UnsupportedHeader
 
         val headerType = frame[commonOffset + 1].toInt() and 0xf0
         val extendedHeaderLength = when (headerType) {
             HEADER_TYPE_GBC -> GBC_EXTENDED_HEADER_LEN
             HEADER_TYPE_SHB -> SHB_EXTENDED_HEADER_LEN
-            else -> return null
+            else -> return CommonParseResult.UnsupportedHeader
         }
 
         val payloadLength = u16(frame, commonOffset + 4)
-        if (payloadLength < BTP_HEADER_LEN + ITS_PDU_HEADER_LEN) return null
+        if (payloadLength < BTP_HEADER_LEN + ITS_PDU_HEADER_LEN) return CommonParseResult.Malformed
 
         val extendedOffset = commonOffset + COMMON_HEADER_LEN
         val btpOffset = extendedOffset + extendedHeaderLength
         val payloadEnd = btpOffset + payloadLength
-        if (btpOffset < 0 || payloadEnd > frame.size) return null
+        if (btpOffset < 0 || payloadEnd > frame.size) return CommonParseResult.Malformed
 
         val itsOffset = btpOffset + BTP_HEADER_LEN
-        if (frame.size < itsOffset + ITS_PDU_HEADER_LEN) return null
+        if (frame.size < itsOffset + ITS_PDU_HEADER_LEN) return CommonParseResult.Malformed
         val protocolVersion = frame[itsOffset].toInt() and 0xff
         val messageId = frame[itsOffset + 1].toInt() and 0xff
-        if (protocolVersion !in SUPPORTED_ITS_PROTOCOL_VERSIONS || messageId == 0) return null
+        if (protocolVersion !in SUPPORTED_ITS_PROTOCOL_VERSIONS || messageId == 0) return CommonParseResult.Malformed
 
         val sourcePositionOffset = when (headerType) {
             HEADER_TYPE_GBC -> extendedOffset + GBC_SOURCE_POSITION_OFFSET
             HEADER_TYPE_SHB -> extendedOffset + SHB_SOURCE_POSITION_OFFSET
-            else -> return null
+            else -> return CommonParseResult.Malformed
         }
         val sourceLatitude = i32OrNull(frame, sourcePositionOffset + LONG_POSITION_VECTOR_LATITUDE_OFFSET)
         val sourceLongitude = i32OrNull(frame, sourcePositionOffset + LONG_POSITION_VECTOR_LONGITUDE_OFFSET)
 
-        return GeoNetworkingTransportPayload(
-            btpOffset = btpOffset,
-            payloadLength = payloadLength,
-            sourceLatitude = sourceLatitude,
-            sourceLongitude = sourceLongitude,
-            secured = secured,
+        return CommonParseResult.Ok(
+            GeoNetworkingTransportPayload(
+                btpOffset = btpOffset,
+                payloadLength = payloadLength,
+                sourceLatitude = sourceLatitude,
+                sourceLongitude = sourceLongitude,
+                secured = secured,
+            ),
         )
     }
 
