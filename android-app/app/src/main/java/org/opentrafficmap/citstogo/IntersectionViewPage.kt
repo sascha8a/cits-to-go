@@ -107,9 +107,9 @@ import org.opentrafficmap.citstogo.intersection.intersectionConnectionVisible
 import org.opentrafficmap.citstogo.intersection.intersectionLaneSelectionAlpha
 import org.opentrafficmap.citstogo.intersection.isSelectableFor
 import org.opentrafficmap.citstogo.intersection.laneConnector
+import org.opentrafficmap.citstogo.intersection.incidentConnectionMovements
 import org.opentrafficmap.citstogo.intersection.nearestConnectionTarget
 import org.opentrafficmap.citstogo.intersection.nextSremSelection
-import org.opentrafficmap.citstogo.intersection.outgoingConnectionMovements
 import org.opentrafficmap.citstogo.intersection.placeCountdownLabel
 import org.opentrafficmap.citstogo.intersection.roadConnectionControlPoints
 import org.opentrafficmap.citstogo.intersection.secondsUntilChange
@@ -719,19 +719,20 @@ private fun hitTestCrosswalkLane(
     ?.first
 
 /**
- * Builds the tap targets for the outgoing connections of the currently selected inbound lane, using
- * the same screen-space Bézier geometry the renderer draws. Connections that are incompatible with
- * the vehicle type or whose destination lane does not resolve are excluded by the domain layer.
+ * Builds the tap targets for every connection incident to the currently selected lane, using the same
+ * screen-space Bézier geometry the renderer draws. Selecting a lane highlights all its connectors (in
+ * either MAPEM direction), so the connection tap path must accept both; movements that are incompatible
+ * with the vehicle type or whose counterpart lane does not resolve are excluded by the domain layer.
  */
 private fun connectionTapTargets(
     map: MapIntersection,
     projection: IntersectionProjection,
     profile: SremProfile,
-    inboundLaneId: Int,
+    selectedLaneId: Int,
     controlDistancePx: Float,
 ): List<ConnectionTapTarget> {
     val lanesById = map.lanes.associateBy { it.id }
-    return outgoingConnectionMovements(map, profile, inboundLaneId).mapNotNull { movement ->
+    return incidentConnectionMovements(map, profile, selectedLaneId).mapNotNull { movement ->
         val source = lanesById[movement.inboundLaneId] ?: return@mapNotNull null
         val target = lanesById[movement.outboundLaneId] ?: return@mapNotNull null
         val connector = laneConnector(source, target) ?: return@mapNotNull null
@@ -836,10 +837,10 @@ private fun IntersectionRenderer(
     val selectableFirstLaneIds = remember(map, sremProfile) { selectableLaneIds(map, sremProfile) }
     val currentSelectedLaneIds by rememberUpdatedState(selectedCrosswalkLaneIds)
     val currentProfile by rememberUpdatedState(sremProfile)
-    // Connections leaving the currently selected inbound lane that are tappable for this vehicle type.
+    // Connections incident to the selected lane that are tappable for this vehicle type (either direction).
     val activeConnectionMovements = remember(map, firstSelectedLaneId, sremProfile) {
         if (selectedCrosswalkLaneIds.size == 1 && firstSelectedLaneId != null) {
-            outgoingConnectionMovements(map, sremProfile, firstSelectedLaneId).map { it.lanePair to it }
+            incidentConnectionMovements(map, sremProfile, firstSelectedLaneId).map { it.lanePair to it }
         } else {
             emptyList()
         }

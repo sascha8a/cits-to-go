@@ -123,6 +123,24 @@ class IntersectionMovementSelectionTest {
     }
 
     @Test
+    fun selectingOutboundLaneFirstStillCompletesViaIncidentConnector() {
+        // The user selected the egress lane (20) first; the connector 10->20 is highlighted, so tapping it
+        // must complete the canonical movement [10, 20] (inbound first), not require re-selecting 10.
+        val incident = incidentConnectionMovements(map, profile, outbound.id)
+
+        assertEquals(listOf(SelectedMovement(10, 7, 20)), incident)
+        assertEquals(listOf(10, 20), incident.single().lanePair)
+    }
+
+    @Test
+    fun selectingInboundLaneFirstOffersItsOutgoingConnectors() {
+        val incident = incidentConnectionMovements(map, profile, inbound.id).map { it.lanePair }
+
+        // 20 and 30 compatible; 40 (tram) filtered; 999 unresolved.
+        assertEquals(listOf(listOf(10, 20), listOf(10, 30)), incident)
+    }
+
+    @Test
     fun unconnectedLanesRemainSeparate() {
         // Two compatible lanes with no MAPEM connection between them must never join.
         assertNull(movementByLanePair(map, profile, outbound.id, otherOutbound.id))

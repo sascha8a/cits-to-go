@@ -86,6 +86,41 @@ internal fun outgoingConnectionMovements(
 }
 
 /**
+ * Movements reachable by tapping a rendered connection incident to [selectedLaneId], in either
+ * direction. A MAPEM `connectsTo` is directional, but the renderer highlights every connector that
+ * touches the selected lane, so the connection tap path must accept both:
+ *  - the selected lane is the inbound (its own outgoing connections), and
+ *  - the selected lane is the outbound (some other compatible lane's connection into it).
+ *
+ * Each result is the canonical `[inbound, outbound]` movement, matching [movementByLanePair] so both
+ * interaction paths agree regardless of which lane the user tapped first. Incompatible or unresolved
+ * references are excluded.
+ */
+internal fun incidentConnectionMovements(
+    map: MapIntersection,
+    profile: SremProfile,
+    selectedLaneId: Int,
+): List<SelectedMovement> {
+    val selected = map.lanes.firstOrNull { it.id == selectedLaneId } ?: return emptyList()
+    if (!selected.isSelectableFor(profile)) return emptyList()
+
+    val byPair = LinkedHashMap<Pair<Int, Int>, SelectedMovement>()
+    outgoingConnectionMovements(map, profile, selectedLaneId)
+        .forEach { movement -> byPair[movement.inboundLaneId to movement.outboundLaneId] = movement }
+
+    map.lanes.forEach { other ->
+        if (other.id == selectedLaneId) return@forEach
+        other.connections.forEach { connection ->
+            if (connection.remoteIntersection == null && connection.laneId == selectedLaneId) {
+                movementByConnection(map, profile, other.id, connection)
+                    ?.let { movement -> byPair.putIfAbsent(movement.inboundLaneId to movement.outboundLaneId, movement) }
+            }
+        }
+    }
+    return byPair.values.toList()
+}
+
+/**
  * Advances the lane-selection state for a tap on [tappedLaneId]. Taps on lanes incompatible with the
  * vehicle type are ignored, so they can never alter the pending SREM selection. Completing a second,
  * connected, compatible lane yields the canonical inbound-first lane pair.

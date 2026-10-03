@@ -6,6 +6,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.opentrafficmap.citstogo.srem.SremProfile
 
 class MapSpatDecoderTest {
     @Test
@@ -140,6 +141,25 @@ class MapSpatDecoderTest {
             )
             assertNotNull("lane ${lane.id}->${connection.laneId} must join across its gap", laneConnector(lane, target))
         }
+    }
+
+    @Test
+    fun wiednerResselgasseConnectorCompletesMovementFromEitherEnd() {
+        val store = IntersectionStateStore()
+        pcapFrames("cits-1791023048252.pcap").forEachIndexed { index, frame -> store.accept(frame, 1_000L + index) }
+        val map = requireNotNull(
+            store.activeSnapshots(1_000L, Long.MAX_VALUE / 2).mapNotNull { it.map }
+                .firstOrNull { it.key == IntersectionKey(17153, 4036) },
+        )
+
+        // MAPEM lists the tram movement only on the ingress lane 4 (connectsTo lane 11). Before the fix the
+        // connection tap path checked only outgoing connections, so selecting the egress lane 11 first and
+        // tapping the highlighted 4->11 connector did nothing.
+        val fromIngress = incidentConnectionMovements(map, SremProfile.TRAM, 4).map { it.lanePair }
+        val fromEgress = incidentConnectionMovements(map, SremProfile.TRAM, 11).map { it.lanePair }
+
+        assertTrue("ingress end (4) offers the connector", listOf(4, 11) in fromIngress)
+        assertTrue("egress end (11) must offer the same connector", listOf(4, 11) in fromEgress)
     }
 
     @Test
