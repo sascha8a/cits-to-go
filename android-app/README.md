@@ -74,9 +74,18 @@ header and must not include an FCS.
 
 To broadcast CAM:
 
-1. Select Pedestrian or Bicycle and a 100–1000 ms maximum interval.
-2. Tap **Start CAM broadcast** and grant location permission.
-3. Watch the TX and CAM acknowledgement counters.
+1. Unlock transmitting first: shake the phone firmly until the **TX Approval**
+   screen opens, tick the confirmation, then pull the red handle fully from left
+   to right. Until then, the **CAM Broadcast** page is hidden and CAM and SREM
+   transmissions are blocked. The approval is stored and can be revoked in
+   **Settings** with **Revoke TX Approval**. Transmitting in the 5.9 GHz ITS band
+   is regulated, see [RF safety](../docs/CAM.md#rf-safety).
+2. Choose the station type under **Settings → Vehicle Type**. SREM requests use
+   it as well.
+3. Start a capture on **Home**. Then set a 100–1000 ms maximum interval on the
+   **CAM Broadcast** page, tap **Start CAM broadcast** and grant location
+   permission.
+4. Watch the TX and CAM acknowledgement counters.
 
 The configured interval is the maximum interval. The generator also applies
 the ETSI dynamics triggers (over 4 m position change, 4° heading change, or
