@@ -31,12 +31,14 @@ internal sealed interface GeoNetworkingParseResult {
  * Parses the GeoNetworking envelope around BTP-B payloads.
  *
  * GeoNetworking security wraps the Common Header + Extended Header + payload
- * between the Basic Header and a security trailer. The IEEE 1609.2 / ETSI
- * security envelope is variable-length, so the parser deliberately does not
- * hard-code the security-header size. Instead it locates the encapsulated
- * Common Header using strict GeoNetworking/BTP structural checks and the Common
- * Header payload length. This keeps security trailers out of upper-layer ASN.1
- * decoders and works for both secured and unsecured packets.
+ * between the Basic Header and a security trailer. ETSI TS 103 097 signed
+ * packets carry them as IEEE 1609.2 `unsecuredData` inside `signedData`, so
+ * the Common Header is located directly behind that prefix and its OER length,
+ * and nothing else in such a frame is considered. Only an envelope without that
+ * prefix falls back to locating the encapsulated Common Header using strict
+ * GeoNetworking/BTP structural checks and the Common Header payload length.
+ * This keeps security trailers out of upper-layer ASN.1 decoders and works for
+ * both secured and unsecured packets.
  */
 internal object GeoNetworkingFrameParser {
     private val SNAP_GEONETWORKING = byteArrayOf(
@@ -74,6 +76,8 @@ internal object GeoNetworkingFrameParser {
     }
 
     private fun locateSecuredCommon(frame: ByteArray, securedPayloadOffset: Int): GeoNetworkingParseResult {
+        parseSignedUnsecuredData(frame, securedPayloadOffset)?.let { return it }
+
         val scanEndExclusive = minOf(
             frame.size - COMMON_HEADER_LEN + 1,
             securedPayloadOffset + MAX_SECURED_PREFIX_BYTES,
@@ -91,10 +95,52 @@ internal object GeoNetworkingFrameParser {
             candidate = parsed.payload
         }
         return candidate?.let(GeoNetworkingParseResult::Success)
-            ?: GeoNetworkingParseResult.Malformed(
-                "Secured GeoNetworking payload does not contain a supported BTP-B Common Header",
+            ?: GeoNetworkingParseResult.Malformed(SECURED_COMMON_HEADER_MISSING, secured = true)
+    }
+
+    /**
+     * Reads `Ieee1609Dot2Data { 3, signedData { hashId, tbsData { payload { data { 3, unsecuredData } } } } }`.
+     * Apart from the hash algorithm and the OER length determinant this COER prefix is fixed. Behind it the
+     * Common Header position is known, so the result is final: the unsecuredData must hold exactly one
+     * supported Common Header + Extended Header + payload, and no other offset may stand in for it.
+     * Returns null when the envelope differs so the caller can fall back to scanning.
+     */
+    private fun parseSignedUnsecuredData(frame: ByteArray, securedPayloadOffset: Int): GeoNetworkingParseResult? {
+        val lengthOffset = securedPayloadOffset + SIGNED_UNSECURED_DATA_PREFIX_LEN
+        if (frame.size <= lengthOffset) return null
+        if (u8(frame, securedPayloadOffset) != IEEE1609DOT2_PROTOCOL_VERSION ||
+            u8(frame, securedPayloadOffset + 1) != IEEE1609DOT2_CONTENT_SIGNED_DATA ||
+            u8(frame, securedPayloadOffset + 3) != SIGNED_DATA_PAYLOAD_DATA_ONLY ||
+            u8(frame, securedPayloadOffset + 4) != IEEE1609DOT2_PROTOCOL_VERSION ||
+            u8(frame, securedPayloadOffset + 5) != IEEE1609DOT2_CONTENT_UNSECURED_DATA
+        ) {
+            return null
+        }
+
+        // OER length determinant: short form, or long form with one or two length octets.
+        val firstLengthOctet = u8(frame, lengthOffset)
+        val commonOffset = when (firstLengthOctet) {
+            in 0x00..0x7f -> lengthOffset + 1
+            0x81 -> lengthOffset + 2
+            0x82 -> lengthOffset + 3
+            else -> return null
+        }
+
+        val parsed = parseCommon(frame, commonOffset, secured = true) as? CommonParseResult.Ok
+            ?: return GeoNetworkingParseResult.Malformed(SECURED_COMMON_HEADER_MISSING, secured = true)
+        val unsecuredDataLength = when (firstLengthOctet) {
+            0x81 -> u8(frame, lengthOffset + 1)
+            0x82 -> u16(frame, lengthOffset + 1)
+            else -> firstLengthOctet
+        }
+        val packetEnd = parsed.payload.btpOffset + parsed.payload.payloadLength
+        if (packetEnd != commonOffset + unsecuredDataLength) {
+            return GeoNetworkingParseResult.Malformed(
+                "Secured GeoNetworking packet length does not match its IEEE 1609.2 unsecuredData",
                 secured = true,
             )
+        }
+        return GeoNetworkingParseResult.Success(parsed.payload)
     }
 
     private sealed interface CommonParseResult {
@@ -168,6 +214,8 @@ internal object GeoNetworkingFrameParser {
         return -1
     }
 
+    private fun u8(bytes: ByteArray, offset: Int): Int = bytes[offset].toInt() and 0xff
+
     private fun u16(bytes: ByteArray, offset: Int): Int =
         ((bytes[offset].toInt() and 0xff) shl 8) or (bytes[offset + 1].toInt() and 0xff)
 
@@ -199,8 +247,18 @@ internal object GeoNetworkingFrameParser {
     private const val LONG_POSITION_VECTOR_LATITUDE_OFFSET = 12
     private const val LONG_POSITION_VECTOR_LONGITUDE_OFFSET = 16
 
+    // protocolVersion, signedData, hashId, SignedDataPayload presence, protocolVersion, unsecuredData.
+    private const val SIGNED_UNSECURED_DATA_PREFIX_LEN = 6
+    private const val IEEE1609DOT2_PROTOCOL_VERSION = 0x03
+    private const val IEEE1609DOT2_CONTENT_SIGNED_DATA = 0x81
+    private const val IEEE1609DOT2_CONTENT_UNSECURED_DATA = 0x80
+    private const val SIGNED_DATA_PAYLOAD_DATA_ONLY = 0x40
+
     // Security headers observed in practice are small, while trailers can be large.
     // A bounded scan avoids both hard-coded security offsets and unbounded false-positive searching.
     private const val MAX_SECURED_PREFIX_BYTES = 512
     private val SUPPORTED_ITS_PROTOCOL_VERSIONS = 1..3
+
+    private const val SECURED_COMMON_HEADER_MISSING =
+        "Secured GeoNetworking payload does not contain a supported BTP-B Common Header"
 }

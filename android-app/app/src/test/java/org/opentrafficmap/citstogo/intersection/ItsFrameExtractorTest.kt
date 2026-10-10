@@ -1,5 +1,6 @@
 package org.opentrafficmap.citstogo.intersection
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -59,6 +60,69 @@ class ItsFrameExtractorTest {
         assertEquals(IntersectionKey(43, 40200), map.key)
         assertEquals("Bahnhofstr. - 8. Mai Str.", map.name)
         assertEquals(19, map.lanes.size)
+    }
+
+    @Test
+    fun securedFrameIgnoresCommonHeaderLookalikeInPositionVector() {
+        assertExtractsSecuredSpatem(spatemWithCommonHeaderLookalikeInPositionVector())
+    }
+
+    @Test
+    fun securedFrameIgnoresCommonHeaderLookalikeInSignature() {
+        assertExtractsSecuredSpatem(spatemWithCommonHeaderLookalikeInSignature())
+    }
+
+    @Test
+    fun recognisedSecuredEnvelopeIsNotScannedForAnotherCommonHeader() {
+        // Behind the 1609.2 prefix the Common Header position is known. When that header is unsupported or
+        // does not fill the unsecuredData, the frame stays malformed even if a lookalike passes every check.
+        val frames = mapOf(
+            "BTP-A" to spatemWithCommonHeaderLookalikeInSignature().apply { patch(SPATEM_COMMON_OFFSET, 0x10) },
+            "beacon" to spatemWithCommonHeaderLookalikeInSignature().apply { patch(SPATEM_COMMON_OFFSET + 1, 0x10) },
+            "unsecuredData length" to
+                fixture("secured-spatem-frame.bin").apply { patch(SPATEM_SECURED_OFFSET + 7, 0xb2) },
+        )
+
+        for ((change, frame) in frames) {
+            val result = ItsFrameExtractor.extractDetailed(frame)
+            assertTrue("$change: $result", result is ItsExtractionResult.Malformed && result.secured)
+        }
+    }
+
+    @Test
+    fun securedFrameWithOtherEnvelopeFallsBackToScanningForCommonHeader() {
+        val expected = requireNotNull(ItsFrameExtractor.extract(fixture("secured-spatem-frame.bin"))).payload
+        val otherVersion = fixture("secured-spatem-frame.bin").apply { patch(SPATEM_SECURED_OFFSET, 0x02) }
+
+        val result = ItsFrameExtractor.extractDetailed(otherVersion)
+
+        assertTrue("$result", result is ItsExtractionResult.Success)
+        assertArrayEquals(expected, (result as ItsExtractionResult.Success).packet.payload)
+    }
+
+    @Test
+    fun fallbackScanStillRejectsTwoPlausibleCommonHeaders() {
+        val frame = spatemWithCommonHeaderLookalikeInSignature().apply { patch(SPATEM_SECURED_OFFSET, 0x02) }
+
+        val result = ItsFrameExtractor.extractDetailed(frame)
+
+        assertEquals(ItsExtractionResult.Malformed("Ambiguous secured GeoNetworking payload", secured = true), result)
+    }
+
+    @Test
+    fun truncatedSecuredFrameIsMalformed() {
+        // A lookalike that still fits into the truncated frame must not stand in for the cut-off packet.
+        val frames = listOf(fixture("secured-spatem-frame.bin"), spatemWithCommonHeaderLookalikeInPositionVector())
+
+        for (frame in frames) {
+            for (size in SPATEM_SECURED_OFFSET until SPATEM_GEONETWORKING_END) {
+                val result = ItsFrameExtractor.extractDetailed(frame.copyOf(size))
+                assertTrue(
+                    "truncated to $size bytes: $result",
+                    result is ItsExtractionResult.Malformed && result.secured,
+                )
+            }
+        }
     }
 
     @Test
@@ -190,6 +254,46 @@ class ItsFrameExtractorTest {
         javaClass.getResourceAsStream("/intersection/$name"),
     ).use { it.readBytes() }
 
+    private fun assertExtractsSecuredSpatem(frame: ByteArray) {
+        val expected = requireNotNull(ItsFrameExtractor.extract(fixture("secured-spatem-frame.bin")))
+
+        val result = ItsFrameExtractor.extractDetailed(frame)
+
+        assertTrue("$result", result is ItsExtractionResult.Success)
+        val packet = (result as ItsExtractionResult.Success).packet
+        assertTrue(packet.geonetworkingSecured)
+        assertEquals(MapSpatDecoder.BTP_PORT_SPATEM, packet.destinationPort)
+        assertEquals(MapSpatDecoder.MESSAGE_ID_SPATEM, packet.messageId)
+        assertArrayEquals(expected.payload, packet.payload)
+    }
+
+    /**
+     * Turns the sender's GN address and timestamp in the source position vector into a second plausible
+     * packet, as seen in the example captures (there the lookalikes sat in the source position vector or
+     * in the ITS payload): an SHB Common Header for BTP-B with payload length 10 at byte 62, whose BTP and
+     * ITS PDU headers coincide with the real ones.
+     */
+    private fun spatemWithCommonHeaderLookalikeInPositionVector(): ByteArray =
+        fixture("secured-spatem-frame.bin").apply {
+            patch(SPATEM_SOURCE_POSITION_OFFSET + 4, 0x20, 0x50)
+            patch(SPATEM_SOURCE_POSITION_OFFSET + 8, 0x00, 0x0a)
+        }
+
+    /**
+     * Turns the random ECDSA signature at the end of the security trailer into a second plausible
+     * packet: an SHB Common Header for BTP-B with payload length 10 at the start of `r`, and an ITS
+     * PDU header (version 2, CAM) 8 + 28 + 4 bytes later, inside `s`.
+     */
+    private fun spatemWithCommonHeaderLookalikeInSignature(): ByteArray =
+        fixture("secured-spatem-frame.bin").apply {
+            patch(SPATEM_SIGNATURE_R_OFFSET, 0x20, 0x50, 0x00, 0x00, 0x00, 0x0a)
+            patch(SPATEM_SIGNATURE_R_OFFSET + 40, 0x02, 0x02)
+        }
+
+    private fun ByteArray.patch(offset: Int, vararg values: Int) {
+        values.forEachIndexed { index, value -> this[offset + index] = value.toByte() }
+    }
+
     private fun syntheticSecuredEnvelope(nh: Int, trailing: ByteArray): ByteArray {
         val snap = byteArrayOf(
             0xaa.toByte(), 0xaa.toByte(), 0x03, 0x00, 0x00, 0x00, 0x89.toByte(), 0x47,
@@ -220,5 +324,15 @@ class ItsFrameExtractorTest {
         const val MESSAGE_CAM = 2
         const val MESSAGE_SPAT = 4
         const val MESSAGE_MAP = 5
+
+        // secured-spatem-frame.bin: the IEEE 1609.2 envelope starts with `03 81 00 40 03 80 81 b1`,
+        // the GeoNetworking packet it carries (GBC Common Header at byte 46, source position vector
+        // from byte 58) ends at byte 223, and the frame ends with the outer signature (`r` from
+        // byte 462, `s` from byte 494) followed by 8 capture bytes.
+        const val SPATEM_SECURED_OFFSET = 38
+        const val SPATEM_COMMON_OFFSET = 46
+        const val SPATEM_SOURCE_POSITION_OFFSET = 58
+        const val SPATEM_GEONETWORKING_END = 223
+        const val SPATEM_SIGNATURE_R_OFFSET = 462
     }
 }
