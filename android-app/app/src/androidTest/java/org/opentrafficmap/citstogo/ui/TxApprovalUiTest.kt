@@ -25,6 +25,7 @@ import org.opentrafficmap.citstogo.SettingsPage
 import org.opentrafficmap.citstogo.ThemeMode
 import org.opentrafficmap.citstogo.TxApprovalPromptState
 import org.opentrafficmap.citstogo.TxApprovalScreen
+import org.opentrafficmap.citstogo.livemap.MapStationTimeout
 import org.opentrafficmap.citstogo.srem.SremProfile
 
 /** Covers the reworked TX unlock flow: confirmation-gated slider and the settings TX card. */
@@ -98,6 +99,7 @@ class TxApprovalUiTest {
                 nodeId = "node-1",
                 maxQueueLength = "100",
                 maxQueueAgeSeconds = "0.2",
+                mapStationTimeoutSeconds = MapStationTimeout.DEFAULT_SECONDS,
                 txApproved = txApproved,
                 sremProfile = SremProfile.PEDESTRIAN,
                 bridgeRunning = false,
@@ -116,7 +118,7 @@ class TxApprovalUiTest {
                 onAppUpdateNotificationChange = {},
                 onEnrollBluetooth = {},
                 onRevokeTxApproval = onRevokeTxApproval,
-                onSave = { _, _, _, _, _ -> },
+                onSave = { _, _, _, _, _, _ -> },
             )
         }
     }

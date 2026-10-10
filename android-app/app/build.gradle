@@ -18,8 +18,8 @@ android {
         applicationId = 'org.opentrafficmap.citstogo'
         minSdk = 26
         targetSdk = 35
-        versionCode = 111
-        versionName = '2.55.1'
+        versionCode = 112
+        versionName = '2.56.0'
         testInstrumentationRunner = 'androidx.test.runner.AndroidJUnitRunner'
     }
 
@@ -47,6 +47,14 @@ android {
         buildConfig = true
     }
 
+    packaging {
+        jniLibs {
+            // MapLibre brings 41 MB of native libraries for four ABIs. Compressed, they add 16 MB to the APK
+            // instead; Android extracts them at installation.
+            useLegacyPackaging = true
+        }
+    }
+
     lint {
         disable('NullSafeMutableLiveData')
     }
@@ -62,6 +70,7 @@ dependencies {
     implementation 'androidx.compose.foundation:foundation:1.11.1'
     implementation 'androidx.compose.material3:material3:1.4.0'
     implementation 'androidx.compose.material:material-icons-extended:1.7.8'
+    implementation 'org.maplibre.gl:android-sdk-opengl:13.6.1'
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.json:json:20240303'
     androidTestImplementation 'androidx.compose.ui:ui-test-junit4:1.11.1'

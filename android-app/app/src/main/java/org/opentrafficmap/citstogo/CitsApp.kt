@@ -9,6 +9,7 @@ import org.opentrafficmap.citstogo.FlashingPage
 import org.opentrafficmap.citstogo.flashing.FirmwareFlashLogEntry
 import org.opentrafficmap.citstogo.flashing.FirmwareRelease
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
+import org.opentrafficmap.citstogo.livemap.LiveMapSnapshot
 import org.opentrafficmap.citstogo.IntersectionSortMode
 import org.opentrafficmap.citstogo.TxApprovalPromptState
 import org.opentrafficmap.citstogo.BuildConfig
@@ -65,6 +66,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
@@ -219,6 +221,8 @@ fun CitsApp(
     onClearDiscoveredStations: () -> Unit,
     logLine: String,
     intersectionSnapshots: List<IntersectionSnapshot>,
+    liveMapSnapshot: LiveMapSnapshot?,
+    mapStationTimeoutSeconds: Int,
     intersectionSortMode: IntersectionSortMode,
     onIntersectionSortModeChange: (IntersectionSortMode) -> Unit,
     currentPosition: DevicePosition?,
@@ -268,10 +272,12 @@ fun CitsApp(
     onChooseCustomFirmware: () -> Unit,
     onUseReleaseFirmware: () -> Unit,
     onFlashFirmware: () -> Unit,
-    onSaveSettings: (String, String, String, String, SremProfile) -> Unit,
+    onSaveSettings: (String, String, String, String, SremProfile, String) -> Unit,
 ) {
     val context = LocalContext.current
     var selectedPage by rememberSaveable { mutableStateOf(AppPage.Home) }
+    // Keeps the camera of the Map page while other pages are shown.
+    val mapPageState = rememberSaveableStateHolder()
     var confettiRun by rememberSaveable { mutableStateOf(0) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -313,7 +319,7 @@ fun CitsApp(
     }
     
     LaunchedEffect(selectedPage) {
-        onIntersectionLocationActiveChange(selectedPage == AppPage.IntersectionView)
+        onIntersectionLocationActiveChange(selectedPage == AppPage.IntersectionView || selectedPage == AppPage.Map)
         onFlashingPageActive(selectedPage == AppPage.Flashing)
     }
     
@@ -326,12 +332,16 @@ fun CitsApp(
         }
     }
 
+    val txPromptActive = txApprovalPromptState != TxApprovalPromptState.Hidden
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Box(Modifier.fillMaxSize()) {
             ModalNavigationDrawer(
                 drawerState = drawerState,
                 // Child controls reserve their gestures by consuming pointer changes. Do not
                 // reconfigure the drawer's drag detector in the middle of a slider gesture.
+                // The Map page has no sliders: there, swipes pan the map, the menu button opens the
+                // drawer and swipes close it. The TX approval screen replaces the map.
+                gesturesEnabled = txPromptActive || selectedPage != AppPage.Map || drawerState.isOpen,
                 drawerContent = {
                     ModalDrawerSheet(
                         modifier = Modifier.fillMaxHeight(),
@@ -371,13 +381,26 @@ fun CitsApp(
                 },
             ) {
                 val mainScrollState = rememberScrollState()
-                val txPromptActive = txApprovalPromptState != TxApprovalPromptState.Hidden
+                // The map reaches the edges of the screen; only its header keeps the margin of the pages.
+                val edgeToEdgeMap = selectedPage == AppPage.Map && !txPromptActive
                 val contentModifier = Modifier
                     .fillMaxSize()
                     .windowInsetsPadding(WindowInsets.safeDrawing)
-                    .padding(if (selectedPage == AppPage.Home && !txPromptActive) 16.dp else 20.dp)
+                    .padding(
+                        when {
+                            edgeToEdgeMap -> PaddingValues(top = 20.dp)
+                            selectedPage == AppPage.Home && !txPromptActive -> PaddingValues(16.dp)
+                            else -> PaddingValues(20.dp)
+                        },
+                    )
                     .then(
-                        if (txPromptActive || selectedPage == AppPage.IntersectionView || selectedPage == AppPage.DiscoveredStations || selectedPage == AppPage.Logs) {
+                        if (
+                            txPromptActive ||
+                            selectedPage == AppPage.IntersectionView ||
+                            selectedPage == AppPage.DiscoveredStations ||
+                            selectedPage == AppPage.Logs ||
+                            selectedPage == AppPage.Map
+                        ) {
                             Modifier
                         } else {
                             Modifier.verticalScroll(mainScrollState)
@@ -400,6 +423,7 @@ fun CitsApp(
                         },
                         onOpenMenu = { scope.launch { drawerState.open() } },
                         subtitle = headerSubtitle,
+                        modifier = if (edgeToEdgeMap) Modifier.padding(horizontal = 20.dp) else Modifier,
                     )
                     if (txPromptActive) {
                         TxApprovalScreen(
@@ -456,6 +480,19 @@ fun CitsApp(
                             onSendSrem = onSendSrem,
                             modifier = Modifier.weight(1f),
                         )
+                        AppPage.Map -> {
+                            val mapModifier = Modifier.weight(1f)
+                            mapPageState.SaveableStateProvider(AppPage.Map.name) {
+                                MapPage(
+                                    snapshot = liveMapSnapshot,
+                                    stationTimeoutMs = mapStationTimeoutSeconds * 1_000L,
+                                    currentPosition = currentPosition,
+                                    darkTheme = resolveDarkTheme(themeMode, isSystemInDarkTheme()),
+                                    receiving = status.running,
+                                    modifier = mapModifier,
+                                )
+                            }
+                        }
                         AppPage.Flashing -> FlashingPage(
                             state = flashingState,
                             log = flashingLog,
@@ -473,6 +510,7 @@ fun CitsApp(
                             nodeId = nodeId,
                             maxQueueLength = maxQueueLength,
                             maxQueueAgeSeconds = maxQueueAgeSeconds,
+                            mapStationTimeoutSeconds = mapStationTimeoutSeconds,
                             txApproved = txApproved,
                             sremProfile = sremProfile,
                             bridgeRunning = status.running,
@@ -491,7 +529,7 @@ fun CitsApp(
                             onAppUpdateNotificationChange = onAppUpdateNotificationChange,
                             onEnrollBluetooth = onEnrollBluetooth,
                             onRevokeTxApproval = onRevokeTxApproval,
-                            onSave = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds, updatedSremProfile ->
+                            onSave = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds, updatedSremProfile, updatedMapStationTimeoutSeconds ->
                                 onMqttUriChange(updatedMqttUri)
                                 onNodeIdChange(updatedNodeId)
                                 onMaxQueueLengthChange(updatedMaxQueueLength)
@@ -503,6 +541,7 @@ fun CitsApp(
                                     updatedMaxQueueLength,
                                     updatedMaxQueueAgeSeconds,
                                     updatedSremProfile,
+                                    updatedMapStationTimeoutSeconds,
                                 )
                             },
                         )

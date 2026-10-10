@@ -39,9 +39,15 @@ data class DevicePosition(
     val longitudeE7: Int,
     val accuracyM: Float?,
     val speedMetersPerSecond: Float?,
+    /** 0.1 degree, 0 without a bearing. */
     val heading: Int,
+    val hasHeading: Boolean,
     val timeMs: Long,
 ) {
+    /** The heading in degrees while moving; the bearing of a standing phone is noise. */
+    val movingHeadingDeg: Float?
+        get() = if (hasHeading && speedMetersPerSecond != null) heading / 10f else null
+
     companion object {
         fun from(location: Location): DevicePosition = DevicePosition(
             latitudeE7 = (location.latitude * 10_000_000.0).toInt(),
@@ -51,6 +57,7 @@ data class DevicePosition(
             heading = location.takeIf { it.hasBearing() }
                 ?.let { (it.bearing.mod(360f) * 10f).roundToLong().toInt().coerceIn(0, 3_600) }
                 ?: 0,
+            hasHeading = location.hasBearing(),
             timeMs = location.time,
         )
     }
@@ -67,6 +74,7 @@ enum class AppPage(val title: String) {
     DiscoveredStations("Discovered Stations"),
     CamBroadcast("CAM Broadcast"),
     IntersectionView("Intersection View"),
+    Map("Map"),
     Flashing("Flashing"),
     Settings("Settings"),
     Debug("Debug"),

@@ -113,10 +113,10 @@ private fun confettiColors(context: android.content.Context): List<Color> = list
 )
 
 @Composable
-fun AppHeader(title: String, onOpenMenu: () -> Unit, subtitle: String? = null) {
+fun AppHeader(title: String, onOpenMenu: () -> Unit, subtitle: String? = null, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),

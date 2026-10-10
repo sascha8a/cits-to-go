@@ -67,10 +67,19 @@
     <string name="about_links_title">Links</string>
     <string name="about_source_code_label">Source code on Codeberg</string>
     <string name="about_opentrafficmap_label">OpenTrafficMap</string>
+    <string name="about_licences_title">Open-source licences</string>
+    <string name="about_licences_map_libraries">The Map page uses MapLibre Native and the libraries it brings along. Their licence texts follow below.</string>
+    <string name="about_licences_map_data">Map tiles from OpenFreeMap, built with OpenMapTiles from OpenStreetMap data, available under the Open Database Licence.</string>
+    <string name="about_licence_maplibre_native">MapLibre Native Android notices</string>
+    <string name="about_licence_maplibre_native_bundled">Further libraries in MapLibre Native</string>
+    <string name="about_licence_maplibre_gestures">MapLibre Android Gestures licence</string>
+    <string name="about_licence_apache">Apache License 2.0</string>
     <string name="about_thanks_title">Thanks</string>
     <string name="about_thanks_text">Thanks to the OpenTrafficMap Community and all contributors!</string>
     <string name="cd_about_app_logo">C-ITS to go app logo</string>
     <string name="cd_open_external_link">Open external link</string>
+    <string name="cd_show_licence_text">Show licence text</string>
+    <string name="cd_hide_licence_text">Hide licence text</string>
 
     <!-- Content Descriptions -->
     <string name="cd_open_menu">Open navigation menu</string>

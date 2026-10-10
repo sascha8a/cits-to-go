@@ -58,6 +58,8 @@ import org.opentrafficmap.citstogo.flashing.formatFirmwareSize
 import org.opentrafficmap.citstogo.intersection.IntersectionDiagnostics
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
+import org.opentrafficmap.citstogo.livemap.LiveMapSnapshot
+import org.opentrafficmap.citstogo.livemap.MapStationTimeout
 import org.opentrafficmap.citstogo.protocol.FirmwareStatistics
 import org.opentrafficmap.citstogo.bridge.ConnectionDiagnostics
 import org.opentrafficmap.citstogo.srem.SremProfile
@@ -98,6 +100,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var intersectionSnapshot by mutableStateOf<IntersectionSnapshot?>(null)
     private var intersectionSnapshots by mutableStateOf<List<IntersectionSnapshot>>(emptyList())
     private var intersectionSortMode by mutableStateOf(IntersectionSortMode.FirstReceived)
+    private var liveMapSnapshot by mutableStateOf<LiveMapSnapshot?>(null)
+    private var mapStationTimeoutSeconds by mutableStateOf(MapStationTimeout.DEFAULT_SECONDS)
     private var currentPosition by mutableStateOf<DevicePosition?>(null)
     private var sremProfile by mutableStateOf(SremProfile.PEDESTRIAN)
     private var camIntervalMs by mutableStateOf(CitsBridgeService.DEFAULT_CAM_INTERVAL_MS.toString())
@@ -306,6 +310,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 intersectionSnapshot = it
                 if (intersectionSnapshots.isEmpty()) intersectionSnapshots = listOf(it)
             }
+            intent.serializableExtra<LiveMapSnapshot>(CitsBridgeService.EXTRA_LIVE_MAP_SNAPSHOT)?.let {
+                liveMapSnapshot = it
+            }
             if (flashAfterStop && !status.running && !status.replaying) {
                 flashAfterStop = false
                 mainHandler.removeCallbacks(flashStopTimeout)
@@ -341,6 +348,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         discoveredStations = StationDiscoveryStore().apply {
             restore(prefs.getString(CitsBridgeService.PREF_DISCOVERED_STATIONS, null))
         }.snapshot(DiscoveredStationList.BROADCAST_LIMIT)
+        mapStationTimeoutSeconds = MapStationTimeout.clamp(
+            prefs.getInt(PREF_MAP_STATION_TIMEOUT_S, MapStationTimeout.DEFAULT_SECONDS),
+        )
         mqttUri = prefs.getString(CitsBridgeService.PREF_MQTT_URI, CitsBridgeService.DEFAULT_MQTT_URI).orEmpty()
         mqttEnabled = prefs.getBoolean(CitsBridgeService.PREF_MQTT_ENABLED, true)
         nodeId = prefs.getString(CitsBridgeService.PREF_NODE_ID, null) ?: createAndStoreNodeId()
@@ -430,6 +440,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     },
                     logLine = logLine,
                     intersectionSnapshots = intersectionSnapshots.ifEmpty { listOfNotNull(intersectionSnapshot) },
+                    liveMapSnapshot = liveMapSnapshot,
+                    mapStationTimeoutSeconds = mapStationTimeoutSeconds,
                     intersectionSortMode = intersectionSortMode,
                     onIntersectionSortModeChange = ::updateIntersectionSortMode,
                     currentPosition = currentPosition,
@@ -505,7 +517,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     onChooseCustomFirmware = ::chooseCustomFirmware,
                     onUseReleaseFirmware = ::useReleaseFirmware,
                     onFlashFirmware = ::requestFirmwareFlash,
-                    onSaveSettings = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds, updatedSremProfile ->
+                    onSaveSettings = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds, updatedSremProfile, updatedMapStationTimeoutSeconds ->
                         mqttUri = updatedMqttUri
                         nodeId = updatedNodeId
                         maxQueueLength = updatedMaxQueueLength
@@ -517,6 +529,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             updatedMaxQueueLength,
                             updatedMaxQueueAgeSeconds,
                             updatedSremProfile,
+                            MapStationTimeout.parse(updatedMapStationTimeoutSeconds),
                         )
                     },
                 )
@@ -1364,6 +1377,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         maxQueueLengthValue: String = maxQueueLength,
         maxQueueAgeSecondsValue: String = maxQueueAgeSeconds,
         sremProfileValue: SremProfile = sremProfile,
+        mapStationTimeoutSecondsValue: Int = mapStationTimeoutSeconds,
     ) {
         val parsedMaxQueueLength = parseMaxQueueLength(maxQueueLengthValue)
         val parsedMaxQueueAgeMs = parseMaxQueueAgeMs(maxQueueAgeSecondsValue)
@@ -1372,12 +1386,14 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         maxQueueLength = parsedMaxQueueLength.toString()
         maxQueueAgeSeconds = formatQueueAgeSeconds(parsedMaxQueueAgeMs)
         sremProfile = sremProfileValue
+        mapStationTimeoutSeconds = mapStationTimeoutSecondsValue
         getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
             .putString(CitsBridgeService.PREF_MQTT_URI, mqttUri)
             .putString(CitsBridgeService.PREF_NODE_ID, nodeId)
             .putInt(CitsBridgeService.PREF_MQTT_MAX_QUEUE_LENGTH, parsedMaxQueueLength)
             .putLong(CitsBridgeService.PREF_MQTT_MAX_QUEUE_AGE_MS, parsedMaxQueueAgeMs)
             .putInt(CitsBridgeService.PREF_VEHICLE_TYPE, sremProfile.preferenceCode)
+            .putInt(PREF_MAP_STATION_TIMEOUT_S, mapStationTimeoutSeconds)
             .apply()
     }
 
@@ -1483,6 +1499,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         private const val PREF_DEBUG_MENU_ENABLED = "debug_menu_enabled"
         private const val PREF_THEME_MODE = "theme_mode"
         private const val PREF_DISPLAY_ALWAYS_ON = "display_always_on"
+        private const val PREF_MAP_STATION_TIMEOUT_S = "map_station_timeout_s"
         private const val INTERSECTION_LOCATION_MIN_TIME_MS = 500L
         private const val TX_SHAKE_THRESHOLD_G = 2.7f
         private const val TX_SHAKE_COOLDOWN_MS = 1_200L

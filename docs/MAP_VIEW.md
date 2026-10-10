@@ -1,0 +1,168 @@
+# Map view
+
+The **Map** page shows the stations and DENM events the phone has received on an OpenFreeMap base map, together
+with the phone's own position. It needs no TX approval and no CAM broadcast: a running capture or a PCAP replay is
+enough.
+
+## Architecture
+
+```text
+capture thread   CitsBridgeService.handlePacket() → ItsFrameExtractor → ItsPacket
+                     → LiveMapStore.accept(packet, receivedAt, capturedAt)      (CamDecoder, DenmDecoder)
+status broadcast publishStatus() → EXTRA_LIVE_MAP_SNAPSHOT, at most once per second
+activity         MainActivity keeps the last LiveMapSnapshot
+Map page         every second while resumed: LiveMapModel.build(snapshot, now, station timeout)
+                     → LiveMapFeatures → GeoJsonSource "stations" / "denms" → SymbolLayer with MapIcons
+```
+
+- **Decoders** (`cam/CamDecoder.kt`, `denm/DenmDecoder.kt`) read CAM and DENM UPER up to the fields the map needs:
+  position, station type, heading and speed of a CAM; the management container and the event type of a DENM. Only
+  `protocolVersion` 2 is accepted; version 1 differs on the wire. A malformed message is dropped on its own and never
+  disturbs capture, PCAP or MQTT.
+- **Store** (`livemap/LiveMapStore.kt`) runs in the service and aggregates every packet, whether or not the page is
+  open, so that the map is filled as soon as it opens. Each capture and each replay starts with an empty store.
+- **Snapshot** (`LiveMapSnapshot`) is a `Serializable` copy of the store in transmitted units. The service attaches it
+  to the status broadcast at most once per second.
+- **Model** (`livemap/LiveMapModel.kt`) is plain Kotlin: from a snapshot, the current time and the station timeout
+  it computes what is visible, in display units, with labels (`StationTypes`, `DenmCauses`) and icon names.
+- **Layers** (`livemap/LiveMapLayers.kt`) turn the model into GeoJSON features (`LiveMapFeatures`, covered by JVM
+  tests) and add two sources and two symbol layers to the style, DENMs above stations. `livemap/MapIcons.kt` draws
+  the icons with an Android `Canvas` for the screen density.
+- **Page** (`MapPage.kt`) hosts a MapLibre `MapView` in an `AndroidView` and forwards the activity lifecycle to it.
+
+The own position comes from the location listener of `MainActivity`, the same one Intersection View uses. It runs
+while Intersection View or Map is shown and the app is in the foreground, and asks for the location permission when
+needed. The page passes each position to MapLibre's `LocationComponent` with `forceLocationUpdate()`; MapLibre's
+own location engine stays off. Without location permission the map works without the own position.
+
+### Pausing
+
+- While another page is shown there is no `MapView`: no rendering and no tile requests. The camera position and the
+  follow switch are kept.
+- When the app goes to the background, the one-second refresh stops on pause, rendering stops with `onStop()`, and
+  the location updates stop as before.
+- The service keeps aggregating, so the map is up to date when it is opened again.
+
+## Store rules
+
+**Stations**, keyed by the station ID of the CAM:
+
+- The last CAM of each station is kept with its reception time on the phone.
+- A CAM older than the stored one is dropped. The comparison uses `generationDeltaTime` modulo 65,536 ms, which
+  catches reordered frames in captures; after 30 s without a CAM any CAM counts as newer.
+- Stations are removed after the longest possible timeout (300 s), so the store does not depend on the setting. At
+  most 500 stations are kept; the oldest goes first.
+
+**DENM events**, keyed by the actionID (originating station ID and sequence number), following EN 302 637-3 V1.3.1
+§8.4.2 and TS 103 831:
+
+- An event that has already expired on arrival is dropped.
+- An unknown actionID creates an event, unless the DENM is a termination.
+- A DENM with an older reference time or detection time than the stored one is dropped.
+- A DENM with the same reference time, detection time and termination is a repetition and only updates the
+  reception time.
+- Any other DENM replaces the event; position, cause and validity may change.
+- A termination hides the event at once, but the entry stays until both the termination and the original event
+  have expired, so that late repetitions of the old DENM do not bring it back.
+- At most 200 events are kept; the one that expires first goes first.
+
+An event expires at `detectionTime + validityDuration` (600 s when the DENM leaves it out). In a replay the capture
+time of the frame shifts this, so an event stays as long after its reception as it was valid after its capture.
+With captures that store whole-second timestamps, replayed expiry is accurate to about ±2 s.
+
+## Timeouts and the setting
+
+| | Value | Reason |
+|---|---|---|
+| Marker turns grey | 3 s, fixed | One lost CAM leaves a gap of 2 s; snapshot and refresh add up to 2 s |
+| Marker disappears | **Settings → Map → Station timeout**, default 10 s | A stale marker is at most about 100–140 m off |
+| Setting range | 5–300 s | 300 s matches the OpenTrafficMap web map, for logging use |
+| Road side units | at least 30 s | They do not move, and no specification limits their CAM interval |
+
+For this timeout, a station counts as a road side unit when its CAM has `rsuContainerHighFrequency`, whatever its
+station type. The timeout is applied when the page draws the snapshot, so a change takes effect at once, also for a
+stopped capture. After a pseudonym change the old marker stays as a duplicate until it times out.
+
+DENM events have no timeout of their own: they show until they expire or are terminated.
+
+## Display
+
+- **Stations** are arrows along the heading of their last CAM, or dots without a heading, coloured by station type:
+  car, truck or bus, tram, cyclist and other vulnerable road users, special vehicle, road side unit, unknown. Stale
+  stations turn grey and translucent.
+- **DENM events** are warning signs at the event position, with icons for traffic jams (causes 1 and 27), accidents
+  (2), roadworks (3), stationary vehicles (91–94) and emergencies (15 and 95), and a general hazard sign for all other
+  causes. Road operators report the start of the hazard in driving direction as the event position.
+- **Tapping** a marker opens a card with its details, which updates every second and closes when the marker
+  disappears. Tapping the map elsewhere closes it. For DENMs of infrastructure senders (station types 9, 10 and 15)
+  the card reads "Updated n s ago" instead of "Detected n s ago", because they set a new detection time with every
+  update.
+- **Follow** (on by default) keeps the own position in the centre. Moving the map turns it off, also before the
+  first position fix. The button appears with the own position, turns follow on again and zooms in from an overview.
+  Before the first position fix the map shows Austria.
+- While the map is shown, swiping does not open the navigation drawer, so that swipes move the map; the menu button
+  still opens the drawer.
+
+## Map source and attribution
+
+The base map is OpenFreeMap: `https://tiles.openfreemap.org/styles/liberty`, or `.../styles/dark` when the app uses
+its dark theme. It needs no API key. Its attribution, "OpenFreeMap © OpenMapTiles Data from OpenStreetMap", is
+always visible at the bottom of the map; the links open in the browser. The MapLibre logo and attribution button are
+off.
+
+Tiles load over the network and are kept in MapLibre's disk cache according to their HTTP cache headers. There is
+no prefetching (MapLibre's `prefetchZoomDelta` is 0) and no offline region; without a data connection only cached
+tiles show. If the style cannot be loaded, the page says so until MapLibre's own retries succeed; opening the page
+again also retries.
+
+**About → Open-source licences** lists MapLibre and the libraries it brings along, the map data sources, and the
+licence texts that binary distributions must reproduce (`res/raw/`).
+
+## Testing with trimmed captures
+
+PCAP replay runs in real time, so test with short excerpts of a capture. The app reads classic pcap with link type
+105 (802.11) or 127 (802.11 with radiotap, as its own recordings), not pcapng, so write the excerpt with `-F pcap`:
+
+```bash
+# -A and -B take Unix seconds or "YYYY-MM-DD hh:mm:ss"
+editcap -F pcap -A 1791564649 -B 1791565549 capture.pcap excerpt.pcap
+adb push excerpt.pcap /sdcard/Download/
+```
+
+Then open **Home → Replay PCAP**, choose the file and switch to **Map**. Check:
+
+- stations appear, turn grey after 3 s without a CAM and disappear after the station timeout,
+- DENM events disappear when they expire,
+- follow, tapping markers, and the detail card,
+- the map stays where it was after switching pages, and switches to the dark style with the app theme,
+- nothing renders or refreshes while the app is in the background.
+
+## Updating MapLibre
+
+1. Use `org.maplibre.gl:android-sdk-opengl`. The plain `android-sdk` artifact renders with Vulkan and requires
+   Vulkan 1.3.
+2. Change the version in `app/build.gradle`.
+3. List the runtime libraries with
+   `./gradlew :app:dependencies --configuration releaseRuntimeClasspath` and update the list in `AboutPage.kt`.
+4. Replace the licence texts in `app/src/main/res/raw/` with the files of the new release:
+   `platform/android/LICENSE.md` of the `android-v<version>` tag of maplibre-native, and `LICENSE.md` of the
+   maplibre-gestures-android version it uses. `platform/android/LICENSE.md` leaves out some libraries compiled
+   into `libmaplibre.so`; `maplibre_native_bundled_licenses.md` has their texts at the vendored versions: the
+   HarfBuzz section of `LICENSES.core.md`, `vendor/icu/LICENSE`, and the licence files of the PMTiles,
+   unordered_dense, jni.hpp (in `vendor/maplibre-native-base`) and maplibre-tile-spec submodules. Compare both
+   files with the libraries that `CMakeLists.txt` and `platform/android/android.cmake` link into `mbgl-core`.
+5. Check the merged manifest (`app/build/intermediates/merged_manifest/debug/`) for new permissions or features.
+   `ACCESS_WIFI_STATE` is removed in `AndroidManifest.xml`.
+6. Compare the APK size. The native libraries are packaged compressed (`useLegacyPackaging`), which adds about
+   16 MB to the APK instead of 41 MB.
+
+## Known limitations
+
+- The base map needs a network connection; only cached tiles work offline.
+- Without a data connection and no cached style, the page shows no stations or DENMs either, until the style has
+  loaded.
+- Only stations the phone receives itself are shown; there is no OpenTrafficMap backend.
+- MAPEM, SPATEM and IVIM are not on the map; intersections stay in Intersection View.
+- DENM events are points; traces, event zones and closed lanes are not drawn yet.
+- Replay runs in real time only.
+- Infrastructure DENMs without a centrally assigned actionID can show twice when several road side units send them.

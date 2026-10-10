@@ -295,6 +295,11 @@ object DenmCauses {
         return cause.subCauses[subCauseCode] ?: cause.label
     }
 
+    fun causeLabel(causeCode: Int): String? = causes[causeCode]?.label
+
+    /** `null` for subcauses without a label of their own. */
+    fun subCauseLabel(causeCode: Int, subCauseCode: Int): String? = causes[causeCode]?.subCauses?.get(subCauseCode)
+
     fun iconGroup(causeCode: Int): DenmIconGroup = when (causeCode) {
         1, 27 -> DenmIconGroup.TrafficJam
         2 -> DenmIconGroup.Accident

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
@@ -27,6 +28,7 @@ import androidx.compose.material.icons.rounded.BrightnessHigh
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.LightMode
+import androidx.compose.material.icons.rounded.Map
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Storage
@@ -56,10 +58,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import org.opentrafficmap.citstogo.livemap.LiveMapModel
+import org.opentrafficmap.citstogo.livemap.MapStationTimeout
 import org.opentrafficmap.citstogo.srem.SremProfile
 
 @Composable
@@ -70,6 +75,7 @@ fun SettingsPage(
     nodeId: String,
     maxQueueLength: String,
     maxQueueAgeSeconds: String,
+    mapStationTimeoutSeconds: Int,
     txApproved: Boolean,
     sremProfile: SremProfile,
     bridgeRunning: Boolean,
@@ -88,7 +94,7 @@ fun SettingsPage(
     onAppUpdateNotificationChange: (Boolean) -> Unit,
     onEnrollBluetooth: () -> Unit,
     onRevokeTxApproval: () -> Unit,
-    onSave: (String, String, String, String, SremProfile) -> Unit,
+    onSave: (String, String, String, String, SremProfile, String) -> Unit,
 ) {
     val context = LocalContext.current
     var draftMqttUri by rememberSaveable(mqttUri) { mutableStateOf(mqttUri) }
@@ -96,6 +102,9 @@ fun SettingsPage(
     var draftMaxQueueLength by rememberSaveable(maxQueueLength) { mutableStateOf(maxQueueLength) }
     var draftMaxQueueAgeSeconds by rememberSaveable(maxQueueAgeSeconds) { mutableStateOf(maxQueueAgeSeconds) }
     var draftSremProfile by rememberSaveable(sremProfile) { mutableStateOf(sremProfile) }
+    var draftMapStationTimeoutSeconds by rememberSaveable(mapStationTimeoutSeconds) {
+        mutableStateOf(mapStationTimeoutSeconds.toString())
+    }
 
     Column(
         Modifier.fillMaxWidth(),
@@ -117,6 +126,11 @@ fun SettingsPage(
         VehicleTypeCard(
             sremProfile = draftSremProfile,
             onSremProfileChange = { draftSremProfile = it },
+        )
+
+        MapCard(
+            stationTimeoutSeconds = draftMapStationTimeoutSeconds,
+            onStationTimeoutSecondsChange = { draftMapStationTimeoutSeconds = it },
         )
 
         BluetoothCard(
@@ -159,6 +173,7 @@ fun SettingsPage(
                     draftMaxQueueLength,
                     draftMaxQueueAgeSeconds,
                     draftSremProfile,
+                    draftMapStationTimeoutSeconds,
                 )
             },
             modifier = Modifier
@@ -476,6 +491,98 @@ private fun VehicleTypeCard(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun MapCard(
+    stationTimeoutSeconds: String,
+    onStationTimeoutSecondsChange: (String) -> Unit,
+) {
+    val context = LocalContext.current
+    val range = MapStationTimeout.RANGE_SECONDS
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(ContextCompat.getColor(context, R.color.card)),
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(ContextCompat.getColor(context, R.color.primary_container))),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Map,
+                        contentDescription = null,
+                        tint = Color(ContextCompat.getColor(context, R.color.primary)),
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 12.dp),
+                ) {
+                    Text(
+                        "Map",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(ContextCompat.getColor(context, R.color.on_surface)),
+                    )
+                    Text(
+                        "Received stations and DENM events",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
+                    )
+                }
+            }
+
+            HorizontalDivider(
+                color = Color(ContextCompat.getColor(context, R.color.divider)),
+                modifier = Modifier.padding(vertical = 4.dp),
+            )
+
+            OutlinedTextField(
+                value = stationTimeoutSeconds,
+                onValueChange = onStationTimeoutSecondsChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("Station timeout") },
+                placeholder = { Text(MapStationTimeout.DEFAULT_SECONDS.toString()) },
+                suffix = { Text("s") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                supportingText = {
+                    Text(
+                        "Markers turn grey after ${LiveMapModel.STALE_AFTER_MS / 1_000} s without a CAM and " +
+                            "disappear after this timeout (${range.first}–${range.last} s). Road side units stay " +
+                            "at least ${LiveMapModel.MIN_ROAD_SIDE_UNIT_TIMEOUT_MS / 1_000} s.",
+                    )
+                },
+                trailingIcon = {
+                    Icon(
+                        imageVector = Icons.Rounded.Schedule,
+                        contentDescription = null,
+                        tint = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
+                        modifier = Modifier.size(20.dp),
+                    )
+                },
+            )
         }
     }
 }

@@ -101,6 +101,13 @@ The bridge runs as a foreground service with a partial wakelock while capture is
 
 PCAP output is classic libpcap with `DLT_IEEE802_11` link type and raw 802.11 frame bytes. It includes received packets and packets acknowledged as successfully transmitted by the firmware.
 
+### Map
+
+The **Map** page shows received CAM stations and DENM events on an OpenFreeMap base map, with the phone's own
+position. It works during a capture or a PCAP replay and needs a data connection for the base map. Markers turn grey
+after 3 s without a CAM and disappear after **Settings → Map → Station timeout** (default 10 s). Tap a marker for its
+details. See [map view notes](../docs/MAP_VIEW.md).
+
 ### Battery settings for long captures
 
 Android's battery optimisation can still stop or throttle the app a few

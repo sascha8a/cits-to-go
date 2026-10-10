@@ -247,6 +247,19 @@ class DenmCausesTest {
     }
 
     @Test
+    fun causeAndSubCauseLabelsAreSeparate() {
+        for ((cause, rows) in cddLabels.groupBy { it[0].toInt() }) {
+            val labels = rows.associate { it[1] to it[2] }
+            assertEquals("$cause", labels.getValue("*"), DenmCauses.causeLabel(cause))
+            for (subCause in 0..255) {
+                assertEquals("$cause/$subCause", labels["$subCause"], DenmCauses.subCauseLabel(cause, subCause))
+            }
+        }
+        assertEquals(null, DenmCauses.causeLabel(42))
+        assertEquals(null, DenmCauses.subCauseLabel(42, 1))
+    }
+
+    @Test
     fun unknownCausesShowTheirCodes() {
         val known = cddLabels.map { it[0].toInt() }.toSet()
 
