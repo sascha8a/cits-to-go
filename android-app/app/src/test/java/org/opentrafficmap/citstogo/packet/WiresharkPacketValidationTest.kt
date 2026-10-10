@@ -1,11 +1,8 @@
 package org.opentrafficmap.citstogo.packet
 
-import java.io.IOException
 import java.nio.file.Files
-import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
-import org.junit.Assert.fail
 import org.junit.Test
 import org.opentrafficmap.citstogo.bridge.PcapWriter
 import org.opentrafficmap.citstogo.cam.CamIdentity
@@ -177,7 +174,7 @@ class WiresharkPacketValidationTest {
                 )
             }
 
-            val decoded = tshark(
+            val decoded = Tshark.run(
                 "-r", pcap.toString(),
                 "-T", "fields",
                 "-E", "separator=|",
@@ -201,7 +198,7 @@ class WiresharkPacketValidationTest {
             assertEquals("ITS message ID below the radio header", "2", decoded[6])
             assertEquals("BTP port below the radio header", "2001", decoded[7])
 
-            val malformed = tshark(
+            val malformed = Tshark.run(
                 "-r", pcap.toString(),
                 "-Y", "_ws.malformed",
                 "-T", "fields",
@@ -229,13 +226,8 @@ class WiresharkPacketValidationTest {
         expectedStationType: Int? = null,
         expectedRole: Int? = null,
     ) {
-        val pcap = Files.createTempFile("cits-to-go-packet-", ".pcap")
-        try {
-            PcapWriter(Files.newOutputStream(pcap)).use {
-                it.writeRawPacket(frame, timestamp * 1_000L)
-            }
-
-            val decoded = tshark(
+        Tshark.withPcap(listOf(frame), timestamp * 1_000L) { pcap ->
+            val decoded = Tshark.run(
                 "-r", pcap.toString(),
                 "-T", "fields",
                 "-e", "frame.number",
@@ -255,7 +247,7 @@ class WiresharkPacketValidationTest {
             }
             expectedRole?.let { assertEquals("$label requestor role", it.toString(), decoded[5]) }
 
-            val malformed = tshark(
+            val malformed = Tshark.run(
                 "-r", pcap.toString(),
                 "-Y", "_ws.malformed",
                 "-T", "fields",
@@ -264,30 +256,6 @@ class WiresharkPacketValidationTest {
                 "-e", "_ws.expert.message",
             )
             assertTrue("$label is malformed according to tshark: ${malformed.trim()}", malformed.isBlank())
-        } finally {
-            Files.deleteIfExists(pcap)
         }
-    }
-
-    private fun tshark(vararg arguments: String): String {
-        val executable = System.getenv("TSHARK")?.takeIf { it.isNotBlank() } ?: "tshark"
-        val process = try {
-            ProcessBuilder(listOf(executable) + arguments)
-                .redirectErrorStream(true)
-                .start()
-        } catch (exception: IOException) {
-            fail(
-                "tshark is required for packet-generation tests. Install Wireshark CLI or set TSHARK: " +
-                    exception.message,
-            )
-            error("unreachable")
-        }
-        if (!process.waitFor(30, TimeUnit.SECONDS)) {
-            process.destroyForcibly()
-            fail("tshark timed out")
-        }
-        val output = process.inputStream.bufferedReader().use { it.readText() }
-        assertEquals("tshark failed: $output", 0, process.exitValue())
-        return output
     }
 }
