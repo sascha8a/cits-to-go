@@ -35,9 +35,11 @@ import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
 import org.opentrafficmap.citstogo.intersection.IntersectionStateStore
 import org.opentrafficmap.citstogo.intersection.ItsFrameExtractor
+import org.opentrafficmap.citstogo.intersection.ItsPacket
 import org.opentrafficmap.citstogo.intersection.SsemDecoder
 import org.opentrafficmap.citstogo.intersection.SsemResponseStatus
 import org.opentrafficmap.citstogo.intersection.SsemStatus
+import org.opentrafficmap.citstogo.livemap.LiveMapStore
 import org.opentrafficmap.citstogo.protocol.CaptureSequenceTracker
 import org.opentrafficmap.citstogo.protocol.CitsPacket
 import org.opentrafficmap.citstogo.protocol.CtgFrameEncoder
@@ -119,6 +121,8 @@ class CitsBridgeService : Service() {
     private val intersectionStore = IntersectionStateStore()
     private var intersectionSnapshot: IntersectionSnapshot? = null
     private var intersectionSnapshots: List<IntersectionSnapshot> = emptyList()
+    private val liveMapStore = LiveMapStore()
+    private var lastLiveMapSnapshotElapsedMs = 0L
 
     private var status = BridgeStatus()
     private var packets = 0L
@@ -359,6 +363,7 @@ class CitsBridgeService : Service() {
         requestedMqttEnabledByUser: Boolean,
     ) {
         stopReplay(log = false)
+        liveMapStore.clear()
         startElapsedMs = SystemClock.elapsedRealtime()
         connectionMode = requestedConnectionMode
         selectedDeviceName = deviceName?.takeIf { it.isNotBlank() } ?: selectedDeviceName
@@ -658,6 +663,7 @@ class CitsBridgeService : Service() {
         writePcap(packet)
         updateIntersection(packet.payload)
         updateSsem(packet.payload)
+        itsPacket?.let { updateLiveMap(it, packet.wallClockMs) }
         status = status.copy(
             running = true,
             packets = packets,
@@ -692,6 +698,7 @@ class CitsBridgeService : Service() {
         mqttEnabled = false
         runCatching { mqttClient.close() }
         replayPackets = 0L
+        liveMapStore.clear()
         replayWanted = true
         acquireWakeLock()
         status = status.copy(running = true, usbState = "Replaying PCAP", replaying = true, replayPackets = 0, lastError = "")
@@ -780,6 +787,19 @@ class CitsBridgeService : Service() {
             }
         } catch (_: Exception) {
             // SSEM decoding is best-effort; unsupported optional branches should not affect capture.
+        }
+    }
+
+    /**
+     * [capturedAtMs] is the capture time of a replayed frame, [CitsPacket.wallClockMs]. Live packets count as captured
+     * on arrival: their [CitsPacket.timestampUs] is the radio's free-running microsecond timer.
+     */
+    private fun updateLiveMap(packet: ItsPacket, capturedAtMs: Long?) {
+        try {
+            val receivedAtMs = System.currentTimeMillis()
+            liveMapStore.accept(packet, receivedAtMs, capturedAtMs ?: receivedAtMs)
+        } catch (_: Exception) {
+            // The map is best-effort as well and must not affect capture, MQTT or PCAP.
         }
     }
 
@@ -1118,6 +1138,16 @@ class CitsBridgeService : Service() {
         }
         lastPacketStatusElapsedMs = now
         lastPacketStatusPackets = packets
+        return true
+    }
+
+    /** The map refreshes once per second, so status updates in between leave its snapshot out. */
+    private fun liveMapSnapshotDue(): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        if (lastLiveMapSnapshotElapsedMs != 0L && now - lastLiveMapSnapshotElapsedMs < LIVE_MAP_SNAPSHOT_INTERVAL_MS) {
+            return false
+        }
+        lastLiveMapSnapshotElapsedMs = now
         return true
     }
 
@@ -1471,6 +1501,9 @@ class CitsBridgeService : Service() {
                 EXTRA_DISCOVERED_STATIONS,
                 DiscoveredStationList(stationStore.snapshot(DiscoveredStationList.BROADCAST_LIMIT)),
             )
+        }
+        if (liveMapSnapshotDue()) {
+            intent.putExtra(EXTRA_LIVE_MAP_SNAPSHOT, liveMapStore.snapshot(System.currentTimeMillis()))
         }
         if (!log.isNullOrBlank()) intent.putExtra(EXTRA_LOG, log)
         try {
@@ -1832,6 +1865,7 @@ class CitsBridgeService : Service() {
         const val EXTRA_SREM_UPDATED_AT_MS = "sremUpdatedAtMs"
         const val EXTRA_INTERSECTION_SNAPSHOT = "intersectionSnapshot"
         const val EXTRA_INTERSECTION_SNAPSHOTS = "intersectionSnapshots"
+        const val EXTRA_LIVE_MAP_SNAPSHOT = "liveMapSnapshot"
         const val SREM_STATE_QUEUED = "queued"
         const val SREM_STATE_TRANSMITTED = "transmitted"
         const val SREM_STATE_ACKNOWLEDGED = "acknowledged"
@@ -1896,6 +1930,7 @@ class CitsBridgeService : Service() {
         private const val MAINTENANCE_INTERVAL_MS = 2_000L
         private const val PACKET_STATUS_INTERVAL_MS = 100L
         private const val PACKET_STATUS_PACKET_INTERVAL = 10L
+        private const val LIVE_MAP_SNAPSHOT_INTERVAL_MS = 1_000L
         private const val MQTT_MAX_BATCH = 100
         private const val ESPRESSIF_VENDOR_ID = 0x303A
     }

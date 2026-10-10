@@ -1,6 +1,7 @@
 package org.opentrafficmap.citstogo
 
 import java.io.File
+import java.math.BigDecimal
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assume.assumeTrue
@@ -12,7 +13,9 @@ import org.opentrafficmap.citstogo.denm.DenmDecoder
 import org.opentrafficmap.citstogo.denm.WiresharkDenm
 import org.opentrafficmap.citstogo.intersection.ItsFrameExtractor
 import org.opentrafficmap.citstogo.intersection.ItsPacket
+import org.opentrafficmap.citstogo.livemap.LiveMapStore
 import org.opentrafficmap.citstogo.packet.Tshark
+import org.opentrafficmap.citstogo.protocol.ItsTime
 
 /**
  * Checks the receive path against tshark on the real captures in the repository's `example-pcap/`. They hold
@@ -43,6 +46,67 @@ class ExampleCapturesTest {
         expected = WiresharkDenm::expected,
         decode = DenmDecoder::decode,
     )
+
+    /**
+     * Replays each capture into a [LiveMapStore] as if live, and checks that the map shows every station and every
+     * DENM event with each detection time that arrives valid. Events that only arrive expired or as a termination
+     * never show.
+     */
+    @Test
+    fun liveMapShowsEveryStationAndEveryEventThatArrivesValid() {
+        assumeTrue("No captures in example-pcap", captures.isNotEmpty())
+        for (capture in captures) {
+            val wireshark = Tshark.fields(
+                capture.toPath(),
+                LIVE_MAP_FIELDS,
+                filter = "its.protocolVersion == 2 && (its.messageId == 1 || its.messageId == 2)",
+                timeoutSeconds = 300,
+            ).filter { first(it, "its.latitude") != "900000001" && first(it, "its.longitude") != "1800000001" }
+            val expectedStations = wireshark
+                .filter { it.getValue("its.messageId") == "${CamDecoder.MESSAGE_ID_CAM}" }
+                .map { it.getValue("its.stationId").toLong() }
+                .toSet()
+            val denmsByActionId = wireshark
+                .filter { it.getValue("its.messageId") == "${DenmDecoder.MESSAGE_ID_DENM}" }
+                .groupBy { "${first(it, "its.originatingStationId")}/${first(it, "its.sequenceNumber")}" }
+            val expectedDetections = denmsByActionId
+                .mapValues { (_, frames) -> frames.mapNotNullTo(mutableSetOf(), ::detectionIfValid) }
+                .filterValues { it.isNotEmpty() }
+            val terminationsOnly = denmsByActionId.filterValues { frames ->
+                frames.all { it.getValue("denm.termination").isNotEmpty() }
+            }
+
+            val store = LiveMapStore()
+            val stations = mutableSetOf<Long>()
+            val detections = mutableMapOf<String, MutableSet<Long>>()
+            forEachItsPacket(capture) { _, capturedAtMs, packet ->
+                store.accept(packet, capturedAtMs, capturedAtMs)
+                if (packet.messageId != CamDecoder.MESSAGE_ID_CAM && packet.messageId != DenmDecoder.MESSAGE_ID_DENM) {
+                    return@forEachItsPacket
+                }
+                val snapshot = store.snapshot(capturedAtMs)
+                snapshot.stations.mapTo(stations) { it.stationId }
+                for (denm in snapshot.denms) {
+                    val actionId = "${denm.originatingStationId}/${denm.sequenceNumber}"
+                    detections.getOrPut(actionId) { mutableSetOf() } += denm.detectedAtMs
+                }
+            }
+
+            assertEquals("${capture.name}: stations", expectedStations, stations)
+            assertEquals("${capture.name}: DENM detections", expectedDetections, detections)
+            when (capture.name) {
+                // A cancellation of an event the node never heard.
+                "opentrafficmap-node477-2026-10-10.pcap" -> assertEquals(1, terminationsOnly.size)
+                // A road side unit refreshes its roadworks warning with a new detection time hours later.
+                "opentrafficmap-node585-2026-10-06.pcap" ->
+                    assertEquals(2, detections.getValue("1021000/1027").size)
+            }
+            println(
+                "${capture.name}: ${stations.size} stations, ${detections.size} of ${denmsByActionId.size} DENM " +
+                    "events shown, ${terminationsOnly.size} only as termination",
+            )
+        }
+    }
 
     /**
      * Asserts that every frame tshark sees as message [messageId] is extracted, and decoded to what tshark reads, and
@@ -88,23 +152,54 @@ class ExampleCapturesTest {
         assertFalse("$frame has an extension", "True" in values.getValue(EXTENSION_BIT).split(','))
     }
 
-    /** Extracted ITS packets with [messageId] by frame number, counted from 1 like tshark. */
-    private fun itsPackets(capture: File, messageId: Int): Map<Long, ItsPacket> {
-        val packets = mutableMapOf<Long, ItsPacket>()
+    /**
+     * Calls [block] with the frame number, counted from 1 like tshark, the capture time and the ITS packet of each
+     * frame that has one, in capture order.
+     */
+    private fun forEachItsPacket(capture: File, block: (number: Long, capturedAtMs: Long, packet: ItsPacket) -> Unit) {
         capture.inputStream().buffered().use { input ->
             val reader = PcapReader(input)
             var number = 0L
             while (true) {
                 val frame = reader.nextFrame() ?: break
                 number += 1
-                val packet = ItsFrameExtractor.extract(frame.payload) ?: continue
-                if (packet.messageId == messageId) packets[number] = packet
+                ItsFrameExtractor.extract(frame.payload)?.let { block(number, frame.timestampUs / 1_000L, it) }
             }
         }
+    }
+
+    /** The detection time of a DENM frame as Unix time, unless it is a termination or arrived expired. */
+    private fun detectionIfValid(values: Map<String, String>): Long? {
+        if (values.getValue("denm.termination").isNotEmpty()) return null
+        val detectedAtMs = ItsTime.toUnixMs(values.getValue("denm.detectionTime").toLong())
+        val validitySeconds = values.getValue("denm.validityDuration").ifEmpty { "600" }.toLong()
+        val capturedAtMs = BigDecimal(values.getValue("frame.time_epoch")).movePointRight(3).toLong()
+        return detectedAtMs.takeIf { it + validitySeconds * 1_000L > capturedAtMs }
+    }
+
+    /** The first value of [field]; later ones belong to other containers. */
+    private fun first(values: Map<String, String>, field: String): String = values.getValue(field).substringBefore(',')
+
+    /** Extracted ITS packets with [messageId] by frame number. */
+    private fun itsPackets(capture: File, messageId: Int): Map<Long, ItsPacket> {
+        val packets = mutableMapOf<Long, ItsPacket>()
+        forEachItsPacket(capture) { number, _, packet -> if (packet.messageId == messageId) packets[number] = packet }
         return packets
     }
 
     private companion object {
         const val EXTENSION_BIT = "per.extension_bit"
+        val LIVE_MAP_FIELDS = listOf(
+            "frame.time_epoch",
+            "its.messageId",
+            "its.stationId",
+            "its.latitude",
+            "its.longitude",
+            "its.originatingStationId",
+            "its.sequenceNumber",
+            "denm.detectionTime",
+            "denm.validityDuration",
+            "denm.termination",
+        )
     }
 }
