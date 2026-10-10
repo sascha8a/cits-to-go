@@ -8,6 +8,8 @@ import org.junit.Test
 import org.opentrafficmap.citstogo.bridge.PcapReader
 import org.opentrafficmap.citstogo.cam.CamDecoder
 import org.opentrafficmap.citstogo.cam.WiresharkCam
+import org.opentrafficmap.citstogo.denm.DenmDecoder
+import org.opentrafficmap.citstogo.denm.WiresharkDenm
 import org.opentrafficmap.citstogo.intersection.ItsFrameExtractor
 import org.opentrafficmap.citstogo.intersection.ItsPacket
 import org.opentrafficmap.citstogo.packet.Tshark
@@ -25,26 +27,56 @@ class ExampleCapturesTest {
             .sortedBy { it.name }
 
     @Test
-    fun everyCamIsExtractedAndDecodedLikeWireshark() {
+    fun everyCamIsExtractedAndDecodedLikeWireshark() = assertDecodedLikeWireshark(
+        label = "CAMs",
+        messageId = CamDecoder.MESSAGE_ID_CAM,
+        fields = WiresharkCam.fields,
+        expected = WiresharkCam::expected,
+        decode = CamDecoder::decode,
+    )
+
+    @Test
+    fun everyDenmIsExtractedAndDecodedLikeWireshark() = assertDecodedLikeWireshark(
+        label = "DENMs",
+        messageId = DenmDecoder.MESSAGE_ID_DENM,
+        fields = WiresharkDenm.fields,
+        expected = WiresharkDenm::expected,
+        decode = DenmDecoder::decode,
+    )
+
+    /**
+     * Asserts that every frame tshark sees as message [messageId] is extracted, and decoded to what tshark reads, and
+     * that no other frame is extracted as that message.
+     */
+    private fun <T> assertDecodedLikeWireshark(
+        label: String,
+        messageId: Int,
+        fields: List<String>,
+        expected: (Map<String, String>) -> T?,
+        decode: (ItsPacket) -> T?,
+    ) {
         assumeTrue("No captures in example-pcap", captures.isNotEmpty())
+        var total = 0
         for (capture in captures) {
             val wireshark = Tshark.fields(
                 capture.toPath(),
-                listOf("frame.number", EXTENSION_BIT) + WiresharkCam.fields,
-                filter = "its.messageId == ${CamDecoder.MESSAGE_ID_CAM}",
+                listOf("frame.number", EXTENSION_BIT) + fields,
+                filter = "its.messageId == $messageId",
                 timeoutSeconds = 300,
             ).associateBy { it.getValue("frame.number").toLong() }
-            val decoded = itsPackets(capture, CamDecoder.MESSAGE_ID_CAM).mapValues { CamDecoder.decode(it.value) }
+            val decoded = itsPackets(capture, messageId).mapValues { decode(it.value) }
 
-            assertEquals("${capture.name}: CAMs not extracted", emptySet<Long>(), wireshark.keys - decoded.keys)
-            assertEquals("${capture.name}: not CAMs for tshark", emptySet<Long>(), decoded.keys - wireshark.keys)
+            assertEquals("${capture.name}: $label not extracted", emptySet<Long>(), wireshark.keys - decoded.keys)
+            assertEquals("${capture.name}: not $label for tshark", emptySet<Long>(), decoded.keys - wireshark.keys)
             for ((number, values) in wireshark) {
                 val frame = "${capture.name} frame $number"
                 assertComparable(frame, values)
-                assertEquals(frame, WiresharkCam.expected(values), decoded[number])
+                assertEquals(frame, expected(values), decoded[number])
             }
-            println("${capture.name}: ${wireshark.size} CAMs, ${decoded.values.count { it != null }} with a position")
+            println("${capture.name}: ${wireshark.size} $label, ${decoded.values.count { it != null }} decoded")
+            total += wireshark.size
         }
+        println("${captures.size} captures: $total $label")
     }
 
     /**

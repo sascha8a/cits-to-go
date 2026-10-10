@@ -6,6 +6,7 @@ import java.security.SecureRandom
 import kotlin.math.ceil
 import kotlin.math.roundToInt
 import kotlin.math.roundToLong
+import org.opentrafficmap.citstogo.protocol.ItsTime
 
 data class CamIdentity(
     val stationId: Long,
@@ -143,12 +144,7 @@ data class CamPosition(
 }
 
 object CamUperEncoder {
-    const val ITS_EPOCH_UNIX_MS = 1_072_915_200_000L
-    // TAI-UTC increased from 32 s at the ITS epoch to 37 s in 2017.
-    private const val LEAP_MILLISECONDS_SINCE_ITS_EPOCH = 5_000L
-
-    fun timestampIts(nowUnixMs: Long): Long =
-        nowUnixMs - ITS_EPOCH_UNIX_MS + LEAP_MILLISECONDS_SINCE_ITS_EPOCH
+    fun timestampIts(nowUnixMs: Long): Long = ItsTime.fromUnixMs(nowUnixMs)
 
     fun encode(
         identity: CamIdentity,

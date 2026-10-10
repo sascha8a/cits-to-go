@@ -5,6 +5,7 @@ import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Test
+import org.opentrafficmap.citstogo.protocol.ItsTime
 
 class CamEncodingTest {
     private val identity = CamIdentity(
@@ -12,7 +13,7 @@ class CamEncodingTest {
         macAddress = byteArrayOf(0x02, 1, 2, 3, 4, 5),
     )
     private val position = CamPosition.unavailable()
-    private val timestamp = CamUperEncoder.ITS_EPOCH_UNIX_MS + 123_456L
+    private val timestamp = ItsTime.EPOCH_UNIX_MS + 123_456L
 
     @Test
     fun vehicleCamHasExpectedHeaderAndReleaseOneBitLength() {
