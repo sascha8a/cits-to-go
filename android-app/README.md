@@ -101,6 +101,38 @@ The bridge runs as a foreground service with a partial wakelock while capture is
 
 PCAP output is classic libpcap with `DLT_IEEE802_11` link type and raw 802.11 frame bytes. It includes received packets and packets acknowledged as successfully transmitted by the firmware.
 
+### Battery settings for long captures
+
+Android's battery optimisation can still stop or throttle the app a few
+minutes after the screen turns off, even with the foreground service and
+wakelock. A capture then ends early. Before long captures, exempt
+**C-ITS to go** from battery optimisation. Menu names differ between Android
+versions and manufacturers; if you can't find an entry, search the Settings app
+for "battery".
+
+- **Android 12 and newer:** Settings → Apps → C-ITS to go → Battery (or
+  "App battery usage") → **Unrestricted**.
+- **Android 8 to 11:** Settings → Apps → Special app access → Battery
+  optimisation → All apps → C-ITS to go → **Don't optimise**.
+
+Many manufacturers add their own background limits on top of Android's:
+
+- **Samsung:** Settings → Battery → Background usage limits. Make sure the app
+  is not listed under "Sleeping apps" or "Deep sleeping apps", and add it to
+  "Never sleeping apps".
+- **Xiaomi, Redmi, POCO:** App info → Battery saver → **No restrictions**, and
+  turn on **Autostart**.
+- **Huawei, Honor:** Settings → Battery → App launch → C-ITS to go → turn off
+  "Manage automatically" and allow all options.
+- **OnePlus, Oppo, Realme:** App info → Battery usage → allow background
+  activity.
+
+System-wide power saving modes can also limit background work, so leave them
+off while capturing. For other devices see <https://dontkillmyapp.com>.
+
+To check the setting, lock the phone for at least 10 minutes during a capture
+and confirm that the packet, PCAP and MQTT counters kept increasing.
+
 ## MQTT output
 
 The packet stream matches the upstream OpenTrafficMap receiver firmware.
