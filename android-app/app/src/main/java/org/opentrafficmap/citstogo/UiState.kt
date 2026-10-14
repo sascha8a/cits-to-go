@@ -64,6 +64,7 @@ enum class TxApprovalPromptState {
 
 enum class AppPage(val title: String) {
     Home("Home"),
+    DiscoveredStations("Discovered Stations"),
     CamBroadcast("CAM Broadcast"),
     IntersectionView("Intersection View"),
     Flashing("Flashing"),

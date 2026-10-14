@@ -1,6 +1,5 @@
 package org.opentrafficmap.citstogo.intersection
 
-import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -473,31 +472,8 @@ class MapSpatDecoderTest {
         assertTrue(resolvableWithGeometry > 0)
     }
 
-    private fun pcapFrames(fileName: String = "cits-1785335702733.pcap"): List<ByteArray> {
-        val pcap = listOf(
-            File("../$fileName"),
-            File("../../$fileName"),
-            File(fileName),
-        ).first { it.exists() }
-        val bytes = pcap.readBytes()
-        require(intLE(bytes, 0) == 0xA1B2C3D4.toInt())
-        var offset = 24
-        val frames = mutableListOf<ByteArray>()
-        while (offset + 16 <= bytes.size) {
-            val capturedLength = intLE(bytes, offset + 8)
-            offset += 16
-            if (offset + capturedLength > bytes.size) break
-            frames += bytes.copyOfRange(offset, offset + capturedLength)
-            offset += capturedLength
-        }
-        return frames
-    }
-
-    private fun intLE(bytes: ByteArray, offset: Int): Int =
-        (bytes[offset].toInt() and 0xff) or
-            ((bytes[offset + 1].toInt() and 0xff) shl 8) or
-            ((bytes[offset + 2].toInt() and 0xff) shl 16) or
-            ((bytes[offset + 3].toInt() and 0xff) shl 24)
+    private fun pcapFrames(fileName: String = "cits-1785335702733.pcap"): List<ByteArray> =
+        FieldCaptures.frames(fileName)
 
     private fun syntheticSpatemWithMovementEventRegionalExtension(): ItsPacket {
         val writer = TestBitWriter()

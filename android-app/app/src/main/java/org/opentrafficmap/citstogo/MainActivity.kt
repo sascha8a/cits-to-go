@@ -60,6 +60,10 @@ import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
 import org.opentrafficmap.citstogo.protocol.FirmwareStatistics
 import org.opentrafficmap.citstogo.srem.SremProfile
 import org.opentrafficmap.citstogo.srem.estimateSremRequestTimeMs
+import org.opentrafficmap.citstogo.station.DiscoveredStation
+import org.opentrafficmap.citstogo.station.DiscoveredStationList
+import org.opentrafficmap.citstogo.station.StationDiscoveryStore
+import org.opentrafficmap.citstogo.station.StationTableState
 import org.opentrafficmap.citstogo.bridge.UsbCdcSerial
 import org.opentrafficmap.citstogo.update.CodebergAppUpdateChecker
 import org.opentrafficmap.citstogo.util.parcelableExtra
@@ -81,6 +85,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var selectedDeviceName by mutableStateOf<String?>(null)
     private var connectionMode by mutableStateOf(ConnectionMode.USB)
     private var status by mutableStateOf(BridgeStatus())
+    private var discoveredStations by mutableStateOf<List<DiscoveredStation>>(emptyList())
+    private var stationTableState by mutableStateOf(StationTableState.DEFAULT)
     private var mqttUri by mutableStateOf("")
     private var mqttEnabled by mutableStateOf(true)
     private var nodeId by mutableStateOf("")
@@ -264,6 +270,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 lastError = intent.getStringExtra(CitsBridgeService.EXTRA_LAST_ERROR).orEmpty(),
             )
             intent.getStringExtra(CitsBridgeService.EXTRA_LOG)?.let { logLine = it }
+            intent.serializableExtra<DiscoveredStationList>(CitsBridgeService.EXTRA_DISCOVERED_STATIONS)?.let {
+                discoveredStations = it.stations
+            }
             intent.serializableExtra<IntersectionSnapshotList>(CitsBridgeService.EXTRA_INTERSECTION_SNAPSHOTS)?.let {
                 intersectionSnapshots = it.snapshots
                 intersectionSnapshot = it.snapshots.firstOrNull()
@@ -293,6 +302,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         intersectionSortMode = IntersectionSortMode.fromPreference(
             prefs.getString(PREF_INTERSECTION_SORT_MODE, null),
         )
+        stationTableState = StationTableState.decode(prefs.getString(PREF_STATION_TABLE_STATE, null))
+        // Show the stored discovery table even before the bridge service publishes its own snapshot.
+        discoveredStations = StationDiscoveryStore().apply {
+            restore(prefs.getString(CitsBridgeService.PREF_DISCOVERED_STATIONS, null))
+        }.snapshot(DiscoveredStationList.BROADCAST_LIMIT)
         mqttUri = prefs.getString(CitsBridgeService.PREF_MQTT_URI, CitsBridgeService.DEFAULT_MQTT_URI).orEmpty()
         mqttEnabled = prefs.getBoolean(CitsBridgeService.PREF_MQTT_ENABLED, true)
         nodeId = prefs.getString(CitsBridgeService.PREF_NODE_ID, null) ?: createAndStoreNodeId()
@@ -367,6 +381,19 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     maxQueueAgeSeconds = maxQueueAgeSeconds,
                     onMaxQueueAgeSecondsChange = { maxQueueAgeSeconds = it },
                     status = status,
+                    discoveredStations = discoveredStations,
+                    stationTableState = stationTableState,
+                    onStationTableStateChange = ::updateStationTableState,
+                    onStationColumnWidthChange = { column, width ->
+                        // Live preview while dragging; the value is stored when the finger lifts.
+                        stationTableState = stationTableState.withWidth(column, width)
+                    },
+                    onStationColumnWidthChangeFinished = ::persistStationTableState,
+                    onClearDiscoveredStations = {
+                        // Clear locally right away; the service confirms with its next status.
+                        discoveredStations = emptyList()
+                        sendServiceIntent(CitsBridgeService.ACTION_CLEAR_DISCOVERED_STATIONS)
+                    },
                     logLine = logLine,
                     intersectionSnapshots = intersectionSnapshots.ifEmpty { listOfNotNull(intersectionSnapshot) },
                     intersectionSortMode = intersectionSortMode,
@@ -1171,6 +1198,19 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             .apply()
     }
 
+    /** Keeps the discovery table's sorting, filters and column widths across visits and restarts. */
+    private fun updateStationTableState(state: StationTableState) {
+        stationTableState = state
+        persistStationTableState()
+    }
+
+    /** Stores the current view as it is, for the end of a column-width drag. */
+    private fun persistStationTableState() {
+        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+            .putString(PREF_STATION_TABLE_STATE, stationTableState.encode())
+            .apply()
+    }
+
     private fun startOrRequestIntersectionLocation() {
         if (!hasLocationPermission()) {
             locationPermissionLauncher.launch(
@@ -1371,6 +1411,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     companion object {
         private const val PREF_CONNECTION_MODE = "connectionMode"
         private const val PREF_INTERSECTION_SORT_MODE = "intersection_sort_mode"
+        private const val PREF_STATION_TABLE_STATE = "station_table_state"
         private const val PREF_DEBUG_MENU_ENABLED = "debug_menu_enabled"
         private const val PREF_THEME_MODE = "theme_mode"
         private const val PREF_DISPLAY_ALWAYS_ON = "display_always_on"

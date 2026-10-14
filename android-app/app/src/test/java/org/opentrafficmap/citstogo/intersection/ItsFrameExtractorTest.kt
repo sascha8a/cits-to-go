@@ -5,8 +5,31 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.opentrafficmap.citstogo.cam.CamIdentity
+import org.opentrafficmap.citstogo.cam.CamPosition
+import org.opentrafficmap.citstogo.cam.ItsG5FrameBuilder
+import org.opentrafficmap.citstogo.cam.StationType
+import org.opentrafficmap.citstogo.srem.SremPosition
+import org.opentrafficmap.citstogo.srem.SremProfile
+import org.opentrafficmap.citstogo.srem.SremRequest
 
 class ItsFrameExtractorTest {
+    private val camIdentity = CamIdentity(stationId = 0x0102_0304, macAddress = byteArrayOf(0x02, 1, 2, 3, 4, 5))
+    private val camPosition = CamPosition(
+        latitude = 482_024_036,
+        longitude = 163_691_773,
+        semiMajorConfidenceCm = 50,
+        semiMinorConfidenceCm = 40,
+        semiMajorOrientation = 900,
+        altitudeCm = 18_000,
+        altitudeConfidence = 8,
+        heading = 1_350,
+        headingConfidence = 10,
+        speedCms = 140,
+        speedConfidence = 10,
+        positionAccurate = true,
+    )
+
     @Test
     fun extractsSecuredSpatemAndExcludesSecurityTrailer() {
         val frame = fixture("secured-spatem-frame.bin")
@@ -109,6 +132,60 @@ class ItsFrameExtractorTest {
         assertEquals(1L, diagnostics.unsupportedGeoNetworkingFrames)
     }
 
+    @Test
+    fun extractsSourcePositionFromTheGeonetworkingAddress() {
+        val frame = ItsG5FrameBuilder.camFrame(camIdentity, StationType.PASSENGER_CAR, camPosition, 1_785_242_510_349L, counters())
+
+        val packet = requireNotNull(ItsFrameExtractor.extract(frame))
+
+        assertEquals(camPosition.latitude, packet.sourceLatitude)
+        assertEquals(camPosition.longitude, packet.sourceLongitude)
+    }
+
+    @Test
+    fun extractsSourcePositionFromBroadcastGeonetworkingHeaders() {
+        val request = SremRequest(
+            region = 43,
+            intersectionId = 1_039,
+            requestId = 5,
+            sequenceNumber = 27,
+            inboundLaneId = 31,
+            outboundLaneId = 16,
+            position = SremPosition(camPosition.latitude, camPosition.longitude, camPosition.heading, true),
+            nowUnixMs = 1_785_242_510_349L,
+            profile = SremProfile.PEDESTRIAN,
+            packageRequestUnixMs = 1_785_242_511_349L,
+        )
+
+        val packet = requireNotNull(
+            ItsFrameExtractor.extract(ItsG5FrameBuilder.sremFrame(camIdentity, request, counters())),
+        )
+
+        assertEquals(camPosition.latitude, packet.sourceLatitude)
+        assertEquals(camPosition.longitude, packet.sourceLongitude)
+    }
+
+    @Test
+    fun readsTheSourcePositionsOfAFieldCapture() {
+        val packets = FieldCaptures.frames().mapNotNull(ItsFrameExtractor::extract)
+
+        // The discovery table's GeoNetworking Position column shows exactly these numbers, taken
+        // from each transmitter's own position vector, so they have to be real coordinates.
+        assertTrue(packets.isNotEmpty())
+        assertEquals(
+            setOf(MESSAGE_DENM, MESSAGE_CAM, MESSAGE_SPAT, MESSAGE_MAP),
+            packets.map { it.messageId }.toSet(),
+        )
+        packets.forEach { packet ->
+            val latitude = requireNotNull(packet.sourceLatitude) { "no position in a ${packet.messageId} frame" }
+            val longitude = requireNotNull(packet.sourceLongitude) { "no position in a ${packet.messageId} frame" }
+            assertTrue("position out of range: $latitude, $longitude", latitude in 481_000_000..483_000_000)
+            assertTrue("position out of range: $latitude, $longitude", longitude in 162_000_000..165_000_000)
+        }
+    }
+
+    private fun counters() = ItsG5FrameBuilder.SequenceCounters(initialWlanSequence = 0x0f0, initialGbcSequenceId = 0x0fa0)
+
     private fun fixture(name: String): ByteArray = requireNotNull(
         javaClass.getResourceAsStream("/intersection/$name"),
     ).use { it.readBytes() }
@@ -135,5 +212,13 @@ class ItsFrameExtractorTest {
         val btp = byteArrayOf(0x07, 0xd4.toByte(), 0x00, 0x00)
         val its = byteArrayOf(0x02, 0x04, 0x00, 0x00, 0x00, 0x01)
         return ByteArray(24) + snap + basic + common + shbExtended + btp + its
+    }
+
+    private companion object {
+        /** ITS-PDU message identifiers of the packets the field capture contains. */
+        const val MESSAGE_DENM = 1
+        const val MESSAGE_CAM = 2
+        const val MESSAGE_SPAT = 4
+        const val MESSAGE_MAP = 5
     }
 }

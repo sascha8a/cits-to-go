@@ -79,6 +79,9 @@ import androidx.core.content.ContextCompat
 import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.delay
 import org.opentrafficmap.citstogo.srem.SremProfile
+import org.opentrafficmap.citstogo.station.DiscoveredStation
+import org.opentrafficmap.citstogo.station.StationColumn
+import org.opentrafficmap.citstogo.station.StationTableState
 
 @Composable
 fun CitsTheme(themeMode: ThemeMode = ThemeMode.System, content: @Composable () -> Unit) {
@@ -208,6 +211,12 @@ fun CitsApp(
     maxQueueAgeSeconds: String,
     onMaxQueueAgeSecondsChange: (String) -> Unit,
     status: BridgeStatus,
+    discoveredStations: List<DiscoveredStation>,
+    stationTableState: StationTableState,
+    onStationTableStateChange: (StationTableState) -> Unit,
+    onStationColumnWidthChange: (StationColumn, Int) -> Unit,
+    onStationColumnWidthChangeFinished: () -> Unit,
+    onClearDiscoveredStations: () -> Unit,
     logLine: String,
     intersectionSnapshots: List<IntersectionSnapshot>,
     intersectionSortMode: IntersectionSortMode,
@@ -365,7 +374,7 @@ fun CitsApp(
                         .windowInsetsPadding(WindowInsets.safeDrawing)
                         .padding(if (selectedPage == AppPage.Home) 16.dp else 20.dp)
                         .then(
-                            if (selectedPage == AppPage.IntersectionView) {
+                            if (selectedPage == AppPage.IntersectionView || selectedPage == AppPage.DiscoveredStations) {
                                 Modifier
                             } else {
                                 Modifier.verticalScroll(mainScrollState)
@@ -399,6 +408,16 @@ fun CitsApp(
                                 onStopPcap = onStopPcap,
                                 onStartReplay = onStartReplay,
                                 onStopReplay = onStopReplay,
+                                onOpenDiscoveredStations = { selectedPage = AppPage.DiscoveredStations },
+                            )
+                            AppPage.DiscoveredStations -> DiscoveredStationsPage(
+                                stations = discoveredStations,
+                                tableState = stationTableState,
+                                onTableStateChange = onStationTableStateChange,
+                                onColumnWidthChange = onStationColumnWidthChange,
+                                onColumnWidthChangeFinished = onStationColumnWidthChangeFinished,
+                                onClearStations = onClearDiscoveredStations,
+                                modifier = Modifier.weight(1f),
                             )
                             AppPage.CamBroadcast -> CamBroadcastPage(
                                 status = status,

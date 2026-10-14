@@ -34,6 +34,7 @@ import org.opentrafficmap.citstogo.cam.randomizedCamIdentity
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
 import org.opentrafficmap.citstogo.intersection.IntersectionStateStore
+import org.opentrafficmap.citstogo.intersection.ItsFrameExtractor
 import org.opentrafficmap.citstogo.intersection.SsemDecoder
 import org.opentrafficmap.citstogo.intersection.SsemResponseStatus
 import org.opentrafficmap.citstogo.intersection.SsemStatus
@@ -47,6 +48,10 @@ import org.opentrafficmap.citstogo.protocol.SerialPacketReader
 import org.opentrafficmap.citstogo.srem.SremPosition
 import org.opentrafficmap.citstogo.srem.SremProfile
 import org.opentrafficmap.citstogo.srem.SremRequest
+import org.opentrafficmap.citstogo.station.DiscoveredStationList
+import org.opentrafficmap.citstogo.station.ItsPacketType
+import org.opentrafficmap.citstogo.station.StationDiscoveryStore
+import org.opentrafficmap.citstogo.station.StationObservation
 import org.opentrafficmap.citstogo.util.parcelableExtra
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
@@ -127,6 +132,12 @@ class CitsBridgeService : Service() {
     private var camSent = 0L
     private var nextStationNotificationId = STATION_NOTIFICATION_ID_BASE
     private val discoveredMacAddresses = mutableSetOf<String>()
+
+    /** Per-station discovery detail, persisted so the table survives restarts. */
+    private val stationStore = StationDiscoveryStore()
+    private var storedStationsGeneration = -1L
+    private var lastStationsPublishedElapsedMs = 0L
+    private var stationsPublishForced = true
 
     private val usbReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -235,6 +246,7 @@ class CitsBridgeService : Service() {
                 flushMqttSpool()
             }
             flushPcapQuietly()
+            persistStationsIfDue()
             publishStatsIfDue()
             publishStatus(null)
             updateNotification()
@@ -254,6 +266,9 @@ class CitsBridgeService : Service() {
         loadMqttSettings()
         discoveredMacAddresses.addAll(loadDiscoveredMacAddresses())
         discoveredDevices = discoveredMacAddresses.size.toLong()
+        stationStore.restore(getSharedPreferences(PREFS, MODE_PRIVATE).getString(PREF_DISCOVERED_STATIONS, null))
+        stationStore.seedMacAddresses(discoveredMacAddresses)
+        storedStationsGeneration = stationStore.generation
         createNotificationChannel()
         registerReceiverCompat(usbReceiver, IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
@@ -291,6 +306,7 @@ class CitsBridgeService : Service() {
             )
             ACTION_STOP_REPLAY -> stopReplay(log = true)
             ACTION_REQUEST_STATUS -> publishStatus(null)
+            ACTION_CLEAR_DISCOVERED_STATIONS -> clearDiscoveredStations()
             ACTION_CONFIGURE_CAM -> configureCam(
                 intent.getBooleanExtra(EXTRA_CAM_ENABLED, false),
                 StationType.selectableFromCode(intent.getIntExtra(EXTRA_CAM_STATION_TYPE, StationType.PEDESTRIAN.code)),
@@ -312,6 +328,7 @@ class CitsBridgeService : Service() {
         stopLocationUpdates()
         runCatching { unregisterReceiver(usbReceiver) }
         stopBridge()
+        persistStations()
         runCatching { spool.close() }
         super.onDestroy()
     }
@@ -560,15 +577,25 @@ class CitsBridgeService : Service() {
             storeDiscoveredMacAddresses()
             sendStationDiscoveryNotification(discoveredMacAddress)
         }
-        val itsType = org.opentrafficmap.citstogo.intersection.ItsFrameExtractor
-            .extract(packet.payload)
-            ?.messageId
-            ?.let(::itsMessageLabel)
+        val itsPacket = ItsFrameExtractor.extract(packet.payload)
+        val itsType = itsPacket?.messageId?.let(ItsPacketType::fromMessageId)
+        if (discoveredMacAddress != null) {
+            stationStore.observe(
+                discoveredMacAddress,
+                StationObservation(
+                    packetType = itsType,
+                    rssiDbm = packet.rssiDbm.takeIf { it != 0 },
+                    latitudeE7 = itsPacket?.sourceLatitude,
+                    longitudeE7 = itsPacket?.sourceLongitude,
+                ),
+                packet.wallClockMs ?: System.currentTimeMillis(),
+            )
+        }
         val frequency = packet.frequencyMhz.takeIf { it > 0 }?.let { "$it MHz" } ?: "— MHz"
         val rssi = packet.rssiDbm.takeIf { it != 0 }?.let { "$it dBm" } ?: "— dBm"
         val summary = buildList {
             add("#${packet.sequence}")
-            itsType?.let(::add)
+            itsType?.let { add(it.label) }
             add("${packet.payload.size} B")
             add(frequency)
             add(rssi)
@@ -591,17 +618,6 @@ class CitsBridgeService : Service() {
             packetTopic = "its/$nodeId/packet",
         )
         if (shouldPublishPacketStatus()) publishStatus("Packet $summary")
-    }
-
-    private fun itsMessageLabel(messageId: Int): String? = when (messageId) {
-        1 -> "DENM"
-        2 -> "CAM"
-        4 -> "SPATEM"
-        5 -> "MAPEM"
-        6 -> "IVIM"
-        9 -> "SREM"
-        10 -> "SSEM"
-        else -> null
     }
 
     private fun startReplay(
@@ -1379,13 +1395,44 @@ class CitsBridgeService : Service() {
         intent.putExtra(EXTRA_LAST_ERROR, status.lastError)
         intent.putExtra(EXTRA_INTERSECTION_SNAPSHOTS, IntersectionSnapshotList(intersectionSnapshots))
         intersectionSnapshot?.let { intent.putExtra(EXTRA_INTERSECTION_SNAPSHOT, it) }
+        if (shouldPublishStations()) {
+            intent.putExtra(
+                EXTRA_DISCOVERED_STATIONS,
+                DiscoveredStationList(stationStore.snapshot(DiscoveredStationList.BROADCAST_LIMIT)),
+            )
+        }
         if (!log.isNullOrBlank()) intent.putExtra(EXTRA_LOG, log)
-        sendBroadcast(intent)
+        try {
+            sendBroadcast(intent)
+        } catch (failure: Exception) {
+            // This broadcast is the only way the interface learns about the capture, and the service
+            // publishes it from onCreate onwards, so a payload Android cannot parcel is reported as
+            // an error on the next status rather than being allowed to take the service down.
+            status = status.copy(lastError = "Status broadcast failed: ${failure.javaClass.simpleName}")
+        }
     }
 
     private fun refreshIntersectionSnapshots(nowMs: Long = System.currentTimeMillis()) {
         intersectionSnapshots = intersectionStore.activeSnapshots(nowMs, INTERSECTION_MAX_AGE_MS)
         intersectionSnapshot = intersectionSnapshots.firstOrNull()
+    }
+
+    /**
+     * The station table rides along with the status broadcast, so it is capped to the most recently
+     * active stations and throttled. Clearing the table forces the next broadcast to carry it.
+     */
+    private fun shouldPublishStations(): Boolean {
+        val now = SystemClock.elapsedRealtime()
+        if (
+            !stationsPublishForced &&
+            lastStationsPublishedElapsedMs != 0L &&
+            now - lastStationsPublishedElapsedMs < STATIONS_PUBLISH_INTERVAL_MS
+        ) {
+            return false
+        }
+        stationsPublishForced = false
+        lastStationsPublishedElapsedMs = now
+        return true
     }
 
     private fun updateNotification() {
@@ -1583,6 +1630,35 @@ class CitsBridgeService : Service() {
             .apply()
     }
 
+    /** Writes the discovery table to storage, but only while a packet changed something. */
+    private fun persistStationsIfDue() {
+        if (stationStore.generation == storedStationsGeneration) return
+        persistStations()
+    }
+
+    private fun persistStations() {
+        val json = stationStore.encode()
+        storedStationsGeneration = stationStore.generation
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString(PREF_DISCOVERED_STATIONS, json)
+            .apply()
+    }
+
+    /**
+     * Forgets every discovered station: the aggregated table, the stored copy, and the address set
+     * behind the home screen counter. Packets received afterwards start the table again.
+     */
+    private fun clearDiscoveredStations() {
+        stationStore.clear()
+        discoveredMacAddresses.clear()
+        discoveredDevices = 0L
+        stationsPublishForced = true
+        persistStations()
+        storeDiscoveredMacAddresses()
+        status = status.copy(discoveredDevices = 0L)
+        publishStatus("Discovery table cleared")
+    }
+
     private fun loadMqttSettings() {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         mqttEnabledByUser = prefs.getBoolean(PREF_MQTT_ENABLED, true)
@@ -1624,6 +1700,7 @@ class CitsBridgeService : Service() {
         const val ACTION_CONFIGURE_CAM = "org.opentrafficmap.citstogo.action.CONFIGURE_CAM"
         const val ACTION_SEND_SREM = "org.opentrafficmap.citstogo.action.SEND_SREM"
         const val ACTION_REVOKE_TX_APPROVAL = "org.opentrafficmap.citstogo.action.REVOKE_TX_APPROVAL"
+        const val ACTION_CLEAR_DISCOVERED_STATIONS = "org.opentrafficmap.citstogo.action.CLEAR_DISCOVERED_STATIONS"
         const val ACTION_STATUS = "org.opentrafficmap.citstogo.action.STATUS"
         const val ACTION_USB_PERMISSION = "org.opentrafficmap.citstogo.action.USB_PERMISSION"
 
@@ -1647,6 +1724,7 @@ class CitsBridgeService : Service() {
         const val EXTRA_REPLAYING = "replaying"
         const val EXTRA_REPLAY_PACKETS = "replayPackets"
         const val EXTRA_DISCOVERED_DEVICES = "discoveredDevices"
+        const val EXTRA_DISCOVERED_STATIONS = "discoveredStations"
         const val EXTRA_TRUNCATED = "truncated"
         const val EXTRA_TRANSPORT_DROPPED = "transportDropped"
         const val EXTRA_FIRMWARE_STATISTICS = "firmwareStatistics"
@@ -1700,6 +1778,7 @@ class CitsBridgeService : Service() {
         const val PREF_MQTT_MAX_QUEUE_LENGTH = "mqtt_max_queue_length"
         const val PREF_MQTT_MAX_QUEUE_AGE_MS = "mqtt_max_queue_age_ms"
         const val PREF_DISCOVERED_MAC_ADDRESSES = "discovered_mac_addresses"
+        const val PREF_DISCOVERED_STATIONS = "discovered_stations"
         const val PREF_CAM_ENABLED = "cam_enabled"
         const val PREF_CAM_STATION_TYPE = "cam_station_type"
         const val PREF_CAM_INTERVAL_MS = "cam_interval_ms"
@@ -1722,6 +1801,9 @@ class CitsBridgeService : Service() {
         const val MIN_CAM_RANDOMIZATION_INTERVAL_MS = 1_000
         const val MAX_CAM_RANDOMIZATION_INTERVAL_MS = 600_000
         const val INTERSECTION_MAX_AGE_MS = 30_000L
+
+        /** Minimum time between status broadcasts that include the station table. */
+        private const val STATIONS_PUBLISH_INTERVAL_MS = 1_000L
 
         private const val CHANNEL_ID = "cits_bridge"
         private const val STATION_DISCOVERY_CHANNEL_ID = "cits_station_discovery"

@@ -1,6 +1,8 @@
 package org.opentrafficmap.citstogo
 
 import android.hardware.usb.UsbDevice
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowForward
 import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.Usb
 import androidx.compose.material3.Button
@@ -52,6 +55,7 @@ fun HomePage(
     onStopPcap: () -> Unit,
     onStartReplay: () -> Unit,
     onStopReplay: () -> Unit,
+    onOpenDiscoveredStations: () -> Unit,
 ) {
     val packetsPerSecond = rememberPacketRate(status.packets, status.running)
     HomeStatusBanner(status)
@@ -64,7 +68,7 @@ fun HomePage(
     )
     ConnectionDeviceList(devices, selectedDeviceName, connectionMode, status, onSelectDevice)
     HomeActions(status, onStart, onStop, onStartPcap, onStopPcap, onStartReplay, onStopReplay)
-    HomeMetrics(status, packetsPerSecond)
+    HomeMetrics(status, packetsPerSecond, onOpenDiscoveredStations)
 }
 
 @Composable
@@ -237,28 +241,48 @@ private fun HomeActionButton(
 }
 
 @Composable
-private fun HomeMetrics(status: BridgeStatus, packetsPerSecond: Double) {
+private fun HomeMetrics(
+    status: BridgeStatus,
+    packetsPerSecond: Double,
+    onOpenDiscoveredStations: () -> Unit,
+) {
     val metrics = listOf(
-        Triple("Packets", status.packets, String.format(java.util.Locale.US, "%.1f", packetsPerSecond)),
-        Triple("Published", status.mqttPublished, null),
-        Triple("Queued", status.mqttQueued, null),
-        Triple("PCAP", status.pcapPackets, null),
-        Triple("Discovered", status.discoveredDevices, null),
-        Triple("Truncated", status.truncated, null),
+        HomeMetric("Packets", status.packets, String.format(java.util.Locale.US, "%.1f", packetsPerSecond)),
+        HomeMetric("Published", status.mqttPublished),
+        HomeMetric("Queued", status.mqttQueued),
+        HomeMetric("PCAP", status.pcapPackets),
+        HomeMetric("Discovered", status.discoveredDevices, onClick = onOpenDiscoveredStations),
+        HomeMetric("Truncated", status.truncated),
     )
     metrics.chunked(2).forEach { row ->
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            row.forEach { (label, value, detail) -> HomeMetric(label, value, detail, Modifier.weight(1f)) }
+            row.forEach { metric -> HomeMetricCard(metric, Modifier.weight(1f)) }
         }
     }
 }
 
+/**
+ * One tile of the home metric grid. [onClick] marks a tile that opens another page, which the card
+ * then shows with a trailing arrow.
+ */
+private data class HomeMetric(
+    val label: String,
+    val value: Long,
+    val detail: String? = null,
+    val onClick: (() -> Unit)? = null,
+)
+
 @Composable
-private fun HomeMetric(label: String, value: Long, detail: String?, modifier: Modifier = Modifier) {
+private fun HomeMetricCard(metric: HomeMetric, modifier: Modifier = Modifier) {
     val context = LocalContext.current
+    val clickable = metric.onClick != null
     Card(
-        modifier = modifier,
+        modifier = modifier.then(
+            if (metric.onClick != null) Modifier.clickable(onClickLabel = "Show discovered stations", onClick = metric.onClick)
+            else Modifier,
+        ),
         shape = RoundedCornerShape(7.dp),
+        border = if (clickable) BorderStroke(1.dp, Color(ContextCompat.getColor(context, R.color.border_active))) else null,
         colors = CardDefaults.cardColors(containerColor = Color(ContextCompat.getColor(context, R.color.card))),
     ) {
         Column(
@@ -267,19 +291,27 @@ private fun HomeMetric(label: String, value: Long, detail: String?, modifier: Mo
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    label,
+                    metric.label,
                     modifier = Modifier.weight(1f),
                     color = MaterialTheme.colorScheme.secondary,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Medium,
                 )
-                if (detail != null) {
+                if (metric.detail != null) {
                     Text("Packets/s", color = MaterialTheme.colorScheme.secondary, fontSize = 10.sp)
+                }
+                if (clickable) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp),
+                    )
                 }
             }
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
                 Text(
-                    value.toString(),
+                    metric.value.toString(),
                     modifier = Modifier.weight(1f),
                     fontSize = 22.sp,
                     lineHeight = 25.sp,
@@ -287,8 +319,8 @@ private fun HomeMetric(label: String, value: Long, detail: String?, modifier: Mo
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (detail != null) {
-                    Text(detail, fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.Medium)
+                if (metric.detail != null) {
+                    Text(metric.detail, fontSize = 16.sp, lineHeight = 22.sp, fontWeight = FontWeight.Medium)
                 }
             }
         }
