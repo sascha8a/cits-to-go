@@ -447,7 +447,6 @@ private fun SremRequestSlider(
     }
     var submitted by rememberSaveable(state) { mutableStateOf(false) }
     val constrainedPosition = sliderPosition.coerceIn(0f, 1f)
-    val onDragStateChange = LocalSliderDragStateChange.current
     val stateColor = state.color(context)
     val trackColor = if (enabled) stateColor.copy(alpha = 0.22f) else Color(ContextCompat.getColor(context, R.color.divider))
     val fillColor = if (enabled || constrainedPosition > 0f) stateColor else Color(ContextCompat.getColor(context, R.color.secondary_variant))
@@ -467,7 +466,6 @@ private fun SremRequestSlider(
         trackColor = trackColor,
         fillColor = fillColor,
         thumbRingColor = state.onColor(context),
-        onDragStateChange = onDragStateChange,
         onDragFinished = {
             if (!submitted && state == SremRequestUiState.Ready) sliderPosition = 0f
         },
@@ -809,13 +807,14 @@ private fun distanceToSegment(point: Offset, start: Offset, end: Offset): Float 
 }
 
 @Composable
-private fun IntersectionRenderer(
+internal fun IntersectionRenderer(
     map: MapIntersection,
     spat: SpatIntersection?,
     currentPosition: DevicePosition?,
     sremProfile: SremProfile,
     selectedCrosswalkLaneIds: List<Int>,
     onSelectionChange: (List<Int>) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val signalGroups = spat?.movementsBySignalGroup.orEmpty()
     val context = LocalContext.current
@@ -864,7 +863,7 @@ private fun IntersectionRenderer(
         }
     }
     Canvas(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(420.dp)
             .onSizeChanged { canvasSize = it }

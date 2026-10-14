@@ -36,8 +36,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -273,7 +271,6 @@ fun CitsApp(
     val context = LocalContext.current
     var selectedPage by rememberSaveable { mutableStateOf(AppPage.Home) }
     var confettiRun by rememberSaveable { mutableStateOf(0) }
-    var sliderDragging by remember { mutableStateOf(false) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val recentActivity = remember { mutableStateListOf<ActivityLogEntry>() }
@@ -330,182 +327,182 @@ fun CitsApp(
         }
     }
 
-    CompositionLocalProvider(LocalSliderDragStateChange provides { sliderDragging = it }) {
-        Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-            Box(Modifier.fillMaxSize()) {
-                ModalNavigationDrawer(
-                    drawerState = drawerState,
-                    gesturesEnabled = !sliderDragging && txApprovalPromptState == TxApprovalPromptState.Hidden,
-                    drawerContent = {
-                        ModalDrawerSheet(
-                            drawerContainerColor = MaterialTheme.colorScheme.surface,
-                            drawerContentColor = MaterialTheme.colorScheme.onSurface,
-                        ) {
-                            Text(
-                                "C-ITS to go",
-                                modifier = Modifier.padding(20.dp),
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.primary,
-                            )
-                            visiblePages.forEach { page ->
-                                NavigationDrawerItem(
-                                    label = { Text(page.title) },
-                                    selected = page == selectedPage,
-                                    onClick = {
-                                        selectedPage = page
-                                        scope.launch { drawerState.close() }
-                                    },
-                                    modifier = Modifier.padding(horizontal = 12.dp),
-                                    colors = NavigationDrawerItemDefaults.colors(
-                                        selectedContainerColor = Color(ContextCompat.getColor(context, R.color.primary_container)),
-                                        unselectedContainerColor = MaterialTheme.colorScheme.surface,
-                                        selectedTextColor = MaterialTheme.colorScheme.primary,
-                                        unselectedTextColor = MaterialTheme.colorScheme.secondary,
-                                    ),
-                                )
-                            }
-                        }
-                    },
-                ) {
-                    val mainScrollState = rememberScrollState()
-                    val contentModifier = Modifier
-                        .fillMaxSize()
-                        .windowInsetsPadding(WindowInsets.safeDrawing)
-                        .padding(if (selectedPage == AppPage.Home) 16.dp else 20.dp)
-                        .then(
-                            if (selectedPage == AppPage.IntersectionView || selectedPage == AppPage.DiscoveredStations) {
-                                Modifier
-                            } else {
-                                Modifier.verticalScroll(mainScrollState)
-                            },
-                        )
-                    Column(
-                        modifier = contentModifier,
-                        verticalArrangement = Arrangement.spacedBy(if (selectedPage == AppPage.Home) 10.dp else 14.dp),
+    Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+        Box(Modifier.fillMaxSize()) {
+            ModalNavigationDrawer(
+                drawerState = drawerState,
+                // Child controls reserve their gestures by consuming pointer changes. Do not
+                // reconfigure the drawer's drag detector in the middle of a slider gesture.
+                gesturesEnabled = txApprovalPromptState == TxApprovalPromptState.Hidden,
+                drawerContent = {
+                    ModalDrawerSheet(
+                        drawerContainerColor = MaterialTheme.colorScheme.surface,
+                        drawerContentColor = MaterialTheme.colorScheme.onSurface,
                     ) {
-                        val headerSubtitle = when (selectedPage) {
-                            AppPage.About -> "Version ${BuildConfig.VERSION_NAME}"
-                            else -> null
-                        }
-                        AppHeader(
-                            title = selectedPage.title,
-                            onOpenMenu = { scope.launch { drawerState.open() } },
-                            subtitle = headerSubtitle,
+                        Text(
+                            "C-ITS to go",
+                            modifier = Modifier.padding(20.dp),
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
                         )
-                        when (selectedPage) {
-                            AppPage.Home -> HomePage(
-                                devices = devices,
-                                selectedDeviceName = selectedDeviceName,
-                                onSelectDevice = onSelectDevice,
-                                connectionMode = connectionMode,
-                                onConnectionModeChange = onConnectionModeChange,
-                                status = status,
-                                onRefresh = onRefresh,
-                                onStart = onStart,
-                                onStop = onStop,
-                                onStartPcap = onStartPcap,
-                                onStopPcap = onStopPcap,
-                                onStartReplay = onStartReplay,
-                                onStopReplay = onStopReplay,
-                                onOpenDiscoveredStations = { selectedPage = AppPage.DiscoveredStations },
-                            )
-                            AppPage.DiscoveredStations -> DiscoveredStationsPage(
-                                stations = discoveredStations,
-                                tableState = stationTableState,
-                                onTableStateChange = onStationTableStateChange,
-                                onColumnWidthChange = onStationColumnWidthChange,
-                                onColumnWidthChangeFinished = onStationColumnWidthChangeFinished,
-                                onClearStations = onClearDiscoveredStations,
-                                modifier = Modifier.weight(1f),
-                            )
-                            AppPage.CamBroadcast -> CamBroadcastPage(
-                                status = status,
-                                logLine = logLine,
-                                intervalMs = camIntervalMs,
-                                onIntervalChange = onCamIntervalChange,
-                                randomizationEnabled = camRandomizationEnabled,
-                                onRandomizationEnabledChange = onCamRandomizationEnabledChange,
-                                randomizationIntervalSeconds = camRandomizationIntervalSeconds,
-                                onRandomizationIntervalChange = onCamRandomizationIntervalChange,
-                                onConfigure = onConfigureCam,
-                            )
-                            AppPage.IntersectionView -> IntersectionViewPage(
-                                snapshots = intersectionSnapshots,
-                                sortMode = intersectionSortMode,
-                                onSortModeChange = onIntersectionSortModeChange,
-                                status = status,
-                                currentPosition = currentPosition,
-                                txApproved = txApproved,
-                                sremProfile = sremProfile,
-                                onSendSrem = onSendSrem,
-                                modifier = Modifier.weight(1f),
-                            )
-                            AppPage.Flashing -> FlashingPage(
-                                state = flashingState,
-                                log = flashingLog,
-                                bridgeRunning = status.running,
-                                onRetryRelease = onRetryFirmwareRelease,
-                                onSelectRelease = onSelectFirmwareRelease,
-                                onChooseCustomFirmware = onChooseCustomFirmware,
-                                onUseReleaseFirmware = onUseReleaseFirmware,
-                                onFlash = onFlashFirmware,
-                            )
-                            AppPage.Settings -> SettingsPage(
-                                mqttUri = mqttUri,
-                                mqttEnabled = mqttEnabled,
-                                onMqttEnabledChange = onMqttEnabledChange,
-                                nodeId = nodeId,
-                                maxQueueLength = maxQueueLength,
-                                maxQueueAgeSeconds = maxQueueAgeSeconds,
-                                txApproved = txApproved,
-                                sremProfile = sremProfile,
-                                bridgeRunning = status.running,
-                                bluetoothEnrollmentRunning = bluetoothEnrollmentRunning,
-                                bluetoothEnrollmentMessage = bluetoothEnrollmentMessage,
-                                bluetoothEnrollmentError = bluetoothEnrollmentError,
-                                debugMenuEnabled = debugMenuEnabled,
-                                onDebugMenuEnabledChange = onDebugMenuEnabledChange,
-                                themeMode = themeMode,
-                                onThemeModeChange = onThemeModeChange,
-                                displayAlwaysOnEnabled = displayAlwaysOnEnabled,
-                                onDisplayAlwaysOnEnabledChange = onDisplayAlwaysOnEnabledChange,
-                                stationDiscoveryNotificationEnabled = stationDiscoveryNotificationEnabled,
-                                onStationDiscoveryNotificationChange = onStationDiscoveryNotificationChange,
-                                appUpdateNotificationEnabled = appUpdateNotificationEnabled,
-                                onAppUpdateNotificationChange = onAppUpdateNotificationChange,
-                                onEnrollBluetooth = onEnrollBluetooth,
-                                onRevokeTxApproval = onRevokeTxApproval,
-                                onSave = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds, updatedSremProfile ->
-                                    onMqttUriChange(updatedMqttUri)
-                                    onNodeIdChange(updatedNodeId)
-                                    onMaxQueueLengthChange(updatedMaxQueueLength)
-                                    onMaxQueueAgeSecondsChange(updatedMaxQueueAgeSeconds)
-                                    onSremProfileChange(updatedSremProfile)
-                                    onSaveSettings(
-                                        updatedMqttUri,
-                                        updatedNodeId,
-                                        updatedMaxQueueLength,
-                                        updatedMaxQueueAgeSeconds,
-                                        updatedSremProfile,
-                                    )
+                        visiblePages.forEach { page ->
+                            NavigationDrawerItem(
+                                label = { Text(page.title) },
+                                selected = page == selectedPage,
+                                onClick = {
+                                    selectedPage = page
+                                    scope.launch { drawerState.close() }
                                 },
+                                modifier = Modifier.padding(horizontal = 12.dp),
+                                colors = NavigationDrawerItemDefaults.colors(
+                                    selectedContainerColor = Color(ContextCompat.getColor(context, R.color.primary_container)),
+                                    unselectedContainerColor = MaterialTheme.colorScheme.surface,
+                                    selectedTextColor = MaterialTheme.colorScheme.primary,
+                                    unselectedTextColor = MaterialTheme.colorScheme.secondary,
+                                ),
                             )
-                            AppPage.Debug -> DebugPage(
-                                status = status,
-                                connectionMode = connectionMode,
-                            )
-                            AppPage.About -> AboutPage()
                         }
                     }
+                },
+            ) {
+                val mainScrollState = rememberScrollState()
+                val contentModifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .padding(if (selectedPage == AppPage.Home) 16.dp else 20.dp)
+                    .then(
+                        if (selectedPage == AppPage.IntersectionView || selectedPage == AppPage.DiscoveredStations) {
+                            Modifier
+                        } else {
+                            Modifier.verticalScroll(mainScrollState)
+                        },
+                    )
+                Column(
+                    modifier = contentModifier,
+                    verticalArrangement = Arrangement.spacedBy(if (selectedPage == AppPage.Home) 10.dp else 14.dp),
+                ) {
+                    val headerSubtitle = when (selectedPage) {
+                        AppPage.About -> "Version ${BuildConfig.VERSION_NAME}"
+                        else -> null
+                    }
+                    AppHeader(
+                        title = selectedPage.title,
+                        onOpenMenu = { scope.launch { drawerState.open() } },
+                        subtitle = headerSubtitle,
+                    )
+                    when (selectedPage) {
+                        AppPage.Home -> HomePage(
+                            devices = devices,
+                            selectedDeviceName = selectedDeviceName,
+                            onSelectDevice = onSelectDevice,
+                            connectionMode = connectionMode,
+                            onConnectionModeChange = onConnectionModeChange,
+                            status = status,
+                            onRefresh = onRefresh,
+                            onStart = onStart,
+                            onStop = onStop,
+                            onStartPcap = onStartPcap,
+                            onStopPcap = onStopPcap,
+                            onStartReplay = onStartReplay,
+                            onStopReplay = onStopReplay,
+                            onOpenDiscoveredStations = { selectedPage = AppPage.DiscoveredStations },
+                        )
+                        AppPage.DiscoveredStations -> DiscoveredStationsPage(
+                            stations = discoveredStations,
+                            tableState = stationTableState,
+                            onTableStateChange = onStationTableStateChange,
+                            onColumnWidthChange = onStationColumnWidthChange,
+                            onColumnWidthChangeFinished = onStationColumnWidthChangeFinished,
+                            onClearStations = onClearDiscoveredStations,
+                            modifier = Modifier.weight(1f),
+                        )
+                        AppPage.CamBroadcast -> CamBroadcastPage(
+                            status = status,
+                            logLine = logLine,
+                            intervalMs = camIntervalMs,
+                            onIntervalChange = onCamIntervalChange,
+                            randomizationEnabled = camRandomizationEnabled,
+                            onRandomizationEnabledChange = onCamRandomizationEnabledChange,
+                            randomizationIntervalSeconds = camRandomizationIntervalSeconds,
+                            onRandomizationIntervalChange = onCamRandomizationIntervalChange,
+                            onConfigure = onConfigureCam,
+                        )
+                        AppPage.IntersectionView -> IntersectionViewPage(
+                            snapshots = intersectionSnapshots,
+                            sortMode = intersectionSortMode,
+                            onSortModeChange = onIntersectionSortModeChange,
+                            status = status,
+                            currentPosition = currentPosition,
+                            txApproved = txApproved,
+                            sremProfile = sremProfile,
+                            onSendSrem = onSendSrem,
+                            modifier = Modifier.weight(1f),
+                        )
+                        AppPage.Flashing -> FlashingPage(
+                            state = flashingState,
+                            log = flashingLog,
+                            bridgeRunning = status.running,
+                            onRetryRelease = onRetryFirmwareRelease,
+                            onSelectRelease = onSelectFirmwareRelease,
+                            onChooseCustomFirmware = onChooseCustomFirmware,
+                            onUseReleaseFirmware = onUseReleaseFirmware,
+                            onFlash = onFlashFirmware,
+                        )
+                        AppPage.Settings -> SettingsPage(
+                            mqttUri = mqttUri,
+                            mqttEnabled = mqttEnabled,
+                            onMqttEnabledChange = onMqttEnabledChange,
+                            nodeId = nodeId,
+                            maxQueueLength = maxQueueLength,
+                            maxQueueAgeSeconds = maxQueueAgeSeconds,
+                            txApproved = txApproved,
+                            sremProfile = sremProfile,
+                            bridgeRunning = status.running,
+                            bluetoothEnrollmentRunning = bluetoothEnrollmentRunning,
+                            bluetoothEnrollmentMessage = bluetoothEnrollmentMessage,
+                            bluetoothEnrollmentError = bluetoothEnrollmentError,
+                            debugMenuEnabled = debugMenuEnabled,
+                            onDebugMenuEnabledChange = onDebugMenuEnabledChange,
+                            themeMode = themeMode,
+                            onThemeModeChange = onThemeModeChange,
+                            displayAlwaysOnEnabled = displayAlwaysOnEnabled,
+                            onDisplayAlwaysOnEnabledChange = onDisplayAlwaysOnEnabledChange,
+                            stationDiscoveryNotificationEnabled = stationDiscoveryNotificationEnabled,
+                            onStationDiscoveryNotificationChange = onStationDiscoveryNotificationChange,
+                            appUpdateNotificationEnabled = appUpdateNotificationEnabled,
+                            onAppUpdateNotificationChange = onAppUpdateNotificationChange,
+                            onEnrollBluetooth = onEnrollBluetooth,
+                            onRevokeTxApproval = onRevokeTxApproval,
+                            onSave = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds, updatedSremProfile ->
+                                onMqttUriChange(updatedMqttUri)
+                                onNodeIdChange(updatedNodeId)
+                                onMaxQueueLengthChange(updatedMaxQueueLength)
+                                onMaxQueueAgeSecondsChange(updatedMaxQueueAgeSeconds)
+                                onSremProfileChange(updatedSremProfile)
+                                onSaveSettings(
+                                    updatedMqttUri,
+                                    updatedNodeId,
+                                    updatedMaxQueueLength,
+                                    updatedMaxQueueAgeSeconds,
+                                    updatedSremProfile,
+                                )
+                            },
+                        )
+                        AppPage.Debug -> DebugPage(
+                            status = status,
+                            connectionMode = connectionMode,
+                        )
+                        AppPage.About -> AboutPage()
+                    }
                 }
-                TxApprovalOverlay(
-                    state = txApprovalPromptState,
-                    onGrantApproval = onGrantTxApproval,
-                    onDismiss = onDismissTxApproval,
-                )
-                ConfettiOverlay(run = confettiRun)
             }
+            TxApprovalOverlay(
+                state = txApprovalPromptState,
+                onGrantApproval = onGrantTxApproval,
+                onDismiss = onDismissTxApproval,
+            )
+            ConfettiOverlay(run = confettiRun)
         }
     }
 }

@@ -39,6 +39,7 @@ fun DragConfirmSlider(
 ) {
     var sliderSize by remember { mutableStateOf(IntSize.Zero) }
     val currentPosition by rememberUpdatedState(position.coerceIn(0f, 1f))
+    val currentEnabled by rememberUpdatedState(enabled)
     val currentOnPositionChange by rememberUpdatedState(onPositionChange)
     val currentOnDragFinished by rememberUpdatedState(onDragFinished)
     val currentOnDragStateChange by rememberUpdatedState(onDragStateChange)
@@ -47,39 +48,57 @@ fun DragConfirmSlider(
     Canvas(
         modifier = modifier
             .onSizeChanged { sliderSize = it }
-            .pointerInput(enabled, sliderSize.width, direction) {
+            .pointerInput(sliderSize.width, direction) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                     val width = sliderSize.width.toFloat()
-                    if (!enabled || width <= 0f) return@awaitEachGesture
                     val thumbRadius = 30.dp.toPx()
                     val startX = thumbRadius
                     val endX = width - thumbRadius
-                    if (endX <= startX) return@awaitEachGesture
                     val initialPosition = currentPosition
                     val thumbX = when (direction) {
                         DragConfirmDirection.LeftToRight -> startX + (endX - startX) * initialPosition
                         DragConfirmDirection.RightToLeft -> endX - (endX - startX) * initialPosition
                     }
                     val hitSlop = 18.dp.toPx()
-                    if (abs(down.position.x - thumbX) > thumbRadius + hitSlop) return@awaitEachGesture
-                    down.consume()
-                    currentOnDragStateChange(true)
+                    // The entire control reserves horizontal swipes, including when disabled.
+                    // Only a drag starting on the thumb may change its value. Wait for direction
+                    // before consuming so vertical page scrolling remains available.
+                    val canMove = currentEnabled && endX > startX &&
+                        abs(down.position.x - thumbX) <= thumbRadius + hitSlop
+                    var dragging = false
                     try {
                         val downX = down.position.x
                         while (true) {
                             val event = awaitPointerEvent(PointerEventPass.Initial)
-                            event.changes.forEach { it.consume() }
-                            val active = event.changes.firstOrNull { it.pressed } ?: break
+                            val active = event.changes.firstOrNull { it.id == down.id } ?: break
+                            if (!active.pressed) {
+                                if (dragging) {
+                                    active.consume()
+                                    if (canMove && currentEnabled) currentOnDragFinished()
+                                }
+                                break
+                            }
+                            if (!dragging) {
+                                if (active.isConsumed) break
+                                val displacement = active.position - down.position
+                                if (displacement.getDistance() <= viewConfiguration.touchSlop) continue
+                                if (abs(displacement.y) >= abs(displacement.x)) break
+                                dragging = true
+                                currentOnDragStateChange(true)
+                            }
+                            // Initial precedes both the drawer and pager's Main-pass drag
+                            // detectors. Consume even at the endpoints or when movement is disabled.
+                            active.consume()
+                            if (!canMove || !currentEnabled) continue
                             val deltaFraction = when (direction) {
                                 DragConfirmDirection.LeftToRight -> (active.position.x - downX) / (endX - startX)
                                 DragConfirmDirection.RightToLeft -> (downX - active.position.x) / (endX - startX)
                             }
                             currentOnPositionChange((initialPosition + deltaFraction).coerceIn(0f, 1f))
                         }
-                        currentOnDragFinished()
                     } finally {
-                        currentOnDragStateChange(false)
+                        if (dragging) currentOnDragStateChange(false)
                     }
                 }
             },

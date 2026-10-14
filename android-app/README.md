@@ -108,6 +108,24 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ---
 
 
+## Gesture regression tests
+
+Swipes on ordinary page content open the navigation drawer. Horizontal gestures
+inside a slider (including a disabled slider or the track away from the thumb)
+belong to that control, not the drawer. Only enabled thumb drags change the value;
+vertical gestures on sliders remain available for page scrolling. The map owns
+its pan/zoom gestures, and pagers, horizontally scrolling tables and resize handles
+consume their own drags, including at scroll boundaries.
+
+With an unlocked Android device or emulator connected, run from `android-app/`:
+
+```bash
+nix-shell shell.nix --run './gradlew connectedDebugAndroidTest'
+```
+
+The regression suite uses the real Material navigation drawer and includes the
+intersection renderer. Check Android 12/MIUI as well as newer Android releases.
+
 ## Bluetooth enrollment
 
 Bluetooth is not open-pairing. Connect CITS-to-go over USB, select the USB device, and tap **Enroll this phone for Bluetooth**. The app sends a USB-only enrollment command and asks Android to create the BLE bond. Firmware permits exactly one new pairing attempt for 30 seconds and replaces the previous owner bond.

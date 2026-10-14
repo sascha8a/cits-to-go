@@ -75,7 +75,6 @@ import java.util.Locale
 import android.content.Intent
 import android.net.Uri
 import android.os.SystemClock
-import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -619,7 +618,6 @@ fun TxApprovalSlider(
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
-    val onDragStateChange = LocalSliderDragStateChange.current
     DragConfirmSlider(
         position = position,
         onPositionChange = onPositionChange,
@@ -628,7 +626,6 @@ fun TxApprovalSlider(
         trackColor = if (enabled) Color(ContextCompat.getColor(context, R.color.error_container)) else Color(ContextCompat.getColor(context, R.color.error_container)),
         fillColor = Color(ContextCompat.getColor(context, R.color.error)),
         thumbRingColor = Color(ContextCompat.getColor(context, R.color.on_error)),
-        onDragStateChange = onDragStateChange,
         modifier = modifier.height(96.dp),
     ) { center, _ ->
         val arrowLength = 22.dp.toPx()
@@ -718,8 +715,6 @@ private fun deviceLabel(device: android.hardware.usb.UsbDevice): String {
     val name = listOfNotNull(device.manufacturerName, device.productName).joinToString(" ").ifBlank { device.deviceName }
     return "$name  vid=%04x pid=%04x".format(device.vendorId, device.productId)
 }
-
-internal val LocalSliderDragStateChange = compositionLocalOf<(Boolean) -> Unit> { {} }
 
 @Composable
 fun TxApprovalOverlay(
