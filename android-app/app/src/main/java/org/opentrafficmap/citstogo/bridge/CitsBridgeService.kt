@@ -657,8 +657,8 @@ class CitsBridgeService : Service() {
                             CitsPacket(
                                 sequence = replayPackets,
                                 timestampUs = frame.timestampUs,
-                                frequencyMhz = 0,
-                                rssiDbm = 0,
+                                frequencyMhz = frame.frequencyMhz ?: 0,
+                                rssiDbm = frame.rssiDbm ?: 0,
                                 wifiType = 0,
                                 rxState = 0,
                                 flags = if (frame.originalLength > frame.payload.size) CitsPacket.FLAG_TRUNCATED else 0,

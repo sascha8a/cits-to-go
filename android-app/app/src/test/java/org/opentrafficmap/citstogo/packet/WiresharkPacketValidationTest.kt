@@ -13,6 +13,7 @@ import org.opentrafficmap.citstogo.cam.CamPosition
 import org.opentrafficmap.citstogo.cam.ItsG5FrameBuilder
 import org.opentrafficmap.citstogo.cam.StationType
 import org.opentrafficmap.citstogo.cam.randomizedCamIdentity
+import org.opentrafficmap.citstogo.protocol.CitsPacket
 import org.opentrafficmap.citstogo.srem.SremRequest
 import org.opentrafficmap.citstogo.srem.SremPosition
 import org.opentrafficmap.citstogo.srem.SremProfile
@@ -145,6 +146,72 @@ class WiresharkPacketValidationTest {
                 expectedStationType = profile.stationType.code,
                 expectedRole = if (profile.basicVehicleRole.isExtension) 23 else profile.basicVehicleRole.value,
             )
+        }
+    }
+
+    @Test
+    fun aRecordedCaptureKeepsSignalStrengthAndChannelForWireshark() {
+        val frame = ItsG5FrameBuilder.camFrame(
+            identity,
+            StationType.PASSENGER_CAR,
+            availablePosition,
+            timestamp,
+            counters,
+        )
+        val pcap = Files.createTempFile("cits-to-go-radio-", ".pcap")
+        try {
+            PcapWriter(Files.newOutputStream(pcap)).use { writer ->
+                writer.writePacket(
+                    CitsPacket(
+                        sequence = 1,
+                        timestampUs = timestamp * 1_000L,
+                        frequencyMhz = 5_890,
+                        rssiDbm = -67,
+                        wifiType = 0,
+                        rxState = 0,
+                        flags = 0,
+                        originalLength = frame.size,
+                        capturedLength = frame.size,
+                        payload = frame,
+                    ),
+                )
+            }
+
+            val decoded = tshark(
+                "-r", pcap.toString(),
+                "-T", "fields",
+                "-E", "separator=|",
+                "-e", "frame.number",
+                "-e", "_ws.col.Protocol",
+                "-e", "frame.protocols",
+                "-e", "radiotap.length",
+                "-e", "radiotap.dbm_antsignal",
+                "-e", "radiotap.channel.freq",
+                "-e", "its.messageId",
+                "-e", "btpb.dstport",
+            ).trim().split('\t', '|')
+            assertTrue(
+                "Wireshark did not see a radiotap header: $decoded",
+                decoded.size >= 8 && decoded[2].split(':').contains("radiotap"),
+            )
+            assertEquals("radiotap header length", "13", decoded[3])
+            assertEquals("recorded signal strength", "-67", decoded[4])
+            assertEquals("recorded channel frequency", "5890", decoded[5])
+            assertEquals("the frame behind the radio header", "CAM", decoded[1])
+            assertEquals("ITS message ID below the radio header", "2", decoded[6])
+            assertEquals("BTP port below the radio header", "2001", decoded[7])
+
+            val malformed = tshark(
+                "-r", pcap.toString(),
+                "-Y", "_ws.malformed",
+                "-T", "fields",
+                "-e", "frame.number",
+                "-e", "_ws.col.Info",
+                "-e", "_ws.expert.message",
+            )
+            assertTrue("the recorded capture is malformed: ${malformed.trim()}", malformed.isBlank())
+        } finally {
+            Files.deleteIfExists(pcap)
         }
     }
 

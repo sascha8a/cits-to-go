@@ -22,23 +22,33 @@ class PcapWriter(
         writeGlobalHeader()
     }
 
+    /**
+     * Records a received [packet] with the radio conditions it arrived under, so a replay reports the
+     * signal strength and channel of the original capture rather than none at all.
+     */
     @Synchronized
     fun writePacket(packet: CitsPacket) {
-        writeRawPacket(packet.payload, captureTimestampToUnixUs(packet.timestampUs))
+        writeFrame(
+            radioHeader = Radiotap.header(
+                RadioInformation(
+                    // The firmware reports zero for a value it did not measure, which radiotap
+                    // records by leaving the field out.
+                    rssiDbm = packet.rssiDbm.takeIf { it != 0 },
+                    frequencyMhz = packet.frequencyMhz.takeIf { it != 0 },
+                ),
+            ),
+            payload = packet.payload,
+            timestampUs = captureTimestampToUnixUs(packet.timestampUs),
+            // The length the frame had on the air, so a frame trimmed by the receiver still replays
+            // as the truncated frame it was.
+            originalLength = packet.originalLength.coerceAtLeast(packet.payload.size),
+        )
     }
 
+    /** Records [payload] without radio information, as used for frames this app transmitted. */
     @Synchronized
     fun writeRawPacket(payload: ByteArray, timestampUs: Long) {
-        if (closed) return
-        val seconds = (timestampUs / 1_000_000L).toInt()
-        val micros = (timestampUs % 1_000_000L).toInt()
-        writeIntLE(seconds)
-        writeIntLE(micros)
-        writeIntLE(payload.size)
-        writeIntLE(payload.size)
-        out.write(payload)
-        packetsSinceFlush += 1
-        maybeFlush(force = false)
+        writeFrame(Radiotap.EMPTY_HEADER, payload, timestampUs, originalLength = payload.size)
     }
 
     @Synchronized
@@ -54,6 +64,21 @@ class PcapWriter(
         out.close()
     }
 
+    private fun writeFrame(radioHeader: ByteArray, payload: ByteArray, timestampUs: Long, originalLength: Int) {
+        if (closed) return
+        val seconds = (timestampUs / 1_000_000L).toInt()
+        val micros = (timestampUs % 1_000_000L).toInt()
+        val capturedLength = radioHeader.size + payload.size
+        writeIntLE(seconds)
+        writeIntLE(micros)
+        writeIntLE(capturedLength)
+        writeIntLE(radioHeader.size + originalLength)
+        out.write(radioHeader)
+        out.write(payload)
+        packetsSinceFlush += 1
+        maybeFlush(force = false)
+    }
+
     private fun writeGlobalHeader() {
         writeIntLE(PCAP_MAGIC_USEC)
         writeShortLE(2)
@@ -61,7 +86,7 @@ class PcapWriter(
         writeIntLE(0)
         writeIntLE(0)
         writeIntLE(65_535)
-        writeIntLE(DLT_IEEE802_11)
+        writeIntLE(Radiotap.LINK_TYPE)
     }
 
     private fun maybeFlush(force: Boolean) {
@@ -109,7 +134,6 @@ class PcapWriter(
 
     companion object {
         private const val PCAP_MAGIC_USEC = 0xA1B2C3D4.toInt()
-        private const val DLT_IEEE802_11 = 105
         private const val FLUSH_EVERY_PACKETS = 128
         private const val FLUSH_EVERY_MS = 2_000L
         private const val DEVICE_TIMESTAMP_RANGE_US = 1L shl 32

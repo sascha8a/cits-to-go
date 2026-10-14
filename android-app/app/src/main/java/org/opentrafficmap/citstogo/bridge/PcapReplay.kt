@@ -7,11 +7,20 @@ data class PcapFrame(
     val timestampUs: Long,
     val originalLength: Int,
     val payload: ByteArray,
+    /** Signal strength of the original reception, absent in a plain IEEE 802.11 capture. */
+    val rssiDbm: Int? = null,
+    /** Channel centre frequency it was received on, in MHz. */
+    val frequencyMhz: Int? = null,
 )
 
+/**
+ * Reads a classic PCAP stream of IEEE 802.11 frames, with or without the radiotap radio metadata that
+ * link type 127 carries, so both this app's own recordings and captures made in monitor mode replay.
+ */
 class PcapReader(private val input: InputStream) {
     private val littleEndian: Boolean
     private val nanosecondResolution: Boolean
+    private val hasRadioHeader: Boolean
 
     init {
         val header = readBytes(24, allowEof = false)!!
@@ -38,9 +47,11 @@ class PcapReader(private val input: InputStream) {
         val major = u16(header, 4)
         val linkType = u32(header, 20)
         require(major == 2) { "Unsupported PCAP version $major" }
-        require(linkType == DLT_IEEE802_11.toLong()) {
-            "PCAP link type $linkType is not IEEE 802.11"
+        require(linkType == DLT_IEEE802_11.toLong() || linkType == Radiotap.LINK_TYPE.toLong()) {
+            "PCAP link type $linkType is neither IEEE 802.11 ($DLT_IEEE802_11) " +
+                "nor IEEE 802.11 radio (${Radiotap.LINK_TYPE})"
         }
+        hasRadioHeader = linkType == Radiotap.LINK_TYPE.toLong()
     }
 
     fun nextFrame(): PcapFrame? {
@@ -53,10 +64,17 @@ class PcapReader(private val input: InputStream) {
         require(originalLength <= Int.MAX_VALUE) { "PCAP original packet length is too large" }
         val subsecondUs = if (nanosecondResolution) fraction / 1_000L else fraction
         require(subsecondUs < 1_000_000L) { "Invalid PCAP packet timestamp" }
+        val record = readBytes(capturedLength.toInt(), allowEof = false)!!
+        // The lengths in the record cover the radio header, so the frame itself is what is left of
+        // the record once that header is accounted for.
+        val radio = if (hasRadioHeader) Radiotap.split(record) else null
+        val payload = if (radio == null) record else record.copyOfRange(radio.frameOffset, record.size)
         return PcapFrame(
             timestampUs = Math.addExact(Math.multiplyExact(seconds, 1_000_000L), subsecondUs),
-            originalLength = originalLength.toInt(),
-            payload = readBytes(capturedLength.toInt(), allowEof = false)!!,
+            originalLength = (originalLength.toInt() - (radio?.frameOffset ?: 0)).coerceAtLeast(payload.size),
+            payload = payload,
+            rssiDbm = radio?.information?.rssiDbm,
+            frequencyMhz = radio?.information?.frequencyMhz,
         )
     }
 

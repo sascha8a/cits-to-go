@@ -48,7 +48,10 @@ reception and PCAP replay use the same path.
   Positions outside the valid coordinate range, and the zeroed position vector
   most senders leave in place, are ignored.
 - RSSI is the firmware's report for the frame; `Last RSSI` is the most recent,
-  `Best RSSI` the strongest one seen.
+  `Best RSSI` the strongest one seen. A replay fills these in too, provided the
+  recording carries the signal strength, which the
+  [PCAP format notes](PCAP_CAPTURE.md) describe. A recording made before
+  radiotap was written has nothing to report, so those two columns stay empty.
 - Timestamps use the frame's own wall-clock time when a PCAP is replayed, so a
   replayed capture reports when the original capture heard the station.
 
