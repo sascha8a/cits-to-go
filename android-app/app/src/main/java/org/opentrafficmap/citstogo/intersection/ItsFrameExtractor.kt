@@ -10,6 +10,7 @@ data class ItsPacket(
     val sourceLatitude: Int?,
     val sourceLongitude: Int?,
     val geonetworkingSecured: Boolean = false,
+    val geoNetworkingSource: GeoNetworkingSource? = null,
 )
 
 sealed interface ItsExtractionResult {
@@ -21,6 +22,9 @@ sealed interface ItsExtractionResult {
 
     /** A recognised (optionally secured) GeoNetworking envelope whose contents could not be decoded. */
     data class Malformed(val reason: String, val secured: Boolean) : ItsExtractionResult
+
+    /** A GeoNetworking beacon: a source without ITS message. */
+    data class Beacon(val source: GeoNetworkingSource, val secured: Boolean) : ItsExtractionResult
 }
 
 object ItsFrameExtractor {
@@ -28,7 +32,8 @@ object ItsFrameExtractor {
         is ItsExtractionResult.Success -> result.packet
         ItsExtractionResult.NotGeoNetworking,
         is ItsExtractionResult.Unsupported,
-        is ItsExtractionResult.Malformed -> null
+        is ItsExtractionResult.Malformed,
+        is ItsExtractionResult.Beacon -> null
     }
 
     fun extractDetailed(frame: ByteArray): ItsExtractionResult {
@@ -41,6 +46,7 @@ object ItsFrameExtractor {
             is GeoNetworkingParseResult.Malformed -> {
                 return ItsExtractionResult.Malformed(result.reason, result.secured)
             }
+            is GeoNetworkingParseResult.Beacon -> return ItsExtractionResult.Beacon(result.source, result.secured)
         }
 
         val btpOffset = geo.btpOffset
@@ -66,9 +72,10 @@ object ItsFrameExtractor {
                 stationId = stationId,
                 bodyOffset = ITS_PDU_HEADER_LEN,
                 payload = frame.copyOfRange(itsOffset, itsEnd),
-                sourceLatitude = geo.sourceLatitude,
-                sourceLongitude = geo.sourceLongitude,
+                sourceLatitude = geo.source.latitude,
+                sourceLongitude = geo.source.longitude,
                 geonetworkingSecured = geo.secured,
+                geoNetworkingSource = geo.source,
             ),
         )
     }

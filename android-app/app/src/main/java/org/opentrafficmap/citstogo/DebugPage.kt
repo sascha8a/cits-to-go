@@ -103,6 +103,7 @@ fun DebugPage(
             DebugRow("Secured ITS packets", intersections.securedItsPackets.toString())
             DebugRow("Malformed GeoNetworking", intersections.malformedGeoNetworkingFrames.toString())
             DebugRow("Other / unsupported GN", intersections.unsupportedGeoNetworkingFrames.toString())
+            DebugRow("GN beacons", intersections.geoNetworkingBeacons.toString())
             DebugRow("MAPEM decoded", "${intersections.mapemDecoded}/${intersections.mapemSeen}")
             DebugRow("MAPEM failures", intersections.mapemDecodeFailures.toString())
             DebugRow("SPATEM decoded", "${intersections.spatemDecoded}/${intersections.spatemSeen}")

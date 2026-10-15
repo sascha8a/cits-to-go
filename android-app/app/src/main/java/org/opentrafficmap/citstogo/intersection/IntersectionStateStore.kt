@@ -22,6 +22,14 @@ class IntersectionStateStore {
                 extraction.packet
             }
             ItsExtractionResult.NotGeoNetworking -> return null
+            is ItsExtractionResult.Beacon -> {
+                diagnostics = diagnostics.copy(
+                    geoNetworkingBeacons = diagnostics.geoNetworkingBeacons + 1,
+                    securedGeoNetworkingFrames = diagnostics.securedGeoNetworkingFrames +
+                        if (extraction.secured) 1 else 0,
+                )
+                return null
+            }
             is ItsExtractionResult.Malformed -> {
                 diagnostics = diagnostics.copy(
                     malformedGeoNetworkingFrames = diagnostics.malformedGeoNetworkingFrames + 1,

@@ -9,6 +9,7 @@ data class IntersectionDiagnostics(
     val securedItsPackets: Long = 0,
     val malformedGeoNetworkingFrames: Long = 0,
     val unsupportedGeoNetworkingFrames: Long = 0,
+    val geoNetworkingBeacons: Long = 0,
     val mapemSeen: Long = 0,
     val mapemDecoded: Long = 0,
     val mapemDecodeFailures: Long = 0,

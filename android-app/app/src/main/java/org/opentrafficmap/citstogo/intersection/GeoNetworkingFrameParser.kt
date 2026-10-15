@@ -1,10 +1,25 @@
 package org.opentrafficmap.citstogo.intersection
 
+/**
+ * The source of a GeoNetworking packet: the GN_ADDR and position of its Source Position Vector. Routers forward that
+ * vector unchanged (EN 302 636-4-1), so in a [forwarded] packet they belong to the station that created the packet,
+ * not to the radio that transmitted the frame.
+ */
+data class GeoNetworkingSource(
+    /** The ITS station type in the GN_ADDR; 15 is a road side unit. */
+    val stationType: Int,
+    /** The MID of the GN_ADDR, the link-layer address of the source, as `aa:bb:cc:dd:ee:ff`. */
+    val address: String,
+    val latitude: Int?,
+    val longitude: Int?,
+    /** The remaining hop limit of the Basic Header is below the maximum hop limit the source set. */
+    val forwarded: Boolean,
+)
+
 internal data class GeoNetworkingTransportPayload(
     val btpOffset: Int,
     val payloadLength: Int,
-    val sourceLatitude: Int?,
-    val sourceLongitude: Int?,
+    val source: GeoNetworkingSource,
     val secured: Boolean,
 )
 
@@ -25,10 +40,13 @@ internal sealed interface GeoNetworkingParseResult {
      * `NH = 2` secured packet as an unsupported protocol value.
      */
     data class Malformed(val reason: String, val secured: Boolean) : GeoNetworkingParseResult
+
+    /** A beacon, which only announces its source and carries no payload. */
+    data class Beacon(val source: GeoNetworkingSource, val secured: Boolean) : GeoNetworkingParseResult
 }
 
 /**
- * Parses the GeoNetworking envelope around BTP-B payloads.
+ * Parses the GeoNetworking envelope around BTP-B payloads, and beacons.
  *
  * GeoNetworking security wraps the Common Header + Extended Header + payload
  * between the Basic Header and a security trailer. ETSI TS 103 097 signed
@@ -55,9 +73,13 @@ internal object GeoNetworkingFrameParser {
         }
 
         val basicNextHeader = frame[basicOffset].toInt() and 0x0f
+        val remainingHopLimit = u8(frame, basicOffset + BASIC_REMAINING_HOP_LIMIT_OFFSET)
         return when (basicNextHeader) {
-            BASIC_NEXT_HEADER_COMMON -> when (val inner = parseCommon(frame, basicOffset + BASIC_HEADER_LEN, secured = false)) {
+            BASIC_NEXT_HEADER_COMMON -> when (
+                val inner = parseCommon(frame, basicOffset + BASIC_HEADER_LEN, remainingHopLimit, secured = false)
+            ) {
                 is CommonParseResult.Ok -> GeoNetworkingParseResult.Success(inner.payload)
+                is CommonParseResult.Beacon -> GeoNetworkingParseResult.Beacon(inner.source, secured = false)
                 CommonParseResult.Malformed ->
                     GeoNetworkingParseResult.Malformed("Malformed GeoNetworking Common/Extended Header", secured = false)
                 CommonParseResult.UnsupportedHeader ->
@@ -67,7 +89,7 @@ internal object GeoNetworkingFrameParser {
                     )
             }
 
-            BASIC_NEXT_HEADER_SECURED -> locateSecuredCommon(frame, basicOffset + BASIC_HEADER_LEN)
+            BASIC_NEXT_HEADER_SECURED -> locateSecuredCommon(frame, basicOffset + BASIC_HEADER_LEN, remainingHopLimit)
             else -> GeoNetworkingParseResult.Unsupported(
                 "Unsupported GeoNetworking Basic Header next-header $basicNextHeader",
                 nextHeader = basicNextHeader,
@@ -75,16 +97,21 @@ internal object GeoNetworkingFrameParser {
         }
     }
 
-    private fun locateSecuredCommon(frame: ByteArray, securedPayloadOffset: Int): GeoNetworkingParseResult {
-        parseSignedUnsecuredData(frame, securedPayloadOffset)?.let { return it }
+    private fun locateSecuredCommon(
+        frame: ByteArray,
+        securedPayloadOffset: Int,
+        remainingHopLimit: Int,
+    ): GeoNetworkingParseResult {
+        parseSignedUnsecuredData(frame, securedPayloadOffset, remainingHopLimit)?.let { return it }
 
+        // Beacons are only taken from the signed envelope: their few fixed fields are too weak a check for a scan.
         val scanEndExclusive = minOf(
             frame.size - COMMON_HEADER_LEN + 1,
             securedPayloadOffset + MAX_SECURED_PREFIX_BYTES,
         )
         var candidate: GeoNetworkingTransportPayload? = null
         for (commonOffset in securedPayloadOffset until scanEndExclusive) {
-            val parsed = parseCommon(frame, commonOffset, secured = true)
+            val parsed = parseCommon(frame, commonOffset, remainingHopLimit, secured = true)
             if (parsed !is CommonParseResult.Ok) continue
             if (candidate != null) {
                 return GeoNetworkingParseResult.Malformed(
@@ -102,10 +129,14 @@ internal object GeoNetworkingFrameParser {
      * Reads `Ieee1609Dot2Data { 3, signedData { hashId, tbsData { payload { data { 3, unsecuredData } } } } }`.
      * Apart from the hash algorithm and the OER length determinant this COER prefix is fixed. Behind it the
      * Common Header position is known, so the result is final: the unsecuredData must hold exactly one
-     * supported Common Header + Extended Header + payload, and no other offset may stand in for it.
+     * supported Common Header + Extended Header + payload, or one beacon, and no other offset may stand in for it.
      * Returns null when the envelope differs so the caller can fall back to scanning.
      */
-    private fun parseSignedUnsecuredData(frame: ByteArray, securedPayloadOffset: Int): GeoNetworkingParseResult? {
+    private fun parseSignedUnsecuredData(
+        frame: ByteArray,
+        securedPayloadOffset: Int,
+        remainingHopLimit: Int,
+    ): GeoNetworkingParseResult? {
         val lengthOffset = securedPayloadOffset + SIGNED_UNSECURED_DATA_PREFIX_LEN
         if (frame.size <= lengthOffset) return null
         if (u8(frame, securedPayloadOffset) != IEEE1609DOT2_PROTOCOL_VERSION ||
@@ -126,25 +157,38 @@ internal object GeoNetworkingFrameParser {
             else -> return null
         }
 
-        val parsed = parseCommon(frame, commonOffset, secured = true) as? CommonParseResult.Ok
-            ?: return GeoNetworkingParseResult.Malformed(SECURED_COMMON_HEADER_MISSING, secured = true)
+        val parsed = parseCommon(frame, commonOffset, remainingHopLimit, secured = true)
+        val packetEnd = when (parsed) {
+            is CommonParseResult.Ok -> parsed.payload.btpOffset + parsed.payload.payloadLength
+            is CommonParseResult.Beacon -> parsed.end
+            CommonParseResult.Malformed,
+            CommonParseResult.UnsupportedHeader ->
+                return GeoNetworkingParseResult.Malformed(SECURED_COMMON_HEADER_MISSING, secured = true)
+        }
         val unsecuredDataLength = when (firstLengthOctet) {
             0x81 -> u8(frame, lengthOffset + 1)
             0x82 -> u16(frame, lengthOffset + 1)
             else -> firstLengthOctet
         }
-        val packetEnd = parsed.payload.btpOffset + parsed.payload.payloadLength
         if (packetEnd != commonOffset + unsecuredDataLength) {
             return GeoNetworkingParseResult.Malformed(
                 "Secured GeoNetworking packet length does not match its IEEE 1609.2 unsecuredData",
                 secured = true,
             )
         }
-        return GeoNetworkingParseResult.Success(parsed.payload)
+        return when (parsed) {
+            is CommonParseResult.Ok -> GeoNetworkingParseResult.Success(parsed.payload)
+            is CommonParseResult.Beacon -> GeoNetworkingParseResult.Beacon(parsed.source, secured = true)
+            CommonParseResult.Malformed,
+            CommonParseResult.UnsupportedHeader -> error("Handled above")
+        }
     }
 
     private sealed interface CommonParseResult {
         data class Ok(val payload: GeoNetworkingTransportPayload) : CommonParseResult
+
+        /** [end] is the offset behind the beacon's Source Position Vector. */
+        data class Beacon(val source: GeoNetworkingSource, val end: Int) : CommonParseResult
         data object Malformed : CommonParseResult
         data object UnsupportedHeader : CommonParseResult
     }
@@ -152,14 +196,26 @@ internal object GeoNetworkingFrameParser {
     private fun parseCommon(
         frame: ByteArray,
         commonOffset: Int,
+        remainingHopLimit: Int,
         secured: Boolean,
     ): CommonParseResult {
         if (frame.size < commonOffset + COMMON_HEADER_LEN) return CommonParseResult.Malformed
 
         val commonNextHeader = (frame[commonOffset].toInt() ushr 4) and 0x0f
+        val headerType = frame[commonOffset + 1].toInt() and 0xf0
+        val maximumHopLimit = u8(frame, commonOffset + COMMON_MAXIMUM_HOP_LIMIT_OFFSET)
+        val extendedOffset = commonOffset + COMMON_HEADER_LEN
+        if (headerType == HEADER_TYPE_BEACON) {
+            // A beacon is a Source Position Vector without payload.
+            if (commonNextHeader != COMMON_NEXT_HEADER_ANY || u16(frame, commonOffset + 4) != 0) {
+                return CommonParseResult.UnsupportedHeader
+            }
+            val end = extendedOffset + LONG_POSITION_VECTOR_LEN
+            if (end > frame.size) return CommonParseResult.Malformed
+            return CommonParseResult.Beacon(source(frame, extendedOffset, remainingHopLimit, maximumHopLimit), end)
+        }
         if (commonNextHeader != COMMON_NEXT_HEADER_BTP_B) return CommonParseResult.UnsupportedHeader
 
-        val headerType = frame[commonOffset + 1].toInt() and 0xf0
         val extendedHeaderLength = when (headerType) {
             HEADER_TYPE_GBC -> GBC_EXTENDED_HEADER_LEN
             HEADER_TYPE_SHB -> SHB_EXTENDED_HEADER_LEN
@@ -169,7 +225,6 @@ internal object GeoNetworkingFrameParser {
         val payloadLength = u16(frame, commonOffset + 4)
         if (payloadLength < BTP_HEADER_LEN + ITS_PDU_HEADER_LEN) return CommonParseResult.Malformed
 
-        val extendedOffset = commonOffset + COMMON_HEADER_LEN
         val btpOffset = extendedOffset + extendedHeaderLength
         val payloadEnd = btpOffset + payloadLength
         if (btpOffset < 0 || payloadEnd > frame.size) return CommonParseResult.Malformed
@@ -180,24 +235,33 @@ internal object GeoNetworkingFrameParser {
         val messageId = frame[itsOffset + 1].toInt() and 0xff
         if (protocolVersion !in SUPPORTED_ITS_PROTOCOL_VERSIONS || messageId == 0) return CommonParseResult.Malformed
 
-        val sourcePositionOffset = when (headerType) {
-            HEADER_TYPE_GBC -> extendedOffset + GBC_SOURCE_POSITION_OFFSET
-            HEADER_TYPE_SHB -> extendedOffset + SHB_SOURCE_POSITION_OFFSET
-            else -> return CommonParseResult.Malformed
+        val headerSubtype = frame[commonOffset + 1].toInt() and 0x0f
+        val sourcePositionOffset = when {
+            headerType == HEADER_TYPE_GBC -> extendedOffset + GBC_SOURCE_POSITION_OFFSET
+            headerSubtype == HEADER_SUBTYPE_TSB -> extendedOffset + TSB_SOURCE_POSITION_OFFSET
+            else -> extendedOffset + SHB_SOURCE_POSITION_OFFSET
         }
-        val sourceLatitude = i32OrNull(frame, sourcePositionOffset + LONG_POSITION_VECTOR_LATITUDE_OFFSET)
-        val sourceLongitude = i32OrNull(frame, sourcePositionOffset + LONG_POSITION_VECTOR_LONGITUDE_OFFSET)
 
         return CommonParseResult.Ok(
             GeoNetworkingTransportPayload(
                 btpOffset = btpOffset,
                 payloadLength = payloadLength,
-                sourceLatitude = sourceLatitude,
-                sourceLongitude = sourceLongitude,
+                source = source(frame, sourcePositionOffset, remainingHopLimit, maximumHopLimit),
                 secured = secured,
             ),
         )
     }
+
+    /** The Long Position Vector at [offset], which lies within [frame]. */
+    private fun source(frame: ByteArray, offset: Int, remainingHopLimit: Int, maximumHopLimit: Int) =
+        GeoNetworkingSource(
+            stationType = (u8(frame, offset) ushr 2) and 0x1f,
+            address = (offset + GN_ADDR_MID_OFFSET until offset + GN_ADDR_LEN)
+                .joinToString(":") { "%02x".format(u8(frame, it)) },
+            latitude = i32OrNull(frame, offset + LONG_POSITION_VECTOR_LATITUDE_OFFSET),
+            longitude = i32OrNull(frame, offset + LONG_POSITION_VECTOR_LONGITUDE_OFFSET),
+            forwarded = remainingHopLimit < maximumHopLimit,
+        )
 
     private fun ByteArray.indexOf(pattern: ByteArray): Int {
         if (pattern.isEmpty() || size < pattern.size) return -1
@@ -228,24 +292,36 @@ internal object GeoNetworkingFrameParser {
     }
 
     private const val BASIC_HEADER_LEN = 4
+    private const val BASIC_REMAINING_HOP_LIMIT_OFFSET = 3
     private const val COMMON_HEADER_LEN = 8
+    private const val COMMON_MAXIMUM_HOP_LIMIT_OFFSET = 6
     private const val BTP_HEADER_LEN = 4
     private const val ITS_PDU_HEADER_LEN = 6
 
     private const val BASIC_NEXT_HEADER_COMMON = 1
     private const val BASIC_NEXT_HEADER_SECURED = 2
+    private const val COMMON_NEXT_HEADER_ANY = 0
     private const val COMMON_NEXT_HEADER_BTP_B = 2
 
+    private const val HEADER_TYPE_BEACON = 0x10
     private const val HEADER_TYPE_GBC = 0x40
     private const val HEADER_TYPE_SHB = 0x50
+    // Topologically-scoped broadcast shares the header type of single-hop broadcast and the extended header length.
+    private const val HEADER_SUBTYPE_TSB = 1
     private const val GBC_EXTENDED_HEADER_LEN = 44
     private const val SHB_EXTENDED_HEADER_LEN = 28
 
-    // GBC starts with a 4-byte sequence/reserved prefix before its Long Position Vector.
+    // GBC and TSB start with a 4-byte sequence/reserved prefix before their Long Position Vector.
     private const val GBC_SOURCE_POSITION_OFFSET = 4
+    private const val TSB_SOURCE_POSITION_OFFSET = 4
     private const val SHB_SOURCE_POSITION_OFFSET = 0
     private const val LONG_POSITION_VECTOR_LATITUDE_OFFSET = 12
     private const val LONG_POSITION_VECTOR_LONGITUDE_OFFSET = 16
+    private const val LONG_POSITION_VECTOR_LEN = 24
+
+    // GN_ADDR: M (1 bit), station type (5 bits), reserved (10 bits), MID (6 octets).
+    private const val GN_ADDR_LEN = 8
+    private const val GN_ADDR_MID_OFFSET = 2
 
     // protocolVersion, signedData, hashId, SignedDataPayload presence, protocolVersion, unsecuredData.
     private const val SIGNED_UNSECURED_DATA_PREFIX_LEN = 6
