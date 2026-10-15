@@ -1,42 +1,127 @@
+<!--
+    Launcher foreground: the logo by tsubotitsch (images/app-icon.svg) without its background tile and
+    the C-ITS wordmark. The paths keep the 512 px coordinates of the logo.
+
+    Bounding circle of the artwork, strokes included: centre (264.5, 236), radius 170.6.
+    Across, it reaches from the outer edge of the ring (255.94 - 130 - 64/2 = 93.9; the arc end points
+    put the ring centre at 255.94) to the outer signal arc (322 + 104 + 18/2 = 435). Up and down,
+    the ring spans 74 to 398. The group moves the centre of that circle to the canvas centre
+    (54, 54) and scales it by 0.19 to a radius of 32.4 dp, inside the 33 dp radius of the
+    adaptive icon safe zone.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
 
-    <path
-        android:fillColor="#0F766E"
-        android:pathData="M54,54m-42,0a42,42 0,1 1,84 0a42,42 0,1 1,-84 0" />
+    <group
+        android:pivotX="264.5"
+        android:pivotY="236"
+        android:scaleX="0.19"
+        android:scaleY="0.19"
+        android:translateX="-210.5"
+        android:translateY="-182">
 
-    <path
-        android:fillColor="#14B8A6"
-        android:pathData="M54,20m-9,0a9,9 0,1 1,18 0a9,9 0,1 1,-18 0" />
+        <!-- The C as a ring road, open 58 degrees above and below the signal. -->
+        <path
+            android:strokeColor="#1D2A48"
+            android:strokeWidth="64"
+            android:strokeLineCap="round"
+            android:pathData="M324.9 346.2 A130 130 0 1 1 324.9 125.8" />
 
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#CCFBF1"
-        android:strokeWidth="5"
-        android:strokeLineCap="round"
-        android:strokeLineJoin="round"
-        android:pathData="M54,29L54,78M41,88L54,58L67,88M43,69L65,69M38,88L70,88" />
+        <!--
+            Dashed centre line of the ring: 22 px dashes with 20 px gaps from the start of the arc, the last
+            one cut short at its end. Vector drawables have no stroke dashes, so each dash is its own arc.
+        -->
+        <path
+            android:strokeColor="#E8EEF9"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M324.9,346.2 A130,130 0 0,1 305.4,356.2" />
+        <path
+            android:strokeColor="#E8EEF9"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M286.3,362.4 A130,130 0 0,1 264.6,365.7" />
+        <path
+            android:strokeColor="#E8EEF9"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M244.6,365.5 A130,130 0 0,1 223.0,361.8" />
+        <path
+            android:strokeColor="#E8EEF9"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M204.1,355.2 A130,130 0 0,1 184.8,344.8" />
+        <path
+            android:strokeColor="#E8EEF9"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M168.9,332.6 A130,130 0 0,1 153.9,316.6" />
+        <path
+            android:strokeColor="#E8EEF9"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M142.8,300.0 A130,130 0 0,1 133.6,280.0" />
+        <path
+            android:strokeColor="#E8EEF9"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M128.3,260.7 A130,130 0 0,1 126.0,238.9" />
+        <path
+            android:strokeColor="#E8EEF9"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M127.1,218.9 A130,130 0 0,1 131.8,197.5" />
+        <path
+            android:strokeColor="#E8EEF9"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M139.1,178.9 A130,130 0 0,1 150.4,160.1" />
+        <path
+            android:strokeColor="#E8EEF9"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M163.3,144.8 A130,130 0 0,1 180.0,130.5" />
+        <path
+            android:strokeColor="#E8EEF9"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M197.1,120.1 A130,130 0 0,1 217.4,111.8" />
+        <path
+            android:strokeColor="#E8EEF9"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M236.9,107.4 A130,130 0 0,1 258.8,106.0" />
+        <path
+            android:strokeColor="#E8EEF9"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M278.7,108.0 A130,130 0 0,1 299.9,113.7" />
+        <path
+            android:strokeColor="#E8EEF9"
+            android:strokeWidth="6"
+            android:strokeLineCap="round"
+            android:pathData="M318.2,121.9 A130,130 0 0,1 324.9,125.8" />
 
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#FBBF24"
-        android:strokeWidth="5"
-        android:strokeLineCap="round"
-        android:pathData="M42,37q12,-10 24,0M33,28q21,-18 42,0" />
-
-    <path
-        android:fillColor="#FFFFFF"
-        android:fillAlpha="0.95"
-        android:pathData="M54,20m-5,0a5,5 0,1 1,10 0a5,5 0,1 1,-10 0" />
-
-    <path
-        android:fillColor="#00000000"
-        android:strokeColor="#FFFFFF"
-        android:strokeAlpha="0.52"
-        android:strokeWidth="3"
-        android:strokeLineCap="round"
-        android:pathData="M28,43q26,-22 52,0" />
+        <!-- Signal: two waves and the dot they come from. -->
+        <path
+            android:strokeColor="#2DD4C0"
+            android:strokeWidth="18"
+            android:strokeLineCap="round"
+            android:pathData="M372.4 196.6 A64 64 0 0 1 372.4 275.4" />
+        <path
+            android:strokeColor="#2DD4C0"
+            android:strokeAlpha="0.6"
+            android:strokeWidth="18"
+            android:strokeLineCap="round"
+            android:pathData="M403.9 172.0 A104 104 0 0 1 403.9 300.0" />
+        <path
+            android:fillColor="#2DD4C0"
+            android:pathData="M288,236a34,34 0 1,1 68,0a34,34 0 1,1 -68,0" />
+        <path
+            android:fillColor="#0C1321"
+            android:pathData="M310,236a12,12 0 1,1 24,0a12,12 0 1,1 -24,0" />
+    </group>
 </vector>

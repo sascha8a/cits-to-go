@@ -1,6 +1,6 @@
 <resources>
-    <!-- Launcher -->
-    <color name="ic_launcher_background">#083F3A</color>
+    <!-- Launcher: the middle of the icon background gradient, behind the logo on the About page -->
+    <color name="ic_launcher_background">#101A2D</color>
 
     <!-- Primary Brand Colors -->
     <color name="primary">#0F766E</color>

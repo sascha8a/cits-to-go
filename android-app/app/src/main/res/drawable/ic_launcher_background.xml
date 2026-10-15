@@ -1,0 +1,24 @@
+<!--
+    Launcher background: the diagonal gradient of the logo tile in images/app-icon.svg. It runs across the
+    72 dp the launcher shows and keeps its end colours beyond. The launcher mask gives the icon its shape.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="18"
+                android:startY="18"
+                android:endX="90"
+                android:endY="90"
+                android:startColor="#141F38"
+                android:endColor="#0C1321" />
+        </aapt:attr>
+    </path>
+</vector>
