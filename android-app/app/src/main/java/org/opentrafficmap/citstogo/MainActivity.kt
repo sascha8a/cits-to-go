@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.hardware.Sensor
@@ -47,6 +48,7 @@ import org.opentrafficmap.citstogo.bridge.BleDebugParameters
 import org.opentrafficmap.citstogo.bridge.BridgeStatus
 import org.opentrafficmap.citstogo.bridge.CitsBridgeService
 import org.opentrafficmap.citstogo.bridge.ConnectionMode
+import org.opentrafficmap.citstogo.cam.VehicleDimensions
 import org.opentrafficmap.citstogo.flashing.CodebergReleaseClient
 import org.opentrafficmap.citstogo.flashing.Esp32RomFlasher
 import org.opentrafficmap.citstogo.flashing.EspFlashTransport
@@ -108,6 +110,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var mapHistoryDays by mutableStateOf(MapHistoryDays.ALL)
     private var currentPosition by mutableStateOf<DevicePosition?>(null)
     private var sremProfile by mutableStateOf(SremProfile.PEDESTRIAN)
+    private var vehicleDimensions by mutableStateOf<Map<SremProfile, VehicleDimensions>>(emptyMap())
     private var camIntervalMs by mutableStateOf(CitsBridgeService.DEFAULT_CAM_INTERVAL_MS.toString())
     private var camRandomizationEnabled by mutableStateOf(true)
     private var camRandomizationIntervalSeconds by mutableStateOf(
@@ -387,6 +390,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 )
             },
         )
+        vehicleDimensions = SremProfile.entries.associateWith { loadVehicleDimensions(prefs, it) }
         camIntervalMs = prefs.getInt(
             CitsBridgeService.PREF_CAM_INTERVAL_MS,
             CitsBridgeService.DEFAULT_CAM_INTERVAL_MS,
@@ -488,6 +492,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     sremProfile = sremProfile,
                     onSremProfileChange = { sremProfile = it },
                     onSelectVehicleProfile = ::selectVehicleProfile,
+                    vehicleDimensions = vehicleDimensions,
+                    onSaveVehicleDimensions = ::saveVehicleDimensions,
                     txApproved = txApproved,
                     debugMenuEnabled = debugMenuEnabled,
                     onDebugMenuEnabledChange = { enabled ->
@@ -1193,7 +1199,39 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             putExtra(CitsBridgeService.EXTRA_CAM_INTERVAL_MS, interval)
             putExtra(CitsBridgeService.EXTRA_CAM_RANDOMIZE_MAC, camRandomizationEnabled)
             putExtra(CitsBridgeService.EXTRA_CAM_RANDOMIZATION_INTERVAL_MS, randomizationIntervalMs)
+            val dimensions = dimensionsOf(sremProfile)
+            putExtra(CitsBridgeService.EXTRA_CAM_VEHICLE_LENGTH_DM, dimensions.lengthDm ?: 0)
+            putExtra(CitsBridgeService.EXTRA_CAM_VEHICLE_WIDTH_DM, dimensions.widthDm ?: 0)
+            putExtra(CitsBridgeService.EXTRA_CAM_TRAILER, dimensions.trailer.code)
         }
+    }
+
+    /** The size CAMs of [profile] carry: its stored or default dimensions, none for pedestrians and cyclists. */
+    private fun dimensionsOf(profile: SremProfile): VehicleDimensions = when {
+        !VehicleDimensions.applies(profile) -> VehicleDimensions.UNAVAILABLE
+        else -> vehicleDimensions[profile] ?: VehicleDimensions.defaults(profile)
+    }
+
+    private fun loadVehicleDimensions(prefs: SharedPreferences, profile: SremProfile): VehicleDimensions {
+        val code = profile.preferenceCode
+        if (!prefs.contains(PREF_VEHICLE_LENGTH_DM_PREFIX + code)) return VehicleDimensions.defaults(profile)
+        return VehicleDimensions(
+            lengthDm = prefs.getInt(PREF_VEHICLE_LENGTH_DM_PREFIX + code, 0).takeIf { it > 0 },
+            widthDm = prefs.getInt(PREF_VEHICLE_WIDTH_DM_PREFIX + code, 0).takeIf { it > 0 },
+            trailer = VehicleDimensions.Trailer.fromCode(prefs.getInt(PREF_VEHICLE_TRAILER_PREFIX + code, 0)),
+        )
+    }
+
+    /** Stores the size of [profile]; a running CAM broadcast of that profile takes it over at once. */
+    private fun saveVehicleDimensions(profile: SremProfile, dimensions: VehicleDimensions) {
+        vehicleDimensions = vehicleDimensions + (profile to dimensions)
+        val code = profile.preferenceCode
+        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+            .putInt(PREF_VEHICLE_LENGTH_DM_PREFIX + code, dimensions.lengthDm ?: 0)
+            .putInt(PREF_VEHICLE_WIDTH_DM_PREFIX + code, dimensions.widthDm ?: 0)
+            .putInt(PREF_VEHICLE_TRAILER_PREFIX + code, dimensions.trailer.code)
+            .apply()
+        if (profile == sremProfile && status.camEnabled) configureCam(true)
     }
 
     /** A profile picked outside the settings is stored at once, and a running CAM broadcast switches to it. */
@@ -1545,6 +1583,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         private const val PREF_MAP_STATION_TIMEOUT_S = "map_station_timeout_s"
         private const val PREF_MAP_HISTORY_SHOWN = "map_history_shown"
         private const val PREF_MAP_HISTORY_DAYS = "map_history_days"
+        private const val PREF_VEHICLE_LENGTH_DM_PREFIX = "vehicle_length_dm_"
+        private const val PREF_VEHICLE_WIDTH_DM_PREFIX = "vehicle_width_dm_"
+        private const val PREF_VEHICLE_TRAILER_PREFIX = "vehicle_trailer_"
         private const val INTERSECTION_LOCATION_MIN_TIME_MS = 500L
         private const val TX_SHAKE_THRESHOLD_G = 2.7f
         private const val TX_SHAKE_COOLDOWN_MS = 1_200L

@@ -37,8 +37,9 @@ object ItsG5FrameBuilder {
         position: CamPosition,
         nowUnixMs: Long,
         counters: SequenceCounters,
+        dimensions: VehicleDimensions = VehicleDimensions.UNAVAILABLE,
     ): ByteArray {
-        val cam = CamUperEncoder.encode(identity, stationType, position, nowUnixMs)
+        val cam = CamUperEncoder.encode(identity, stationType, position, nowUnixMs, dimensions)
         return shbFrame(
             btpDestinationPort = CAM_PORT,
             payload = cam,

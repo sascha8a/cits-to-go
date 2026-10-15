@@ -102,6 +102,8 @@ class TxApprovalUiTest {
                 maxQueueAgeSeconds = "0.2",
                 mapStationTimeoutSeconds = MapStationTimeout.DEFAULT_SECONDS,
                 mapHistoryDays = MapHistoryDays.ALL,
+                vehicleDimensions = emptyMap(),
+                onSaveVehicleDimensions = { _, _ -> },
                 txApproved = txApproved,
                 sremProfile = SremProfile.PEDESTRIAN,
                 bridgeRunning = false,

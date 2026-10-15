@@ -8,6 +8,7 @@ import org.opentrafficmap.citstogo.FirmwareFlashingState
 import org.opentrafficmap.citstogo.FlashingPage
 import org.opentrafficmap.citstogo.flashing.FirmwareFlashLogEntry
 import org.opentrafficmap.citstogo.flashing.FirmwareRelease
+import org.opentrafficmap.citstogo.cam.VehicleDimensions
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
 import org.opentrafficmap.citstogo.livemap.LiveMapSnapshot
 import org.opentrafficmap.citstogo.IntersectionSortMode
@@ -251,6 +252,8 @@ fun CitsApp(
     sremProfile: SremProfile,
     onSremProfileChange: (SremProfile) -> Unit,
     onSelectVehicleProfile: (SremProfile) -> Unit,
+    vehicleDimensions: Map<SremProfile, VehicleDimensions>,
+    onSaveVehicleDimensions: (SremProfile, VehicleDimensions) -> Unit,
     txApproved: Boolean,
     debugMenuEnabled: Boolean,
     onDebugMenuEnabledChange: (Boolean) -> Unit,
@@ -542,6 +545,8 @@ fun CitsApp(
                             maxQueueAgeSeconds = maxQueueAgeSeconds,
                             mapStationTimeoutSeconds = mapStationTimeoutSeconds,
                             mapHistoryDays = mapHistoryDays,
+                            vehicleDimensions = vehicleDimensions,
+                            onSaveVehicleDimensions = onSaveVehicleDimensions,
                             txApproved = txApproved,
                             sremProfile = sremProfile,
                             bridgeRunning = status.running,

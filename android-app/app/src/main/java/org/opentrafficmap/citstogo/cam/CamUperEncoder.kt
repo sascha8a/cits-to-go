@@ -151,6 +151,7 @@ object CamUperEncoder {
         stationType: StationType,
         position: CamPosition,
         nowUnixMs: Long,
+        dimensions: VehicleDimensions = VehicleDimensions.UNAVAILABLE,
     ): ByteArray {
         val out = UperBitWriter()
 
@@ -176,7 +177,7 @@ object CamUperEncoder {
         out.bit(false)
         val rsu = stationType == StationType.ROAD_SIDE_UNIT
         out.bit(rsu)
-        if (rsu) writeRsuHighFrequency(out) else writeVehicleHighFrequency(out, position)
+        if (rsu) writeRsuHighFrequency(out) else writeVehicleHighFrequency(out, position, dimensions)
 
         return out.toByteArray()
     }
@@ -191,16 +192,16 @@ object CamUperEncoder {
         out.constrained(p.altitudeConfidence.toLong(), 0, 15)
     }
 
-    private fun writeVehicleHighFrequency(out: UperBitWriter, p: CamPosition) {
+    private fun writeVehicleHighFrequency(out: UperBitWriter, p: CamPosition, dimensions: VehicleDimensions) {
         repeat(7) { out.bit(false) } // All optional sensor/vehicle fields unavailable.
         out.constrained(p.heading.toLong(), 0, 3_601)
         out.constrained(p.headingConfidence.toLong(), 1, 127)
         out.constrained(p.speedCms.toLong(), 0, 16_383)
         out.constrained(p.speedConfidence.toLong(), 1, 127)
         out.constrained((if (p.speedCms == 16_383) 2 else 0).toLong(), 0, 2) // DriveDirection.
-        out.constrained(1_023, 1, 1_023) // VehicleLengthValue unavailable.
-        out.constrained(4, 0, 4) // VehicleLengthConfidence unavailable.
-        out.constrained(62, 1, 62) // VehicleWidth unavailable.
+        out.constrained(dimensions.lengthValue.toLong(), 1, 1_023) // VehicleLengthValue, 1023 unavailable.
+        out.constrained(dimensions.lengthConfidenceIndication.toLong(), 0, 4) // VehicleLengthConfidenceIndication.
+        out.constrained(dimensions.widthValue.toLong(), 1, 62) // VehicleWidth, 62 unavailable.
         out.constrained(161, -160, 161) // LongitudinalAcceleration unavailable.
         out.constrained(102, 0, 102)
         out.constrained(1_023, -1_023, 1_023) // Curvature unavailable.

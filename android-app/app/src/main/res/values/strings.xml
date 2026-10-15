@@ -45,6 +45,14 @@
     <string name="vehicle_profile_hint">Used for CAM broadcasts and SREM requests. A change applies at once, also while broadcasting.</string>
     <string name="vehicle_profile_cam_on">CAM broadcast on</string>
     <string name="vehicle_profile_cam_off">CAM broadcast off</string>
+    <string name="vehicle_length_label">Length</string>
+    <string name="vehicle_width_label">Width</string>
+    <string name="vehicle_size_suffix">m</string>
+    <string name="vehicle_dimensions_supporting">Sent in every CAM of this profile. Leave a field empty to send it as unavailable.</string>
+    <string name="vehicle_dimensions_not_applicable">Pedestrians and cyclists send no vehicle size in a CAM.</string>
+    <string name="vehicle_trailer_none">No trailer</string>
+    <string name="vehicle_trailer_known_length">Trailer, included in the length</string>
+    <string name="vehicle_trailer_unknown_length">Trailer of unknown length</string>
 
     <!-- Map -->
     <string name="map_history_show">Show road side units heard before</string>

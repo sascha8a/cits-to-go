@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -58,12 +59,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import org.opentrafficmap.citstogo.cam.VehicleDimensions
 import org.opentrafficmap.citstogo.livemap.LiveMapModel
 import org.opentrafficmap.citstogo.livemap.MapHistoryDays
 import org.opentrafficmap.citstogo.livemap.MapStationTimeout
@@ -97,6 +100,8 @@ fun SettingsPage(
     onAppUpdateNotificationChange: (Boolean) -> Unit,
     onEnrollBluetooth: () -> Unit,
     onRevokeTxApproval: () -> Unit,
+    vehicleDimensions: Map<SremProfile, VehicleDimensions>,
+    onSaveVehicleDimensions: (SremProfile, VehicleDimensions) -> Unit,
     onSave: (String, String, String, String, SremProfile, String, String) -> Unit,
 ) {
     val context = LocalContext.current
@@ -105,6 +110,15 @@ fun SettingsPage(
     var draftMaxQueueLength by rememberSaveable(maxQueueLength) { mutableStateOf(maxQueueLength) }
     var draftMaxQueueAgeSeconds by rememberSaveable(maxQueueAgeSeconds) { mutableStateOf(maxQueueAgeSeconds) }
     var draftSremProfile by rememberSaveable(sremProfile) { mutableStateOf(sremProfile) }
+    // The size fields show the stored size of the profile the carousel shows; another profile starts from its own.
+    val storedDimensions = vehicleDimensions[draftSremProfile] ?: VehicleDimensions.defaults(draftSremProfile)
+    var draftLength by rememberSaveable(draftSremProfile, storedDimensions) {
+        mutableStateOf(VehicleDimensions.formatMeters(storedDimensions.lengthDm))
+    }
+    var draftWidth by rememberSaveable(draftSremProfile, storedDimensions) {
+        mutableStateOf(VehicleDimensions.formatMeters(storedDimensions.widthDm))
+    }
+    var draftTrailer by rememberSaveable(draftSremProfile, storedDimensions) { mutableStateOf(storedDimensions.trailer) }
     var draftMapStationTimeoutSeconds by rememberSaveable(mapStationTimeoutSeconds) {
         mutableStateOf(mapStationTimeoutSeconds.toString())
     }
@@ -133,6 +147,12 @@ fun SettingsPage(
         VehicleTypeCard(
             sremProfile = draftSremProfile,
             onSremProfileChange = { draftSremProfile = it },
+            length = draftLength,
+            onLengthChange = { draftLength = it },
+            width = draftWidth,
+            onWidthChange = { draftWidth = it },
+            trailer = draftTrailer,
+            onTrailerChange = { draftTrailer = it },
         )
 
         MapCard(
@@ -185,6 +205,16 @@ fun SettingsPage(
                     draftMapStationTimeoutSeconds,
                     draftMapHistoryDays,
                 )
+                if (VehicleDimensions.applies(draftSremProfile)) {
+                    onSaveVehicleDimensions(
+                        draftSremProfile,
+                        VehicleDimensions(
+                            lengthDm = VehicleDimensions.parseMeters(draftLength, VehicleDimensions.MAX_LENGTH_DM),
+                            widthDm = VehicleDimensions.parseMeters(draftWidth, VehicleDimensions.MAX_WIDTH_DM),
+                            trailer = draftTrailer,
+                        ),
+                    )
+                }
             },
             modifier = Modifier
                 .fillMaxWidth()
@@ -368,6 +398,12 @@ private fun MqttCard(
 private fun VehicleTypeCard(
     sremProfile: SremProfile,
     onSremProfileChange: (SremProfile) -> Unit,
+    length: String,
+    onLengthChange: (String) -> Unit,
+    width: String,
+    onWidthChange: (String) -> Unit,
+    trailer: VehicleDimensions.Trailer,
+    onTrailerChange: (VehicleDimensions.Trailer) -> Unit,
 ) {
     val context = LocalContext.current
 
@@ -488,10 +524,90 @@ private fun VehicleTypeCard(
                     )
                 }
             }
+
+            if (VehicleDimensions.applies(sremProfile)) {
+                VehicleDimensionsFields(
+                    length = length,
+                    onLengthChange = onLengthChange,
+                    width = width,
+                    onWidthChange = onWidthChange,
+                    trailer = trailer,
+                    onTrailerChange = onTrailerChange,
+                )
+            } else {
+                Text(
+                    stringResource(R.string.vehicle_dimensions_not_applicable),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
+                )
+            }
         }
     }
 }
 
+/** Length, width and trailer of a vehicle profile, as its CAMs carry them. */
+@Composable
+private fun VehicleDimensionsFields(
+    length: String,
+    onLengthChange: (String) -> Unit,
+    width: String,
+    onWidthChange: (String) -> Unit,
+    trailer: VehicleDimensions.Trailer,
+    onTrailerChange: (VehicleDimensions.Trailer) -> Unit,
+) {
+    val context = LocalContext.current
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            OutlinedTextField(
+                value = length,
+                onValueChange = onLengthChange,
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                label = { Text(stringResource(R.string.vehicle_length_label)) },
+                suffix = { Text(stringResource(R.string.vehicle_size_suffix)) },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            )
+            OutlinedTextField(
+                value = width,
+                onValueChange = onWidthChange,
+                modifier = Modifier.weight(1f),
+                singleLine = true,
+                label = { Text(stringResource(R.string.vehicle_width_label)) },
+                suffix = { Text(stringResource(R.string.vehicle_size_suffix)) },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            )
+        }
+        Text(
+            stringResource(R.string.vehicle_dimensions_supporting),
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
+        )
+        listOf(
+            VehicleDimensions.Trailer.NONE to R.string.vehicle_trailer_none,
+            VehicleDimensions.Trailer.KNOWN_LENGTH to R.string.vehicle_trailer_known_length,
+            VehicleDimensions.Trailer.UNKNOWN_LENGTH to R.string.vehicle_trailer_unknown_length,
+        ).forEach { (option, label) ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .selectable(
+                        selected = trailer == option,
+                        role = Role.RadioButton,
+                        onClick = { onTrailerChange(option) },
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                RadioButton(selected = trailer == option, onClick = null)
+                Text(
+                    stringResource(label),
+                    modifier = Modifier.padding(start = 8.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color(ContextCompat.getColor(context, R.color.on_surface)),
+                )
+            }
+        }
+    }
+}
 @Composable
 private fun MapCard(
     stationTimeoutSeconds: String,

@@ -43,8 +43,12 @@ CAM page):
 - Heading uses 0.1 degree and speed uses centimetres per second.
 - Android horizontal, vertical, bearing, and speed accuracy values are mapped
   to the corresponding confidence fields.
-- Sensor and vehicle-size values unavailable from Android are encoded using
-  their standardized unavailable values.
+- Sensor values unavailable from Android are encoded using their standardized
+  unavailable values.
+- Vehicle length, width and trailer come from the vehicle profile
+  (**Settings → Vehicle Type**, stored per profile; defaults from issue #11,
+  e.g. 4.5 × 1.8 m for a passenger car). An empty field, and every
+  pedestrian or cyclist profile, sends the unavailable values.
 - A position older than five seconds is not advertised; CAM broadcast waits
   until a fresh phone location is available.
 - RSU uses `RSUContainerHighFrequency`; all other selectable station types use

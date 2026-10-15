@@ -30,6 +30,7 @@ import org.opentrafficmap.citstogo.cam.CamIdentity
 import org.opentrafficmap.citstogo.cam.CamPosition
 import org.opentrafficmap.citstogo.cam.ItsG5FrameBuilder
 import org.opentrafficmap.citstogo.cam.StationType
+import org.opentrafficmap.citstogo.cam.VehicleDimensions
 import org.opentrafficmap.citstogo.cam.randomizedCamIdentity
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
@@ -116,6 +117,7 @@ class CitsBridgeService : Service() {
     private var camIntervalMs = DEFAULT_CAM_INTERVAL_MS
     private var camMacRandomizationEnabled = true
     private var camRandomizationIntervalMs = DEFAULT_CAM_RANDOMIZATION_INTERVAL_MS
+    private var camVehicleDimensions = VehicleDimensions.UNAVAILABLE
     private var lastCamIdentityRotationElapsedMs = 0L
     private var lastCamGeneratedElapsedMs = 0L
     private var lastCamLocation: Location? = null
@@ -214,6 +216,7 @@ class CitsBridgeService : Service() {
                 CamPosition.fromLocation(sampledLocation),
                 referenceTimeMs,
                 camSequenceCounters,
+                camVehicleDimensions,
             )
             if (queueTransmit(packet, TxKind.Cam)) {
                 lastCamGeneratedElapsedMs = elapsedMs
@@ -336,6 +339,11 @@ class CitsBridgeService : Service() {
                 intent.getIntExtra(EXTRA_CAM_INTERVAL_MS, DEFAULT_CAM_INTERVAL_MS),
                 intent.getBooleanExtra(EXTRA_CAM_RANDOMIZE_MAC, camMacRandomizationEnabled),
                 intent.getIntExtra(EXTRA_CAM_RANDOMIZATION_INTERVAL_MS, camRandomizationIntervalMs),
+                VehicleDimensions(
+                    lengthDm = intent.getIntExtra(EXTRA_CAM_VEHICLE_LENGTH_DM, 0).takeIf { it > 0 },
+                    widthDm = intent.getIntExtra(EXTRA_CAM_VEHICLE_WIDTH_DM, 0).takeIf { it > 0 },
+                    trailer = VehicleDimensions.Trailer.fromCode(intent.getIntExtra(EXTRA_CAM_TRAILER, 0)),
+                ),
             )
             ACTION_SEND_SREM -> sendSrem(intent)
             ACTION_REVOKE_TX_APPROVAL -> revokeTxApproval()
@@ -426,7 +434,14 @@ class CitsBridgeService : Service() {
     private fun stopBridge() {
         connectionWanted = false
         mqttEnabled = false
-        configureCam(false, camStationType, camIntervalMs, camMacRandomizationEnabled, camRandomizationIntervalMs)
+        configureCam(
+            false,
+            camStationType,
+            camIntervalMs,
+            camMacRandomizationEnabled,
+            camRandomizationIntervalMs,
+            camVehicleDimensions,
+        )
         closeSerial("Connection stopped")
         runCatching { mqttClient.close() }
         stopPcap(log = false)
@@ -1047,6 +1062,7 @@ class CitsBridgeService : Service() {
         requestedIntervalMs: Int,
         randomizeIdentity: Boolean,
         requestedRandomizationIntervalMs: Int,
+        dimensions: VehicleDimensions,
     ) {
         if (enabled && !hasTxApproval()) {
             camEnabled = false
@@ -1062,9 +1078,13 @@ class CitsBridgeService : Service() {
         camMacRandomizationEnabled = randomizeIdentity
         camRandomizationIntervalMs = requestedRandomizationIntervalMs
             .coerceIn(MIN_CAM_RANDOMIZATION_INTERVAL_MS, MAX_CAM_RANDOMIZATION_INTERVAL_MS)
+        camVehicleDimensions = dimensions
         camEnabled = enabled
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
             .putBoolean(PREF_CAM_ENABLED, camEnabled)
+            .putInt(PREF_CAM_VEHICLE_LENGTH_DM, dimensions.lengthDm ?: 0)
+            .putInt(PREF_CAM_VEHICLE_WIDTH_DM, dimensions.widthDm ?: 0)
+            .putInt(PREF_CAM_TRAILER, dimensions.trailer.code)
             .putInt(PREF_VEHICLE_TYPE, camStationType.code)
             .putInt(PREF_CAM_INTERVAL_MS, camIntervalMs)
             .putBoolean(PREF_CAM_RANDOMIZE_MAC, camMacRandomizationEnabled)
@@ -1726,6 +1746,11 @@ class CitsBridgeService : Service() {
         camRandomizationIntervalMs = prefs
             .getInt(PREF_CAM_RANDOMIZATION_INTERVAL_MS, DEFAULT_CAM_RANDOMIZATION_INTERVAL_MS)
             .coerceIn(MIN_CAM_RANDOMIZATION_INTERVAL_MS, MAX_CAM_RANDOMIZATION_INTERVAL_MS)
+        camVehicleDimensions = VehicleDimensions(
+            lengthDm = prefs.getInt(PREF_CAM_VEHICLE_LENGTH_DM, 0).takeIf { it > 0 },
+            widthDm = prefs.getInt(PREF_CAM_VEHICLE_WIDTH_DM, 0).takeIf { it > 0 },
+            trailer = VehicleDimensions.Trailer.fromCode(prefs.getInt(PREF_CAM_TRAILER, 0)),
+        )
         // Never resume RF transmission merely because the process was recreated.
         camEnabled = false
     }
@@ -1860,6 +1885,9 @@ class CitsBridgeService : Service() {
         const val EXTRA_CAM_INTERVAL_MS = "camIntervalMs"
         const val EXTRA_CAM_RANDOMIZE_MAC = "camRandomizeMac"
         const val EXTRA_CAM_RANDOMIZATION_INTERVAL_MS = "camRandomizationIntervalMs"
+        const val EXTRA_CAM_VEHICLE_LENGTH_DM = "camVehicleLengthDm"
+        const val EXTRA_CAM_VEHICLE_WIDTH_DM = "camVehicleWidthDm"
+        const val EXTRA_CAM_TRAILER = "camTrailer"
         const val EXTRA_SREM_STATE = "sremState"
         const val EXTRA_SREM_SUMMARY = "sremSummary"
         const val EXTRA_SREM_REQUEST_ID = "sremRequestId"
@@ -1901,6 +1929,9 @@ class CitsBridgeService : Service() {
         const val PREF_CAM_INTERVAL_MS = "cam_interval_ms"
         const val PREF_CAM_RANDOMIZE_MAC = "cam_randomize_mac"
         const val PREF_CAM_RANDOMIZATION_INTERVAL_MS = "cam_randomization_interval_ms"
+        const val PREF_CAM_VEHICLE_LENGTH_DM = "cam_vehicle_length_dm"
+        const val PREF_CAM_VEHICLE_WIDTH_DM = "cam_vehicle_width_dm"
+        const val PREF_CAM_TRAILER = "cam_trailer"
         const val PREF_CAM_STATION_ID = "cam_station_id"
         const val PREF_CAM_MAC = "cam_mac"
         const val PREF_SREM_PROFILE = "srem_profile"
