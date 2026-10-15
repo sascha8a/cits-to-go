@@ -14,7 +14,7 @@ status broadcast publishStatus() → EXTRA_LIVE_MAP_SNAPSHOT and EXTRA_ROAD_SIDE
 activity         MainActivity keeps the last LiveMapSnapshot and road side units
 Map page         every second while resumed: LiveMapModel.build(snapshot, now, station timeout),
                      with the history button on also RoadSideUnitHistory.build(road side units, now, days)
-                     → LiveMapFeatures → GeoJsonSource "roadSideUnits" / "stations" / "denms"
+                     → LiveMapFeatures → GeoJsonSource "roadSideUnits" / "stations" / "denms" / "focus"
                      → SymbolLayer with MapIcons
 ```
 
@@ -29,8 +29,10 @@ Map page         every second while resumed: LiveMapModel.build(snapshot, now, s
 - **Model** (`livemap/LiveMapModel.kt`) is plain Kotlin: from a snapshot, the current time and the station timeout
   it computes what is visible, in display units, with labels (`StationTypes`, `DenmCauses`) and icon names.
 - **Layers** (`livemap/LiveMapLayers.kt`) turn the model into GeoJSON features (`LiveMapFeatures`, covered by JVM
-  tests) and add three sources and symbol layers to the style: road side units from history at the bottom, stations
-  above them, DENMs on top. `livemap/MapIcons.kt` draws the icons with an Android `Canvas` for the screen density.
+  tests) and add four sources and five symbol layers to the style, from the bottom: road side units from history, the
+  heading pointers of the stations, the station circles, DENMs, and the pin of a station opened from the Discovered
+  Stations page; MapLibre's own position stays on top. `livemap/MapIcons.kt` draws the icons with an Android
+  `Canvas` for the screen density.
 - **Page** (`MapPage.kt`) hosts a MapLibre `MapView` in an `AndroidView` and forwards the activity lifecycle to it.
 
 The own position comes from the location listener of `MainActivity`, the same one Intersection View uses. It runs
@@ -90,8 +92,10 @@ DENM events have no timeout of their own: they show until they expire or are ter
 
 ## Display
 
-- **Stations** are arrows along the heading of their last CAM, or dots without a heading, coloured by station type:
-  car, truck or bus, tram, cyclist and other vulnerable road users, special vehicle, road side unit, unknown. Stale
+- **Stations** are circles coloured by station type, with a white pictogram: car, truck or bus, tram, pedestrian for
+  cyclists and other vulnerable road users, warning light for special vehicles, mast for road side units, question
+  mark for unknown types. A pointer on the edge of the circle shows the heading of the last CAM; without a heading
+  there is none. The pictogram stays upright, unlike an arrow that could be taken for the own position. Stale
   stations turn grey and translucent.
 - **DENM events** are warning signs at the event position, with icons for traffic jams (causes 1 and 27), accidents
   (2), roadworks (3), stationary vehicles (91–94) and emergencies (15 and 95), and a general hazard sign for all other
@@ -159,11 +163,13 @@ adb push excerpt.pcap /sdcard/Download/
 
 Then open **Home → Replay PCAP**, choose the file and switch to **Map**. Check:
 
-- stations appear, turn grey after 3 s without a CAM and disappear after the station timeout,
+- stations appear with the pictogram of their type and a pointer along their heading (none without one), which stays
+  right when the map is rotated or tilted; they turn grey after 3 s without a CAM and disappear after the station
+  timeout,
 - DENM events disappear when they expire,
 - follow, tapping markers, and the detail card,
 - the map stays where it was after switching pages, and switches to the dark style with the app theme,
-- nothing renders or refreshes while the app is in the background.
+- nothing renders or refreshes while the app is in the background,
 - a double tap on a position on the Discovered Stations page opens the map there with a pin (or, for a road side
   unit, with the history on) and the card of the station; closing the card removes the pin,
 - with the history button on, the road side units of the capture appear and stay after the replay ends; tapping one

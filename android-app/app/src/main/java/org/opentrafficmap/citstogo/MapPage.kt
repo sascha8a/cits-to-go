@@ -203,6 +203,7 @@ fun MapPage(
                         loadedMap.projection.toScreenLocation(point),
                         LiveMapLayers.FOCUS,
                         LiveMapLayers.STATIONS,
+                        LiveMapLayers.STATION_POINTERS,
                         LiveMapLayers.DENMS,
                         LiveMapLayers.ROAD_SIDE_UNITS,
                     )

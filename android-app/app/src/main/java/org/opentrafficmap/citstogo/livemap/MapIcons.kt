@@ -6,21 +6,24 @@ import android.graphics.Canvas
 import android.graphics.CornerPathEffect
 import android.graphics.Paint
 import android.graphics.Path
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import kotlin.math.roundToInt
 import org.maplibre.android.maps.Style
 
 /**
- * The marker icons of the live map, drawn for the screen density. Stations are arrows along their heading or dots,
- * coloured by [StationIconGroup], each with a grey variant for stale markers. DENMs are warning signs by
+ * The marker icons of the live map, drawn for the screen density. Stations are circles with a pictogram, coloured by
+ * [StationIconGroup], with a pointer along their heading; both have a grey variant for stale markers. DENMs are warning signs by
  * [DenmIconGroup]. Road side units from history are a traffic light or a mast with radio waves. The white outlines
  * keep them readable on light and dark map styles.
  */
 object MapIcons {
     const val STALE_SUFFIX = "-stale"
+    const val POINTER_SUFFIX = "-pointer"
 
-    private const val ARROW_SIZE_DP = 30f
-    private const val DOT_SIZE_DP = 20f
+    private const val STATION_SIZE_DP = 26f
+    private const val POINTER_SIZE_DP = 42f
     private const val SIGN_SIZE_DP = 34f
     private const val ROAD_SIDE_UNIT_SIZE_DP = 26f
     private const val PIN_SIZE_DP = 38f
@@ -41,10 +44,10 @@ object MapIcons {
         val metrics = context.resources.displayMetrics
         val painter = Painter(metrics.density, metrics.densityDpi)
         StationIconGroup.entries.forEach { group ->
-            for (arrow in listOf(true, false)) {
-                style.addImage(group.icon(arrow), painter.station(arrow, color(group)))
-                style.addImage(group.icon(arrow) + STALE_SUFFIX, painter.station(arrow, STALE))
-            }
+            style.addImage(group.icon, painter.station(group, color(group)))
+            style.addImage(group.icon + STALE_SUFFIX, painter.station(group, STALE))
+            style.addImage(group.icon + POINTER_SUFFIX, painter.pointer(color(group)))
+            style.addImage(group.icon + POINTER_SUFFIX + STALE_SUFFIX, painter.pointer(STALE))
         }
         DenmIconGroup.entries.forEach { style.addImage(it.icon, painter.sign(it)) }
         style.addImage(RoadSideUnitHistory.TRAFFIC_LIGHT_ICON, painter.trafficLight())
@@ -72,20 +75,106 @@ object MapIcons {
         }
         private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL }
 
-        /** An arrow pointing north, which the layer rotates to the heading, or a dot. */
-        fun station(arrow: Boolean, color: Int): Bitmap {
+        /** A circle in [color] with the white pictogram of [group]. */
+        fun station(group: StationIconGroup, color: Int): Bitmap = draw(STATION_SIZE_DP) { size ->
+            val radius = size / 2f - outline.strokeWidth / 2f
+            drawCircle(size / 2f, size / 2f, radius, outline)
             fill.color = color
-            return if (arrow) {
-                draw(ARROW_SIZE_DP) { size ->
-                    val path = polygon(size, 0.5f, 0.1f, 0.84f, 0.86f, 0.5f, 0.68f, 0.16f, 0.86f)
-                    drawPath(path, outline)
-                    drawPath(path, fill)
+            drawCircle(size / 2f, size / 2f, radius, fill)
+            stationPictogram(group, size, color)
+        }
+
+        /**
+         * A pointer on the edge of a station circle, pointing north; the layer turns it to the heading. The bitmap is
+         * larger than the circle and centred on the same point, so the pointer sits just outside it.
+         */
+        fun pointer(color: Int): Bitmap = draw(POINTER_SIZE_DP) { size ->
+            val tip = polygon(size, 0.5f, 0.075f, 0.61f, 0.25f, 0.39f, 0.25f)
+            outline.strokeJoin = Paint.Join.MITER
+            drawPath(tip, outline)
+            outline.strokeJoin = Paint.Join.ROUND
+            fill.color = color
+            drawPath(tip, fill)
+            // Nothing under the circle, so that a translucent stale circle does not show the base of the pointer.
+            val clear = Paint(Paint.ANTI_ALIAS_FLAG).apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
+            drawCircle(size / 2f, size / 2f, STATION_SIZE_DP / 2f * density, clear)
+        }
+
+        private fun Canvas.stationPictogram(group: StationIconGroup, size: Float, background: Int) {
+            fun rect(left: Float, top: Float, right: Float, bottom: Float) =
+                RectF(left * size, top * size, right * size, bottom * size)
+            val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = OUTLINE }
+            val cut = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = background }
+            val line = Paint(white).apply {
+                style = Paint.Style.STROKE
+                strokeCap = Paint.Cap.ROUND
+                strokeJoin = Paint.Join.ROUND
+                strokeWidth = 0.075f * size
+            }
+            val corner = 0.05f * size
+            fun line(vararg points: Float) {
+                val path = Path().apply {
+                    moveTo(points[0] * size, points[1] * size)
+                    for (i in 2 until points.size step 2) lineTo(points[i] * size, points[i + 1] * size)
                 }
-            } else {
-                draw(DOT_SIZE_DP) { size ->
-                    val radius = size / 2f - outline.strokeWidth / 2f
-                    drawCircle(size / 2f, size / 2f, radius, outline)
-                    drawCircle(size / 2f, size / 2f, radius, fill)
+                drawPath(path, line)
+            }
+            when (group) {
+                StationIconGroup.Car -> {
+                    drawPath(polygon(size, 0.33f, 0.48f, 0.4f, 0.34f, 0.6f, 0.34f, 0.67f, 0.48f), white)
+                    drawRoundRect(rect(0.22f, 0.46f, 0.78f, 0.63f), corner, corner, white)
+                    for (x in listOf(0.35f, 0.65f)) {
+                        drawCircle(x * size, 0.64f * size, 0.085f * size, cut)
+                        drawCircle(x * size, 0.64f * size, 0.055f * size, white)
+                    }
+                }
+                StationIconGroup.TruckOrBus -> {
+                    drawRoundRect(rect(0.3f, 0.25f, 0.7f, 0.7f), corner, corner, white)
+                    drawRoundRect(rect(0.35f, 0.31f, 0.65f, 0.48f), corner / 2f, corner / 2f, cut)
+                    drawCircle(0.38f * size, 0.6f * size, 0.04f * size, cut)
+                    drawCircle(0.62f * size, 0.6f * size, 0.04f * size, cut)
+                    drawRect(rect(0.33f, 0.7f, 0.41f, 0.76f), white)
+                    drawRect(rect(0.59f, 0.7f, 0.67f, 0.76f), white)
+                }
+                StationIconGroup.Tram -> {
+                    line(0.4f, 0.26f, 0.5f, 0.19f, 0.6f, 0.26f)
+                    line(0.5f, 0.24f, 0.5f, 0.32f)
+                    drawRoundRect(rect(0.31f, 0.32f, 0.69f, 0.72f), corner * 2f, corner * 2f, white)
+                    drawRoundRect(rect(0.36f, 0.38f, 0.64f, 0.52f), corner / 2f, corner / 2f, cut)
+                    drawCircle(0.5f * size, 0.63f * size, 0.045f * size, cut)
+                }
+                StationIconGroup.VulnerableRoadUser -> {
+                    drawCircle(0.5f * size, 0.26f * size, 0.08f * size, white)
+                    line(0.5f, 0.4f, 0.5f, 0.55f)
+                    line(0.36f, 0.5f, 0.5f, 0.4f, 0.64f, 0.5f)
+                    line(0.4f, 0.74f, 0.5f, 0.55f, 0.6f, 0.74f)
+                }
+                StationIconGroup.SpecialVehicle -> {
+                    drawArc(rect(0.34f, 0.38f, 0.66f, 0.7f), 180f, 180f, true, white)
+                    drawRoundRect(rect(0.28f, 0.56f, 0.72f, 0.68f), corner / 2f, corner / 2f, white)
+                    line(0.5f, 0.2f, 0.5f, 0.28f)
+                    line(0.27f, 0.3f, 0.33f, 0.36f)
+                    line(0.73f, 0.3f, 0.67f, 0.36f)
+                }
+                StationIconGroup.RoadSideUnit -> {
+                    val top = 0.42f
+                    line(0.5f, top, 0.5f, 0.74f)
+                    line(0.38f, 0.74f, 0.62f, 0.74f)
+                    val centerX = 0.5f * size
+                    val centerY = top * size
+                    for (radius in listOf(0.12f * size, 0.22f * size)) {
+                        val waves = RectF(centerX - radius, centerY - radius, centerX + radius, centerY + radius)
+                        drawArc(waves, -45f, 90f, false, line)
+                        drawArc(waves, 135f, 90f, false, line)
+                    }
+                }
+                StationIconGroup.Unknown -> {
+                    val text = Paint(white).apply {
+                        textAlign = Paint.Align.CENTER
+                        textSize = 0.56f * size
+                        isFakeBoldText = true
+                    }
+                    drawText("?", 0.5f * size, 0.5f * size - (text.ascent() + text.descent()) / 2f, text)
                 }
             }
         }

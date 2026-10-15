@@ -20,7 +20,7 @@ class LiveMapFeaturesTest {
         longitude = 16.3691773,
         headingDeg = 135.5,
         speedMps = 13.89,
-        icon = "station-car-arrow",
+        icon = "station-car",
         ageMs = 3_000,
         stale = true,
     )
@@ -61,20 +61,20 @@ class LiveMapFeaturesTest {
         assertEquals("4294967294", feature.id())
         assertEquals(Point.fromLngLat(16.3691773, 48.2024036), feature.geometry())
         assertEquals("4294967294", feature.getStringProperty(LiveMapFeatures.STATION_ID))
-        assertEquals("station-car-arrow", feature.getStringProperty(LiveMapFeatures.ICON))
+        assertEquals("station-car", feature.getStringProperty(LiveMapFeatures.ICON))
         assertEquals(135.5, feature.getNumberProperty(LiveMapFeatures.HEADING).toDouble(), 0.0)
         assertTrue(feature.getBooleanProperty(LiveMapFeatures.STALE))
         assertFalse(feature.hasProperty(LiveMapFeatures.DENM_ID))
     }
 
     @Test
-    fun dotHasNoHeading() {
-        val dot = car.copy(headingDeg = null, icon = "station-car-dot", stale = false)
+    fun stationWithoutHeadingGetsNoPointer() {
+        val noHeading = car.copy(headingDeg = null, stale = false)
 
-        val feature = LiveMapFeatures.stations(listOf(dot)).features()!!.single()
+        val feature = LiveMapFeatures.stations(listOf(noHeading)).features()!!.single()
 
         assertFalse(feature.hasProperty(LiveMapFeatures.HEADING))
-        assertEquals("station-car-dot", feature.getStringProperty(LiveMapFeatures.ICON))
+        assertEquals("station-car", feature.getStringProperty(LiveMapFeatures.ICON))
         assertFalse(feature.getBooleanProperty(LiveMapFeatures.STALE))
     }
 

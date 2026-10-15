@@ -2,10 +2,10 @@ package org.opentrafficmap.citstogo.livemap
 
 import com.google.gson.JsonObject
 import org.maplibre.android.maps.Style
-import org.maplibre.android.style.expressions.Expression.coalesce
 import org.maplibre.android.style.expressions.Expression.concat
 import org.maplibre.android.style.expressions.Expression.eq
 import org.maplibre.android.style.expressions.Expression.get
+import org.maplibre.android.style.expressions.Expression.has
 import org.maplibre.android.style.expressions.Expression.literal
 import org.maplibre.android.style.expressions.Expression.switchCase
 import org.maplibre.android.style.layers.Layer
@@ -15,6 +15,7 @@ import org.maplibre.android.style.layers.PropertyFactory.iconAnchor
 import org.maplibre.android.style.layers.PropertyFactory.iconIgnorePlacement
 import org.maplibre.android.style.layers.PropertyFactory.iconImage
 import org.maplibre.android.style.layers.PropertyFactory.iconOpacity
+import org.maplibre.android.style.layers.PropertyFactory.iconPitchAlignment
 import org.maplibre.android.style.layers.PropertyFactory.iconRotate
 import org.maplibre.android.style.layers.PropertyFactory.iconRotationAlignment
 import org.maplibre.android.style.layers.SymbolLayer
@@ -104,6 +105,7 @@ object LiveMapFeatures {
  */
 object LiveMapLayers {
     const val STATIONS = "stations"
+    const val STATION_POINTERS = "station-pointers"
     const val DENMS = "denms"
     const val ROAD_SIDE_UNITS = "roadSideUnits"
     const val FOCUS = "focus"
@@ -132,18 +134,27 @@ object LiveMapLayers {
                 iconIgnorePlacement(true),
             ),
         )
+        val staleSuffix = switchCase(stale, literal(MapIcons.STALE_SUFFIX), literal(""))
+        val staleOpacity = iconOpacity(switchCase(stale, literal(STALE_OPACITY), literal(1f)))
+        // The pointer turns with the heading below the circle, whose pictogram stays upright.
+        add(
+            SymbolLayer(STATION_POINTERS, STATIONS)
+                .withProperties(
+                    iconImage(concat(get(LiveMapFeatures.ICON), literal(MapIcons.POINTER_SUFFIX), staleSuffix)),
+                    staleOpacity,
+                    iconRotate(get(LiveMapFeatures.HEADING)),
+                    iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP),
+                    // Upright on a tilted map, like the circle; it would hide under it when lying flat.
+                    iconPitchAlignment(Property.ICON_PITCH_ALIGNMENT_VIEWPORT),
+                    iconAllowOverlap(true),
+                    iconIgnorePlacement(true),
+                )
+                .withFilter(has(LiveMapFeatures.HEADING)),
+        )
         add(
             SymbolLayer(STATIONS, STATIONS).withProperties(
-                iconImage(
-                    switchCase(
-                        stale,
-                        concat(get(LiveMapFeatures.ICON), literal(MapIcons.STALE_SUFFIX)),
-                        get(LiveMapFeatures.ICON),
-                    ),
-                ),
-                iconOpacity(switchCase(stale, literal(STALE_OPACITY), literal(1f))),
-                iconRotate(coalesce(get(LiveMapFeatures.HEADING), literal(0f))),
-                iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP),
+                iconImage(concat(get(LiveMapFeatures.ICON), staleSuffix)),
+                staleOpacity,
                 iconAllowOverlap(true),
                 iconIgnorePlacement(true),
             ),

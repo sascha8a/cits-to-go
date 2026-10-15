@@ -1,6 +1,6 @@
 package org.opentrafficmap.citstogo.livemap
 
-/** The station icons of the map, each as an arrow along the heading or as a dot without one. */
+/** The station icons of the map: a circle in the colour of the group with its pictogram. */
 enum class StationIconGroup {
     Car,
     TruckOrBus,
@@ -10,7 +10,7 @@ enum class StationIconGroup {
     RoadSideUnit,
     Unknown;
 
-    fun icon(arrow: Boolean): String = "station-${name.lowercase()}-${if (arrow) "arrow" else "dot"}"
+    val icon: String get() = "station-${name.lowercase()}"
 }
 
 /**

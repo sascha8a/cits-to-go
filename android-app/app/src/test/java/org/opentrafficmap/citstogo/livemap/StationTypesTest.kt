@@ -54,7 +54,7 @@ class StationTypesTest {
             val expected = groups[stationType] ?: StationIconGroup.Unknown
             assertEquals("$stationType", expected, StationTypes.iconGroup(stationType))
         }
-        val icons = StationIconGroup.entries.flatMap { listOf(it.icon(arrow = true), it.icon(arrow = false)) }
+        val icons = StationIconGroup.entries.map { it.icon }
         assertEquals(icons.size, icons.toSet().size)
     }
 }

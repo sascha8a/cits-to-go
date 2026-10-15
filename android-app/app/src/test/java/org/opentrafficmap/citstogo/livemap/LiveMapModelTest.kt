@@ -87,7 +87,7 @@ class LiveMapModelTest {
                 longitude = -16.3691773,
                 headingDeg = 135.5,
                 speedMps = 13.89,
-                icon = "station-car-arrow",
+                icon = "station-car",
                 ageMs = 1_000,
                 stale = false,
             ),
@@ -103,7 +103,7 @@ class LiveMapModelTest {
 
         assertEquals(null, station.headingDeg)
         assertEquals(null, station.speedMps)
-        assertEquals("station-unknown-dot", station.icon)
+        assertEquals("station-unknown", station.icon)
         assertEquals("Unknown (42)", station.typeLabel)
     }
 
