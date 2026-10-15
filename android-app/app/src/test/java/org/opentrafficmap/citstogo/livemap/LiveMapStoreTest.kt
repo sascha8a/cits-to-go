@@ -13,6 +13,7 @@ import org.opentrafficmap.citstogo.cam.CamPosition
 import org.opentrafficmap.citstogo.cam.ItsG5FrameBuilder
 import org.opentrafficmap.citstogo.cam.ReceivedCam
 import org.opentrafficmap.citstogo.cam.StationType
+import org.opentrafficmap.citstogo.cam.VehicleDimensions
 import org.opentrafficmap.citstogo.denm.DenmSituation
 import org.opentrafficmap.citstogo.denm.DenmTermination.Cancellation
 import org.opentrafficmap.citstogo.denm.DenmTermination.Negation
@@ -34,6 +35,7 @@ class LiveMapStoreTest {
         highFrequencyContainer = BasicVehicle,
         heading = 1_355,
         speedCms = 1_389,
+        trailer = false,
     )
     private val jam = ReceivedDenm(
         stationId = 0x8000_0001L,
@@ -56,9 +58,21 @@ class LiveMapStoreTest {
     @Test
     fun camKeepsTheLatestStateOfEachStation() {
         val store = LiveMapStore()
-        val moved = car.copy(generationDeltaTime = 41_000, latitude = 482_025_000, heading = null, speedCms = null)
+        val moved = car.copy(
+            generationDeltaTime = 41_000,
+            latitude = 482_025_000,
+            heading = null,
+            speedCms = null,
+            trailer = true,
+        )
         val roadSideUnit = car.copy(stationId = 7, stationType = 15, highFrequencyContainer = RoadSideUnit)
-        val positionOnly = car.copy(stationId = 8, highFrequencyContainer = Unknown, heading = null, speedCms = null)
+        val positionOnly = car.copy(
+            stationId = 8,
+            highFrequencyContainer = Unknown,
+            heading = null,
+            speedCms = null,
+            trailer = null,
+        )
 
         store.accept(car, nowMs)
         store.accept(moved, nowMs + 1_000)
@@ -67,11 +81,47 @@ class LiveMapStoreTest {
 
         assertEquals(
             listOf(
-                LiveMapStation(0x8000_0001L, 5, false, 482_025_000, 163_691_773, null, null, nowMs + 1_000),
-                LiveMapStation(7, 15, true, 482_024_036, 163_691_773, 1_355, 1_389, nowMs + 1_100),
-                LiveMapStation(8, 5, false, 482_024_036, 163_691_773, null, null, nowMs + 1_200),
+                LiveMapStation(0x8000_0001L, 5, false, 482_025_000, 163_691_773, null, null, true, nowMs + 1_000),
+                LiveMapStation(7, 15, true, 482_024_036, 163_691_773, 1_355, 1_389, false, nowMs + 1_100),
+                LiveMapStation(8, 5, false, 482_024_036, 163_691_773, null, null, false, nowMs + 1_200),
             ),
             store.snapshot(nowMs + 2_000).stations,
+        )
+    }
+
+    @Test
+    fun trailerIsShownOnlyWhenTheCamReportsOne() {
+        val store = LiveMapStore()
+
+        store.accept(car.copy(stationId = 1, trailer = true), nowMs)
+        store.accept(car.copy(stationId = 2, trailer = false), nowMs)
+        store.accept(car.copy(stationId = 3, trailer = null), nowMs)
+
+        assertEquals(
+            listOf(1L to true, 2L to false, 3L to false),
+            store.snapshot(nowMs).stations.map { it.stationId to it.trailer },
+        )
+    }
+
+    @Test
+    fun trailerOfAnEncodedCamReachesTheSnapshot() {
+        val store = LiveMapStore()
+        val frames = VehicleDimensions.Trailer.entries.mapIndexed { index, trailer ->
+            ItsG5FrameBuilder.camFrame(
+                CamIdentity(stationId = index.toLong(), macAddress = byteArrayOf(0x02, 1, 2, 3, 4, 5)),
+                StationType.HEAVY_TRUCK,
+                CamPosition.unavailable().copy(latitude = 482_024_036, longitude = 163_691_773),
+                nowMs,
+                ItsG5FrameBuilder.SequenceCounters(initialWlanSequence = 0, initialGbcSequenceId = 0),
+                VehicleDimensions(lengthDm = 165, widthDm = 26, trailer = trailer),
+            )
+        }
+
+        for (frame in frames) store.accept(requireNotNull(ItsFrameExtractor.extract(frame)), nowMs, nowMs)
+
+        assertEquals(
+            listOf(0L to false, 1L to true, 2L to true),
+            store.snapshot(nowMs).stations.map { it.stationId to it.trailer },
         )
     }
 
@@ -439,7 +489,10 @@ class LiveMapStoreTest {
     fun fullSnapshotStaysSmall() {
         val store = LiveMapStore()
         for (id in 0 until 500) {
-            store.accept(car.copy(stationId = 0xffff_0000L + id, heading = 1_000 + id, speedCms = 2_000 + id), nowMs)
+            store.accept(
+                car.copy(stationId = 0xffff_0000L + id, heading = 1_000 + id, speedCms = 2_000 + id, trailer = true),
+                nowMs,
+            )
         }
         for (sequenceNumber in 0 until 200) {
             store.accept(

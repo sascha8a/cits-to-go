@@ -502,6 +502,9 @@ fun CitsApp(
                         )
                         AppPage.Map -> {
                             val mapModifier = Modifier.weight(1f)
+                            // The size that the CAMs carry, as MainActivity sends it to the service.
+                            val ownDimensions =
+                                vehicleDimensions[sremProfile] ?: VehicleDimensions.defaults(sremProfile)
                             mapPageState.SaveableStateProvider(AppPage.Map.name) {
                                 MapPage(
                                     snapshot = liveMapSnapshot,
@@ -518,6 +521,8 @@ fun CitsApp(
                                     },
                                     onFocusStationCleared = { mapFocusStation = null },
                                     ownVehicleProfile = sremProfile.takeIf { status.camEnabled },
+                                    ownTrailer = status.camEnabled && VehicleDimensions.applies(sremProfile) &&
+                                        ownDimensions.reportsTrailer,
                                     currentPosition = currentPosition,
                                     darkTheme = resolveDarkTheme(themeMode, isSystemInDarkTheme()),
                                     receiving = status.running,

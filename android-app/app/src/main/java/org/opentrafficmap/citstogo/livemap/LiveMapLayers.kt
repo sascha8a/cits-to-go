@@ -1,7 +1,9 @@
 package org.opentrafficmap.citstogo.livemap
 
 import com.google.gson.JsonObject
+import org.maplibre.android.location.LocationComponentConstants
 import org.maplibre.android.maps.Style
+import org.maplibre.android.style.expressions.Expression
 import org.maplibre.android.style.expressions.Expression.concat
 import org.maplibre.android.style.expressions.Expression.eq
 import org.maplibre.android.style.expressions.Expression.get
@@ -18,6 +20,8 @@ import org.maplibre.android.style.layers.PropertyFactory.iconOpacity
 import org.maplibre.android.style.layers.PropertyFactory.iconPitchAlignment
 import org.maplibre.android.style.layers.PropertyFactory.iconRotate
 import org.maplibre.android.style.layers.PropertyFactory.iconRotationAlignment
+import org.maplibre.android.style.layers.PropertyFactory.iconSize
+import org.maplibre.android.style.layers.PropertyFactory.visibility
 import org.maplibre.android.style.layers.SymbolLayer
 import org.maplibre.android.style.sources.GeoJsonSource
 import org.maplibre.geojson.Feature
@@ -42,6 +46,7 @@ object LiveMapFeatures {
     const val FOCUS_MAC_ADDRESS = "focusMacAddress"
     const val ICON = "icon"
     const val HEADING = "heading"
+    const val TRAILER = "trailer"
     const val STALE = "stale"
 
     // Ids are text: station ids are unsigned 32-bit, and a tap query returns numbers as doubles.
@@ -51,6 +56,7 @@ object LiveMapFeatures {
                 addProperty(STATION_ID, station.stationId.toString())
                 addProperty(ICON, station.icon)
                 station.headingDeg?.let { addProperty(HEADING, it) }
+                addProperty(TRAILER, station.trailer)
                 addProperty(STALE, station.stale)
             }
             Feature.fromGeometry(
@@ -101,7 +107,8 @@ object LiveMapFeatures {
 
 /**
  * The sources and symbol layers of the live map: road side units from history, stations above them, DENMs above
- * those, and on top the pin of a station the map was asked to show.
+ * those, and on top the pin of a station the map was asked to show. The trailer of the own vehicle lies just below
+ * MapLibre's own position.
  */
 object LiveMapLayers {
     const val STATIONS = "stations"
@@ -109,6 +116,7 @@ object LiveMapLayers {
     const val DENMS = "denms"
     const val ROAD_SIDE_UNITS = "roadSideUnits"
     const val FOCUS = "focus"
+    const val OWN_TRAILER = "own-trailer"
     private const val STALE_OPACITY = 0.6f
     private const val HISTORY_OPACITY = 0.75f
     private const val OWN_POSITION_LAYER_PREFIX = "mapbox-location-"
@@ -121,11 +129,7 @@ object LiveMapLayers {
         style.addSource(GeoJsonSource(STATIONS))
         style.addSource(GeoJsonSource(DENMS))
         style.addSource(GeoJsonSource(FOCUS))
-        // After a style change MapLibre has already put the own position on the new style; it stays on top.
-        val ownPosition = style.layers.firstOrNull { it.id.startsWith(OWN_POSITION_LAYER_PREFIX) }?.id
-        fun add(layer: Layer) {
-            if (ownPosition != null) style.addLayerBelow(layer, ownPosition) else style.addLayer(layer)
-        }
+        fun add(layer: Layer) = addBelowOwnPosition(style, layer)
         add(
             SymbolLayer(ROAD_SIDE_UNITS, ROAD_SIDE_UNITS).withProperties(
                 iconImage(get(LiveMapFeatures.ICON)),
@@ -136,11 +140,20 @@ object LiveMapLayers {
         )
         val staleSuffix = switchCase(stale, literal(MapIcons.STALE_SUFFIX), literal(""))
         val staleOpacity = iconOpacity(switchCase(stale, literal(STALE_OPACITY), literal(1f)))
-        // The pointer turns with the heading below the circle, whose pictogram stays upright.
+        val trailerSuffix =
+            switchCase(eq(get(LiveMapFeatures.TRAILER), true), literal(MapIcons.TRAILER_SUFFIX), literal(""))
+        // The pointer and a trailer opposite it turn with the heading below the circle, whose pictogram stays upright.
         add(
             SymbolLayer(STATION_POINTERS, STATIONS)
                 .withProperties(
-                    iconImage(concat(get(LiveMapFeatures.ICON), literal(MapIcons.POINTER_SUFFIX), staleSuffix)),
+                    iconImage(
+                        concat(
+                            get(LiveMapFeatures.ICON),
+                            literal(MapIcons.POINTER_SUFFIX),
+                            trailerSuffix,
+                            staleSuffix,
+                        ),
+                    ),
                     staleOpacity,
                     iconRotate(get(LiveMapFeatures.HEADING)),
                     iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP),
@@ -183,5 +196,41 @@ object LiveMapLayers {
         style.getSourceAs<GeoJsonSource>(STATIONS)?.setGeoJson(LiveMapFeatures.stations(liveMap.stations))
         style.getSourceAs<GeoJsonSource>(DENMS)?.setGeoJson(LiveMapFeatures.denms(liveMap.denms))
         style.getSourceAs<GeoJsonSource>(FOCUS)?.setGeoJson(LiveMapFeatures.focus(focus))
+    }
+
+    /**
+     * Shows the trailer of the own vehicle turned to [headingDeg], or hides it for `null`. It is a layer on the source
+     * of MapLibre's own position, so that it moves with the animated position instead of jumping ahead of it, and
+     * [scale] sizes it like the own vehicle icon. Does nothing before the location component is activated.
+     */
+    fun updateOwnTrailer(style: Style, headingDeg: Float?, scale: Expression) {
+        if (!style.isFullyLoaded) return
+        val layer = style.getLayerAs<SymbolLayer>(OWN_TRAILER) ?: addOwnTrailer(style, scale) ?: return
+        if (headingDeg == null) {
+            layer.setProperties(visibility(Property.NONE))
+        } else {
+            layer.setProperties(iconRotate(headingDeg), visibility(Property.VISIBLE))
+        }
+    }
+
+    private fun addOwnTrailer(style: Style, scale: Expression): SymbolLayer? {
+        if (style.getSource(LocationComponentConstants.LOCATION_SOURCE) == null) return null
+        val layer = SymbolLayer(OWN_TRAILER, LocationComponentConstants.LOCATION_SOURCE).withProperties(
+            iconImage(MapIcons.OWN_TRAILER),
+            iconSize(scale),
+            iconRotationAlignment(Property.ICON_ROTATION_ALIGNMENT_MAP),
+            iconPitchAlignment(Property.ICON_PITCH_ALIGNMENT_VIEWPORT),
+            iconAllowOverlap(true),
+            iconIgnorePlacement(true),
+            visibility(Property.NONE),
+        )
+        addBelowOwnPosition(style, layer)
+        return layer
+    }
+
+    /** After a style change MapLibre has already put the own position on the new style; it stays on top. */
+    private fun addBelowOwnPosition(style: Style, layer: Layer) {
+        val ownPosition = style.layers.firstOrNull { it.id.startsWith(OWN_POSITION_LAYER_PREFIX) }?.id
+        if (ownPosition != null) style.addLayerBelow(layer, ownPosition) else style.addLayer(layer)
     }
 }

@@ -10,6 +10,8 @@ data class StationMarker(
     /** Degrees clockwise from north. Without a heading the icon has no pointer. */
     val headingDeg: Double?,
     val speedMps: Double?,
+    /** Drawn behind the icon, opposite the pointer; so like the pointer only with a heading. */
+    val trailer: Boolean,
     val icon: String,
     val ageMs: Long,
     val stale: Boolean,
@@ -84,6 +86,7 @@ object LiveMapModel {
             longitude = station.longitude.degrees(),
             headingDeg = station.heading?.let { it / 10.0 },
             speedMps = station.speedCms?.let { it / 100.0 },
+            trailer = station.trailer,
             icon = StationTypes.iconGroup(station.stationType).icon,
             ageMs = ageMs,
             stale = ageMs >= STALE_AFTER_MS,

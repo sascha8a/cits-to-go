@@ -15,6 +15,7 @@ class MarkerDetailsTest {
         longitude = 16.3691773,
         headingDeg = 359.6,
         speedMps = 13.89,
+        trailer = false,
         icon = "station-car",
         ageMs = 2_400,
         stale = false,

@@ -30,22 +30,31 @@ class ExampleCapturesTest {
             .sortedBy { it.name }
 
     @Test
-    fun everyCamIsExtractedAndDecodedLikeWireshark() = assertDecodedLikeWireshark(
-        label = "CAMs",
-        messageId = CamDecoder.MESSAGE_ID_CAM,
-        fields = WiresharkCam.fields,
-        expected = WiresharkCam::expected,
-        decode = CamDecoder::decode,
-    )
+    fun everyCamIsExtractedAndDecodedLikeWireshark() {
+        val cams = assertDecodedLikeWireshark(
+            label = "CAMs",
+            messageId = CamDecoder.MESSAGE_ID_CAM,
+            fields = WiresharkCam.fields,
+            expected = WiresharkCam::expected,
+            decode = CamDecoder::decode,
+        ).filterNotNull()
+        val trailers = cams.filter { it.trailer == true }
+        println(
+            "Trailer: ${trailers.size} CAMs from ${trailers.map { it.stationId }.toSet().size} stations with one, " +
+                "${cams.count { it.trailer == false }} without, ${cams.count { it.trailer == null }} unknown",
+        )
+    }
 
     @Test
-    fun everyDenmIsExtractedAndDecodedLikeWireshark() = assertDecodedLikeWireshark(
-        label = "DENMs",
-        messageId = DenmDecoder.MESSAGE_ID_DENM,
-        fields = WiresharkDenm.fields,
-        expected = WiresharkDenm::expected,
-        decode = DenmDecoder::decode,
-    )
+    fun everyDenmIsExtractedAndDecodedLikeWireshark() {
+        assertDecodedLikeWireshark(
+            label = "DENMs",
+            messageId = DenmDecoder.MESSAGE_ID_DENM,
+            fields = WiresharkDenm.fields,
+            expected = WiresharkDenm::expected,
+            decode = DenmDecoder::decode,
+        )
+    }
 
     /**
      * Replays each capture into a [LiveMapStore] as if live, and checks that the map shows every station and every
@@ -110,7 +119,7 @@ class ExampleCapturesTest {
 
     /**
      * Asserts that every frame tshark sees as message [messageId] is extracted, and decoded to what tshark reads, and
-     * that no other frame is extracted as that message.
+     * that no other frame is extracted as that message. Returns the decoded messages of all captures.
      */
     private fun <T> assertDecodedLikeWireshark(
         label: String,
@@ -118,9 +127,10 @@ class ExampleCapturesTest {
         fields: List<String>,
         expected: (Map<String, String>) -> T?,
         decode: (ItsPacket) -> T?,
-    ) {
+    ): List<T?> {
         assumeTrue("No captures in example-pcap", captures.isNotEmpty())
         var total = 0
+        val messages = mutableListOf<T?>()
         for (capture in captures) {
             val wireshark = Tshark.fields(
                 capture.toPath(),
@@ -139,8 +149,10 @@ class ExampleCapturesTest {
             }
             println("${capture.name}: ${wireshark.size} $label, ${decoded.values.count { it != null }} decoded")
             total += wireshark.size
+            messages += decoded.values
         }
         println("${captures.size} captures: $total $label")
+        return messages
     }
 
     /**

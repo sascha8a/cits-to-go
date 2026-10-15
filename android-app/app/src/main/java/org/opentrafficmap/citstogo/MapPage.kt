@@ -69,12 +69,18 @@ import org.maplibre.android.location.LocationComponent
 import org.maplibre.android.location.LocationComponentActivationOptions
 import org.maplibre.android.location.LocationComponentOptions
 import org.maplibre.android.location.OnCameraTrackingChangedListener
+import org.maplibre.android.location.OnLocationStaleListener
 import org.maplibre.android.location.modes.CameraMode
 import org.maplibre.android.location.modes.RenderMode
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
+import org.maplibre.android.style.expressions.Expression
+import org.maplibre.android.style.expressions.Expression.interpolate
+import org.maplibre.android.style.expressions.Expression.linear
+import org.maplibre.android.style.expressions.Expression.stop
+import org.maplibre.android.style.expressions.Expression.zoom
 import org.opentrafficmap.citstogo.livemap.LiveMap
 import org.opentrafficmap.citstogo.livemap.FocusMarker
 import org.opentrafficmap.citstogo.livemap.LiveMapFeatures
@@ -121,7 +127,8 @@ private data class MapFrame(val liveMap: LiveMap, val roadSideUnits: List<RoadSi
  * [historyShown], the map also shows the [roadSideUnits] of the discovery table heard within [historyDays], all of
  * them for 0 days. A [focusStation] of the discovery table gets a pin and its detail card, until the card is closed,
  * another marker is tapped or [onFocusStationCleared] is called; a road side unit the history shows needs no pin.
- * While CAMs go out with [ownVehicleProfile], the own position shows its icon instead of the dot.
+ * While CAMs go out with [ownVehicleProfile], the own position shows its icon instead of the dot; when they report
+ * [ownTrailer], a trailer follows the icon along the last direction of travel.
  */
 @Composable
 fun MapPage(
@@ -134,6 +141,7 @@ fun MapPage(
     focusStation: DiscoveredStation?,
     onFocusStationCleared: () -> Unit,
     ownVehicleProfile: SremProfile?,
+    ownTrailer: Boolean,
     currentPosition: DevicePosition?,
     darkTheme: Boolean,
     receiving: Boolean,
@@ -147,6 +155,9 @@ fun MapPage(
     var style by remember { mutableStateOf<Style?>(null) }
     var styleFailed by remember { mutableStateOf(false) }
     var locationShown by remember { mutableStateOf(false) }
+    var ownPositionStale by remember { mutableStateOf(false) }
+    // A standing phone has no heading; the own trailer keeps the last direction of travel, as at a red light.
+    var lastOwnHeading by remember { mutableStateOf<Float?>(null) }
     var selected by remember { mutableStateOf<MarkerRef?>(null) }
     var frame by remember { mutableStateOf(MapFrame(LiveMap(emptyList(), emptyList()), emptyList(), 0L)) }
     val latestSnapshot by rememberUpdatedState(snapshot)
@@ -177,6 +188,7 @@ fun MapPage(
             override fun onCameraTrackingChanged(currentMode: Int) = Unit
         }
     }
+    val staleListener = remember { OnLocationStaleListener { ownPositionStale = it } }
 
     LaunchedEffect(mapView) {
         mapView.addOnDidFailLoadingMapListener { styleFailed = true }
@@ -252,14 +264,34 @@ fun MapPage(
         style?.let { LiveMapLayers.update(it, frame.liveMap, frame.roadSideUnits, focusMarker) }
     }
 
+    // Only a new fix, style or profile may pass the position on again: MapLibre takes it as a fresh fix and would end
+    // the stale state of a lost one.
     LaunchedEffect(style, currentPosition, ownVehicleProfile) {
         val loadedMap = map ?: return@LaunchedEffect
         val loadedStyle = style ?: return@LaunchedEffect
         val position = currentPosition ?: return@LaunchedEffect
         val component = loadedMap.locationComponent
-        if (component.showPosition(context, loadedStyle, position, trackingListener, ownVehicleProfile)) {
-            locationShown = true
-        }
+        val shown = component.showPosition(
+            context,
+            loadedStyle,
+            position,
+            trackingListener,
+            staleListener,
+            ownVehicleProfile,
+        )
+        if (shown) locationShown = true
+    }
+
+    // After the position effect, so that the location component and its source are in place.
+    LaunchedEffect(style, locationShown, currentPosition, ownVehicleProfile, ownTrailer, ownPositionStale) {
+        val loadedMap = map ?: return@LaunchedEffect
+        val loadedStyle = style ?: return@LaunchedEffect
+        if (!locationShown) return@LaunchedEffect
+        currentPosition?.movingHeadingDeg?.let { lastOwnHeading = it }
+        // Only behind the vehicle icon and along a heading; the grey dot of a stale position has none.
+        val trailerHeading = lastOwnHeading
+            ?.takeIf { ownVehicleProfile != null && ownTrailer && !ownPositionStale }
+        LiveMapLayers.updateOwnTrailer(loadedStyle, trailerHeading, loadedMap.ownVehicleScale())
     }
 
     LaunchedEffect(locationShown, follow) {
@@ -416,6 +448,7 @@ private fun LocationComponent.showPosition(
     style: Style,
     position: DevicePosition,
     trackingListener: OnCameraTrackingChangedListener,
+    staleListener: OnLocationStaleListener,
     vehicleProfile: SremProfile?,
 ): Boolean {
     val permitted = listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
@@ -430,6 +463,7 @@ private fun LocationComponent.showPosition(
                 .build(),
         )
         addOnCameraTrackingChangedListener(trackingListener)
+        addOnLocationStaleListener(staleListener)
     }
     if (!isLocationComponentEnabled) isLocationComponentEnabled = true
     val options = ownPositionOptions(context, vehicleProfile)
@@ -457,6 +491,14 @@ private fun ownPositionOptions(context: Context, vehicleProfile: SremProfile?): 
     }
     return builder.build()
 }
+
+/** The scale MapLibre gives the own vehicle icon at each zoom level, from its [ownPositionOptions]. */
+private fun MapLibreMap.ownVehicleScale(): Expression = interpolate(
+    linear(),
+    zoom(),
+    stop(minZoomLevel, OWN_VEHICLE_MIN_SCALE),
+    stop(maxZoomLevel, OWN_VEHICLE_MAX_SCALE),
+)
 
 /** Tracks the own position, zooming in from an overview; a pan on the map ends the tracking. */
 private fun MapLibreMap.follow(enabled: Boolean) {

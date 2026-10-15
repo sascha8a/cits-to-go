@@ -15,6 +15,7 @@ class LiveMapModelTest {
         longitude = -163_691_773,
         heading = 1_355,
         speedCms = 1_389,
+        trailer = false,
         receivedAtMs = nowMs - 1_000,
     )
     private val jam = LiveMapDenm(
@@ -87,12 +88,19 @@ class LiveMapModelTest {
                 longitude = -16.3691773,
                 headingDeg = 135.5,
                 speedMps = 13.89,
+                trailer = false,
                 icon = "station-car",
                 ageMs = 1_000,
                 stale = false,
             ),
             station,
         )
+    }
+
+    @Test
+    fun trailerIsCarriedOver() {
+        assertTrue(stationsAtAge(1_000, station = car.copy(trailer = true)).single().trailer)
+        assertFalse(stationsAtAge(1_000).single().trailer)
     }
 
     @Test

@@ -14,16 +14,25 @@ import org.maplibre.android.maps.Style
 
 /**
  * The marker icons of the live map, drawn for the screen density. Stations are circles with a pictogram, coloured by
- * [StationIconGroup], with a pointer along their heading; both have a grey variant for stale markers. DENMs are warning signs by
- * [DenmIconGroup]. Road side units from history are a traffic light or a mast with radio waves. The white outlines
- * keep them readable on light and dark map styles.
+ * [StationIconGroup], with a pointer along their heading and, for vehicles with a trailer, a trailer opposite it; all
+ * have a grey variant for stale markers. DENMs are warning signs by [DenmIconGroup]. Road side units from history are
+ * a traffic light or a mast with radio waves. The white outlines keep them readable on light and dark map styles.
+ * The own vehicle can pull a trailer in the colours of its icon.
  */
 object MapIcons {
     const val STALE_SUFFIX = "-stale"
     const val POINTER_SUFFIX = "-pointer"
+    const val TRAILER_SUFFIX = "-trailer"
+    const val OWN_TRAILER = "own-trailer"
 
     private const val STATION_SIZE_DP = 26f
     private const val POINTER_SIZE_DP = 42f
+    // The pointer with a trailer behind the circle, centred on the circle like the pointer alone.
+    private const val TRAILER_POINTER_HEIGHT_DP = 62f
+    // The own vehicle icon is a 48 dp drawable that the map scales down; its trailer is drawn at the same scale.
+    private const val OWN_ICON_SIZE_DP = 48f
+    private const val OWN_TRAILER_WIDTH_DP = 28f
+    private const val OWN_TRAILER_HEIGHT_DP = 104f
     private const val SIGN_SIZE_DP = 34f
     private const val ROAD_SIDE_UNIT_SIZE_DP = 26f
     private const val PIN_SIZE_DP = 38f
@@ -38,6 +47,9 @@ object MapIcons {
     private const val SIGNAL_AMBER = 0xFFF59E0B.toInt()
     private const val SIGNAL_GREEN = 0xFF22C55E.toInt()
     private const val PIN_RED = 0xFFE11D48.toInt()
+    // The colours of the vehicle profile icons in res/drawable.
+    private const val OWN_ICON_BACKGROUND = 0xFF1A2540.toInt()
+    private const val OWN_ICON_INK = 0xFF2DD4BF.toInt()
 
     /** Adds every icon to [style]. A new style starts without them, so this runs after each style change. */
     fun addTo(style: Style, context: Context) {
@@ -46,13 +58,17 @@ object MapIcons {
         StationIconGroup.entries.forEach { group ->
             style.addImage(group.icon, painter.station(group, color(group)))
             style.addImage(group.icon + STALE_SUFFIX, painter.station(group, STALE))
-            style.addImage(group.icon + POINTER_SUFFIX, painter.pointer(color(group)))
-            style.addImage(group.icon + POINTER_SUFFIX + STALE_SUFFIX, painter.pointer(STALE))
+            for (trailer in listOf(false, true)) {
+                val pointer = group.icon + POINTER_SUFFIX + if (trailer) TRAILER_SUFFIX else ""
+                style.addImage(pointer, painter.pointer(color(group), trailer))
+                style.addImage(pointer + STALE_SUFFIX, painter.pointer(STALE, trailer))
+            }
         }
         DenmIconGroup.entries.forEach { style.addImage(it.icon, painter.sign(it)) }
         style.addImage(RoadSideUnitHistory.TRAFFIC_LIGHT_ICON, painter.trafficLight())
         style.addImage(RoadSideUnitHistory.ROAD_SIDE_UNIT_ICON, painter.roadSideUnit())
         style.addImage(FocusMarker.ICON, painter.pin())
+        style.addImage(OWN_TRAILER, painter.ownTrailer())
     }
 
     // Not the blue of the own position.
@@ -86,18 +102,75 @@ object MapIcons {
 
         /**
          * A pointer on the edge of a station circle, pointing north; the layer turns it to the heading. The bitmap is
-         * larger than the circle and centred on the same point, so the pointer sits just outside it.
+         * larger than the circle and centred on the same point, so the pointer sits just outside it. With [trailer]
+         * the bitmap is taller, and a trailer follows behind the circle, opposite the pointer.
          */
-        fun pointer(color: Int): Bitmap = draw(POINTER_SIZE_DP) { size ->
-            val tip = polygon(size, 0.5f, 0.075f, 0.61f, 0.25f, 0.39f, 0.25f)
-            outline.strokeJoin = Paint.Join.MITER
-            drawPath(tip, outline)
-            outline.strokeJoin = Paint.Join.ROUND
+        fun pointer(color: Int, trailer: Boolean): Bitmap {
+            val heightDp = if (trailer) TRAILER_POINTER_HEIGHT_DP else POINTER_SIZE_DP
+            return draw(POINTER_SIZE_DP, heightDp) { width, height ->
+                val centerY = height / 2f
+                val tip = polygon(width, 0.5f, 0.075f, 0.61f, 0.25f, 0.39f, 0.25f)
+                tip.offset(0f, centerY - width / 2f)
+                outline.strokeJoin = Paint.Join.MITER
+                drawPath(tip, outline)
+                outline.strokeJoin = Paint.Join.ROUND
+                fill.color = color
+                drawPath(tip, fill)
+                if (trailer) stationTrailer(width / 2f, centerY, color)
+                // Nothing under the circle, so that a translucent stale circle does not show the base of the pointer.
+                val clear = Paint(Paint.ANTI_ALIAS_FLAG).apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
+                drawCircle(width / 2f, centerY, STATION_SIZE_DP / 2f * density, clear)
+            }
+        }
+
+        /** A small trailer in [color] on a short drawbar, behind the circle around the centre. */
+        private fun Canvas.stationTrailer(centerX: Float, centerY: Float, color: Int) {
+            // In dp from the centre, behind the circle of 13 dp radius.
+            fun rect(left: Float, top: Float, right: Float, bottom: Float) = RectF(
+                centerX + left * density,
+                centerY + top * density,
+                centerX + right * density,
+                centerY + bottom * density,
+            )
+            val drawbar = rect(-1.25f, 10f, 1.25f, 19f)
+            val box = rect(-7f, 18.5f, 7f, 28f)
+            val corner = 2.5f * density
+            drawRect(drawbar, outline)
+            drawRoundRect(box, corner, corner, outline)
             fill.color = color
-            drawPath(tip, fill)
-            // Nothing under the circle, so that a translucent stale circle does not show the base of the pointer.
-            val clear = Paint(Paint.ANTI_ALIAS_FLAG).apply { xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR) }
-            drawCircle(size / 2f, size / 2f, STATION_SIZE_DP / 2f * density, clear)
+            drawRect(drawbar, fill)
+            drawRoundRect(box, corner, corner, fill)
+        }
+
+        /**
+         * The trailer of the own vehicle in the colours of the vehicle profile icons, south of the icon until the
+         * layer turns it to the heading. It is drawn for the unscaled 48 dp icon and centred on it, so that the layer
+         * can scale it like MapLibre scales the icon.
+         */
+        fun ownTrailer(): Bitmap = draw(OWN_TRAILER_WIDTH_DP, OWN_TRAILER_HEIGHT_DP) { width, height ->
+            val centerX = width / 2f
+            val centerY = height / 2f
+            // The pictogram stroke of the icons: 3.2 of 68 viewport units.
+            val stroke = 3.2f / 68f * OWN_ICON_SIZE_DP * density
+            val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeCap = Paint.Cap.ROUND
+                strokeWidth = stroke
+                color = OWN_ICON_INK
+            }
+            // From inside the icon, which covers it, to the box.
+            val iconEdge = OWN_ICON_SIZE_DP / 2f * density
+            drawLine(centerX, centerY + iconEdge - 4f * density, centerX, centerY + iconEdge + 9f * density, ink)
+            val box = RectF(
+                centerX - 12f * density + stroke / 2f,
+                centerY + iconEdge + 8f * density + stroke / 2f,
+                centerX + 12f * density - stroke / 2f,
+                centerY + iconEdge + 26f * density - stroke / 2f,
+            )
+            val corner = 4f * density
+            fill.color = OWN_ICON_BACKGROUND
+            drawRoundRect(box, corner, corner, fill)
+            drawRoundRect(box, corner, corner, ink)
         }
 
         private fun Canvas.stationPictogram(group: StationIconGroup, size: Float, background: Int) {
@@ -289,12 +362,16 @@ object MapIcons {
             }
         }
 
-        private fun draw(sizeDp: Float, block: Canvas.(size: Float) -> Unit): Bitmap {
-            val size = (sizeDp * density).roundToInt()
-            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        private fun draw(sizeDp: Float, block: Canvas.(size: Float) -> Unit): Bitmap =
+            draw(sizeDp, sizeDp) { size, _ -> this.block(size) }
+
+        private fun draw(widthDp: Float, heightDp: Float, block: Canvas.(width: Float, height: Float) -> Unit): Bitmap {
+            val width = (widthDp * density).roundToInt()
+            val height = (heightDp * density).roundToInt()
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
             // MapLibre takes the pixel ratio of an image from its density.
             bitmap.density = densityDpi
-            Canvas(bitmap).block(size.toFloat())
+            Canvas(bitmap).block(width.toFloat(), height.toFloat())
             return bitmap
         }
 

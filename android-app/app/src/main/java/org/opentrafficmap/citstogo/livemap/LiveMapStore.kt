@@ -19,6 +19,8 @@ data class LiveMapStation(
     val longitude: Int,
     val heading: Int?,
     val speedCms: Int?,
+    /** Whether the CAM reports a trailer; false also when it leaves the trailer unknown. */
+    val trailer: Boolean,
     val receivedAtMs: Long,
 ) : Serializable
 
@@ -162,6 +164,7 @@ class LiveMapStore {
             longitude = cam.longitude,
             heading = cam.heading,
             speedCms = cam.speedCms,
+            trailer = cam.trailer == true,
             receivedAtMs = receivedAtMs,
         )
     }

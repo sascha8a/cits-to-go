@@ -33,6 +33,9 @@ data class VehicleDimensions(
     /** VehicleLengthConfidenceIndication: the trailer, or unavailable (4) without a length. */
     val lengthConfidenceIndication: Int get() = if (lengthDm == null) LENGTH_CONFIDENCE_UNAVAILABLE else trailer.code
 
+    /** Whether CAMs with this size report a trailer. Without a length they leave the trailer unavailable. */
+    val reportsTrailer: Boolean get() = lengthDm != null && trailer != Trailer.NONE
+
     /** VehicleWidth: 1..61, 62 for unavailable. */
     val widthValue: Int get() = widthDm?.coerceIn(1, MAX_WIDTH_DM) ?: WIDTH_UNAVAILABLE
 

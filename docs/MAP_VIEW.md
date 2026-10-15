@@ -19,9 +19,9 @@ Map page         every second while resumed: LiveMapModel.build(snapshot, now, s
 ```
 
 - **Decoders** (`cam/CamDecoder.kt`, `denm/DenmDecoder.kt`) read CAM and DENM UPER up to the fields the map needs:
-  position, station type, heading and speed of a CAM; the management container and the event type of a DENM. Only
-  `protocolVersion` 2 is accepted; version 1 differs on the wire. A malformed message is dropped on its own and never
-  disturbs capture, PCAP or MQTT.
+  position, station type, heading, speed and trailer of a CAM; the management container and the event type of a
+  DENM. Only `protocolVersion` 2 is accepted; version 1 differs on the wire. A malformed message is dropped on its own
+  and never disturbs capture, PCAP or MQTT.
 - **Store** (`livemap/LiveMapStore.kt`) runs in the service and aggregates every packet, whether or not the page is
   open, so that the map is filled as soon as it opens. Each capture and each replay starts with an empty store.
 - **Snapshot** (`LiveMapSnapshot`) is a `Serializable` copy of the store in transmitted units. The service attaches it
@@ -30,9 +30,11 @@ Map page         every second while resumed: LiveMapModel.build(snapshot, now, s
   it computes what is visible, in display units, with labels (`StationTypes`, `DenmCauses`) and icon names.
 - **Layers** (`livemap/LiveMapLayers.kt`) turn the model into GeoJSON features (`LiveMapFeatures`, covered by JVM
   tests) and add four sources and five symbol layers to the style, from the bottom: road side units from history, the
-  heading pointers of the stations, the station circles, DENMs, and the pin of a station opened from the Discovered
-  Stations page; MapLibre's own position stays on top. `livemap/MapIcons.kt` draws the icons with an Android
-  `Canvas` for the screen density.
+  heading pointers of the stations with their trailers, the station circles, DENMs, and the pin of a station opened
+  from the Discovered Stations page. MapLibre's own position stays on top. Just below it, a sixth symbol layer draws
+  the trailer of the own vehicle on MapLibre's own position source, so that the trailer moves with the animated
+  position instead of jumping ahead of it. `livemap/MapIcons.kt` draws the icons with an Android `Canvas` for the
+  screen density.
 - **Page** (`MapPage.kt`) hosts a MapLibre `MapView` in an `AndroidView` and forwards the activity lifecycle to it.
 
 The own position comes from the location listener of `MainActivity`, the same one Intersection View uses. It runs
@@ -97,6 +99,9 @@ DENM events have no timeout of their own: they show until they expire or are ter
   mark for unknown types. A pointer on the edge of the circle shows the heading of the last CAM; without a heading
   there is none. The pictogram stays upright, unlike an arrow that could be taken for the own position. Stale
   stations turn grey and translucent.
+- **Trailers**: a vehicle whose CAM reports a trailer, with known or unknown length (VehicleLengthConfidenceIndication
+  1 or 2), has a small trailer on a drawbar behind its circle, opposite the pointer. Like the pointer it needs a
+  heading. A CAM that leaves the trailer unknown or unavailable (3 or 4) shows none.
 - **DENM events** are warning signs at the event position, with icons for traffic jams (causes 1 and 27), accidents
   (2), roadworks (3), stationary vehicles (91–94) and emergencies (15 and 95), and a general hazard sign for all other
   causes. Road operators report the start of the hazard in driving direction as the event position.
@@ -106,7 +111,11 @@ DENM events have no timeout of their own: they show until they expire or are ter
   update.
 - While CAMs are broadcast, the **own position** shows the icon of the vehicle profile instead of the blue dot, at
   about the size of a station marker. Like the station icons it stays upright, so it has no heading arrow; a
-  position that has gone stale still shows as the grey dot.
+  position that has gone stale still shows as the grey dot. When the CAMs report a trailer, that is when the vehicle
+  profile has a trailer and a length (**Settings → Vehicle Type**), a trailer in the colours of the icon follows
+  behind it along the direction of travel. A standing phone has no heading, so the trailer keeps the last direction
+  of travel, for example at a red light, and shows only once the phone has moved since the map was opened; it
+  disappears with a stale position and when the broadcast stops.
 - **Follow** (on by default) keeps the own position in the centre. Moving the map turns it off, also before the
   first position fix. The button appears with the own position, turns follow on again and zooms in from an overview.
   Before the first position fix the map shows Austria.
@@ -169,6 +178,9 @@ Then open **Home → Replay PCAP**, choose the file and switch to **Map**. Check
 - stations appear with the pictogram of their type and a pointer along their heading (none without one), which stays
   right when the map is rotated or tilted; they turn grey after 3 s without a CAM and disappear after the station
   timeout,
+- a station whose CAM reports a trailer has one behind its circle, opposite the pointer, also on a rotated or tilted
+  map; field captures rarely contain one, but a recording of a second phone that broadcasts CAMs with a trailer in
+  its vehicle profile does,
 - DENM events disappear when they expire,
 - follow, tapping markers, and the detail card,
 - the map stays where it was after switching pages, and switches to the dark style with the app theme,
@@ -178,6 +190,11 @@ Then open **Home → Replay PCAP**, choose the file and switch to **Map**. Check
 - with the history button on, the road side units of the capture appear and stay after the replay ends; tapping one
   shows its card; a days limit in the settings hides older ones; turning the button off removes them and closes
   their card; the button keeps its state after a restart.
+
+The own vehicle needs a real drive with a CAM broadcast. With a trailer and a length in the vehicle profile, the own
+icon pulls a trailer once it moves, which turns with the direction of travel and moves with the icon without jumping
+ahead of it. When standing still it keeps the last direction; it disappears when the broadcast stops, with a stale
+position, and after switching to a profile without a trailer.
 
 ## Updating MapLibre
 
@@ -206,6 +223,8 @@ Then open **Home → Replay PCAP**, choose the file and switch to **Map**. Check
 - Only stations the phone receives itself are shown; there is no OpenTrafficMap backend.
 - MAPEM, SPATEM and IVIM are not on the map; intersections stay in Intersection View.
 - DENM events are points; traces, event zones and closed lanes are not drawn yet.
+- Trailers have a fixed size, whatever length the CAM carries. They are drawn opposite the heading, which is the
+  direction of travel, so a reversing vehicle shows its trailer on the wrong side.
 - Replay runs in real time only.
 - Infrastructure DENMs without a centrally assigned actionID can show twice when several road side units send them.
 - Road side units from history show where they last were and are not updated by the live map; a unit that also

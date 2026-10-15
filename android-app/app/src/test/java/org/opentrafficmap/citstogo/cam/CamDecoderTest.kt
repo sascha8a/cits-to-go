@@ -44,11 +44,13 @@ class CamDecoderTest {
         highFrequencyContainer = BasicVehicle,
         heading = 2_345,
         speedCms = 1_234,
+        trailer = false,
     )
     private val syntheticPositionOnly = syntheticVehicleCam.copy(
         highFrequencyContainer = Unknown,
         heading = null,
         speedCms = null,
+        trailer = null,
     )
 
     @Test
@@ -71,6 +73,8 @@ class CamDecoderTest {
             highFrequencyContainer = BasicVehicle,
             heading = position.heading,
             speedCms = position.speedCms,
+            // Without a size the CAM leaves the trailer unavailable.
+            trailer = null,
         )
         assertEquals(
             listOf(
@@ -81,6 +85,40 @@ class CamDecoderTest {
             ),
             cams,
         )
+    }
+
+    @Test
+    fun encodedTrailersRoundTrip() {
+        val sizes = listOf(
+            VehicleDimensions(165, 26, VehicleDimensions.Trailer.KNOWN_LENGTH),
+            VehicleDimensions(120, 26, VehicleDimensions.Trailer.UNKNOWN_LENGTH),
+            VehicleDimensions(45, 18, VehicleDimensions.Trailer.NONE),
+            VehicleDimensions(null, 25, VehicleDimensions.Trailer.UNKNOWN_LENGTH),
+            VehicleDimensions.UNAVAILABLE,
+        )
+
+        val cams = assertMatchesWireshark(sizes.map { camFrame(StationType.HEAVY_TRUCK, position, it) })
+
+        assertEquals(listOf(true, true, false, null, null), cams.map { it?.trailer })
+        // The own vehicle shows a trailer exactly when its CAMs report one.
+        assertEquals(sizes.map { it.reportsTrailer }, cams.map { it?.trailer == true })
+    }
+
+    @Test
+    fun trailerFollowsTheLengthConfidenceIndication() {
+        val frames = (0L..7L).map { shbFrame(syntheticCam(lengthConfidenceIndication = it)) }
+
+        val cams = assertMatchesWireshark(frames)
+
+        // tshark reads the values 5 to 7 outside the range without marking the frames malformed.
+        assertEquals(
+            (0..7).map { "$it" },
+            Tshark.fields(frames, listOf("its.vehicleLengthConfidenceIndication")).map { it.values.single() },
+        )
+        // noTrailerPresent, trailerPresentWithKnownLength, trailerPresentWithUnknownLength, trailerPresenceIsUnknown,
+        // unavailable and the values out of range.
+        assertEquals(listOf(false, true, true, null, null, null, null, null), cams.map { it?.trailer })
+        assertEquals(List(8) { syntheticVehicleCam }, cams.map { it?.copy(trailer = false) })
     }
 
     @Test
@@ -105,6 +143,7 @@ class CamDecoderTest {
                 highFrequencyContainer = RoadSideUnit,
                 heading = null,
                 speedCms = null,
+                trailer = null,
             ),
             cam,
         )
@@ -141,6 +180,7 @@ class CamDecoderTest {
                     highFrequencyContainer = BasicVehicle,
                     heading = 1_994,
                     speedCms = 1_277,
+                    trailer = null,
                 ),
                 ReceivedCam(
                     stationId = 2_624_309_139,
@@ -151,6 +191,7 @@ class CamDecoderTest {
                     highFrequencyContainer = BasicVehicle,
                     heading = 724,
                     speedCms = 11,
+                    trailer = null,
                 ),
             ),
             cams,
@@ -226,6 +267,7 @@ class CamDecoderTest {
     fun malformedCamThrows() {
         val cams = listOf(
             syntheticCam().copyOf(20),
+            syntheticCam().copyOf(31), // Ends in front of the DriveDirection.
             syntheticCam(latitude = 900_000_002),
             syntheticCam(longitude = 1_800_000_002),
             syntheticCam(heading = 3_602),
@@ -246,6 +288,7 @@ class CamDecoderTest {
         latitude: Long = -337_654_321,
         longitude: Long = 1_512_345_678,
         heading: Long = 2_345,
+        lengthConfidenceIndication: Long = 0,
         basicContainerExtension: Boolean = false,
         highFrequencyContainer: CamHighFrequencyContainer = BasicVehicle,
     ): ByteArray {
@@ -291,7 +334,7 @@ class CamDecoderTest {
         out.constrained(3, 1, 127)
         out.constrained(0, 0, 2) // DriveDirection forward.
         out.constrained(68, 1, 1_023)
-        out.constrained(0, 0, 4)
+        out.bits(lengthConfidenceIndication, 3) // Raw, like the heading.
         out.constrained(24, 1, 62)
         out.constrained(-12, -160, 161)
         out.constrained(10, 0, 102)
@@ -309,13 +352,18 @@ class CamDecoderTest {
         out.bits(0x5a, 8)
     }
 
-    private fun camFrame(stationType: StationType, position: CamPosition): ByteArray =
+    private fun camFrame(
+        stationType: StationType,
+        position: CamPosition,
+        dimensions: VehicleDimensions = VehicleDimensions.UNAVAILABLE,
+    ): ByteArray =
         ItsG5FrameBuilder.camFrame(
             identity,
             stationType,
             position,
             timestamp,
             ItsG5FrameBuilder.SequenceCounters(initialWlanSequence = 0, initialGbcSequenceId = 0),
+            dimensions,
         )
 
     private fun decode(frame: ByteArray): ReceivedCam? =
@@ -346,6 +394,7 @@ internal object WiresharkCam {
         "cam.highFrequencyContainer",
         "its.headingValue",
         "its.speedValue",
+        "its.vehicleLengthConfidenceIndication",
     )
 
     fun expected(values: Map<String, String>): ReceivedCam? {
@@ -366,6 +415,11 @@ internal object WiresharkCam {
             },
             heading = values.getValue("its.headingValue").ifEmpty { null }?.toInt()?.takeUnless { it == 3_601 },
             speedCms = values.getValue("its.speedValue").ifEmpty { null }?.toInt()?.takeUnless { it == 16_383 },
+            trailer = when (values.getValue("its.vehicleLengthConfidenceIndication")) {
+                "0" -> false
+                "1", "2" -> true
+                else -> null
+            },
         )
     }
 }

@@ -42,6 +42,16 @@ class VehicleDimensionsTest {
     }
 
     @Test
+    fun trailerIsReportedOnlyWithALength() {
+        assertTrue(VehicleDimensions(165, 26, VehicleDimensions.Trailer.KNOWN_LENGTH).reportsTrailer)
+        assertTrue(VehicleDimensions(165, null, VehicleDimensions.Trailer.UNKNOWN_LENGTH).reportsTrailer)
+        assertFalse(VehicleDimensions(165, 26, VehicleDimensions.Trailer.NONE).reportsTrailer)
+        assertFalse(VehicleDimensions(null, 26, VehicleDimensions.Trailer.KNOWN_LENGTH).reportsTrailer)
+        assertFalse(VehicleDimensions.UNAVAILABLE.reportsTrailer)
+        SremProfile.entries.forEach { assertFalse("$it", VehicleDimensions.defaults(it).reportsTrailer) }
+    }
+
+    @Test
     fun settingsFieldsReadMetresWithPointOrComma() {
         assertEquals(45, VehicleDimensions.parseMeters("4.5", VehicleDimensions.MAX_LENGTH_DM))
         assertEquals(26, VehicleDimensions.parseMeters(" 2,55 ", VehicleDimensions.MAX_WIDTH_DM))

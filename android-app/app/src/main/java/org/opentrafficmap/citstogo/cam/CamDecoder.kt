@@ -22,6 +22,11 @@ data class ReceivedCam(
     val highFrequencyContainer: CamHighFrequencyContainer,
     val heading: Int?,
     val speedCms: Int?,
+    /**
+     * Whether the vehicle pulls a trailer, from its VehicleLengthConfidenceIndication. `null` when the CAM leaves it
+     * unknown or unavailable, and without a decoded BasicVehicleContainerHighFrequency.
+     */
+    val trailer: Boolean?,
 )
 
 object CamDecoder {
@@ -31,10 +36,13 @@ object CamDecoder {
     private const val LONGITUDE_UNAVAILABLE = 1_800_000_001
     private const val HEADING_UNAVAILABLE = 3_601
     private const val SPEED_UNAVAILABLE = 16_383
+    private const val NO_TRAILER_PRESENT = 0
+    private const val TRAILER_PRESENT_WITH_KNOWN_LENGTH = 1
+    private const val TRAILER_PRESENT_WITH_UNKNOWN_LENGTH = 2
 
     /**
-     * Decodes a protocolVersion 2 CAM up to the vehicle speed. Returns `null` for other messages and versions and
-     * for CAMs without a position.
+     * Decodes a protocolVersion 2 CAM up to the trailer in the vehicle length. Returns `null` for other messages and
+     * versions and for CAMs without a position.
      */
     fun decode(packet: ItsPacket): ReceivedCam? {
         if (packet.protocolVersion != 2 || packet.messageId != MESSAGE_ID_CAM) return null
@@ -53,7 +61,7 @@ object CamDecoder {
         if (latitude == LATITUDE_UNAVAILABLE || longitude == LONGITUDE_UNAVAILABLE) return null
         // BasicContainer extension additions would precede the high frequency container.
         val container = if (basicContainerExtended) CamHighFrequencyContainer.Unknown else highFrequencyContainer()
-        val motion = if (container == CamHighFrequencyContainer.BasicVehicle) vehicleHeadingAndSpeed() else null
+        val vehicle = if (container == CamHighFrequencyContainer.BasicVehicle) vehicleHighFrequency() else null
         return ReceivedCam(
             stationId = stationId,
             generationDeltaTime = generationDeltaTime,
@@ -61,8 +69,9 @@ object CamDecoder {
             latitude = latitude,
             longitude = longitude,
             highFrequencyContainer = container,
-            heading = motion?.first,
-            speedCms = motion?.second,
+            heading = vehicle?.heading,
+            speedCms = vehicle?.speedCms,
+            trailer = vehicle?.trailer,
         )
     }
 
@@ -82,12 +91,28 @@ object CamDecoder {
         return if (bit()) CamHighFrequencyContainer.RoadSideUnit else CamHighFrequencyContainer.BasicVehicle
     }
 
-    private fun UperBitReader.vehicleHeadingAndSpeed(): Pair<Int?, Int?> {
+    private class VehicleHighFrequency(val heading: Int?, val speedCms: Int?, val trailer: Boolean?)
+
+    private fun UperBitReader.vehicleHighFrequency(): VehicleHighFrequency {
         skipBits(7) // Presence of the optional BasicVehicleContainerHighFrequency fields.
         val heading = inRange(0, 3_601).toInt()
         constrained(1, 127) // headingConfidence
         val speed = constrained(0, 16_383).toInt()
-        return heading.takeUnless { it == HEADING_UNAVAILABLE } to speed.takeUnless { it == SPEED_UNAVAILABLE }
+        constrained(1, 127) // speedConfidence
+        constrained(0, 2) // driveDirection
+        constrained(1, 1_023) // vehicleLengthValue
+        // VehicleLengthConfidenceIndication: trailerPresenceIsUnknown (3), unavailable (4) and values out of range
+        // leave the trailer open.
+        val trailer = when (constrained(0, 4).toInt()) {
+            NO_TRAILER_PRESENT -> false
+            TRAILER_PRESENT_WITH_KNOWN_LENGTH, TRAILER_PRESENT_WITH_UNKNOWN_LENGTH -> true
+            else -> null
+        }
+        return VehicleHighFrequency(
+            heading = heading.takeUnless { it == HEADING_UNAVAILABLE },
+            speedCms = speed.takeUnless { it == SPEED_UNAVAILABLE },
+            trailer = trailer,
+        )
     }
 
     private fun UperBitReader.inRange(minimum: Long, maximum: Long): Long {
