@@ -42,7 +42,7 @@
     <!-- Vehicle profile -->
     <string name="vehicle_profile_label">Vehicle profile</string>
     <string name="vehicle_profile_choose">Choose vehicle profile</string>
-    <string name="vehicle_profile_hint">Used for CAM broadcasts and SREM requests. A change applies at once, also while broadcasting.</string>
+    <string name="vehicle_profile_hint">Used for CAM broadcasts and SREM requests. A change applies at once, also while broadcasting; with address randomization on, it starts a new random identity.</string>
     <string name="vehicle_profile_cam_on">CAM broadcast on</string>
     <string name="vehicle_profile_cam_off">CAM broadcast off</string>
     <string name="vehicle_length_label">Length</string>

@@ -82,9 +82,10 @@ To broadcast CAM:
    is regulated, see [RF safety](../docs/CAM.md#rf-safety).
 2. Choose the vehicle profile on the **CAM Broadcast** page or under
    **Settings → Vehicle Type**; SREM requests use it as well. On the CAM
-   Broadcast page a change applies at once, also during a broadcast, and Home
-   shows the active profile. Length, width and trailer of each profile are set
-   under **Settings → Vehicle Type** and go into every CAM.
+   Broadcast page and in Settings a change applies at once, also during a
+   broadcast (with address randomization on, it starts a new random identity),
+   and Home shows the active profile. Length, width and trailer of each
+   profile are set under **Settings → Vehicle Type** and go into every CAM.
 3. Start a capture on **Home**. Then set a 100–1000 ms maximum interval on the
    **CAM Broadcast** page, tap **Start CAM broadcast** and grant location
    permission.

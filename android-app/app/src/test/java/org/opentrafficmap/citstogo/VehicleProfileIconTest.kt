@@ -7,11 +7,20 @@ import org.opentrafficmap.citstogo.srem.SremProfile
 class VehicleProfileIconTest {
     @Test
     fun everyProfileHasTheIconOfItsOwnStationType() {
-        val icons = SremProfile.entries.map { it.iconRes() }
-
-        assertEquals(SremProfile.entries.size, icons.toSet().size)
-        assertEquals(R.drawable.ic_station_type_passenger_car, SremProfile.PASSENGER_CAR.iconRes())
-        assertEquals(R.drawable.ic_station_type_cyclist, SremProfile.BICYCLE.iconRes())
-        assertEquals(R.drawable.ic_station_type_bus, SremProfile.PUBLIC_TRANSPORT_BUS.iconRes())
+        assertEquals(
+            mapOf(
+                SremProfile.PEDESTRIAN to R.drawable.ic_station_type_pedestrian,
+                SremProfile.BICYCLE to R.drawable.ic_station_type_cyclist,
+                SremProfile.MOPED to R.drawable.ic_station_type_moped,
+                SremProfile.MOTORCYCLE to R.drawable.ic_station_type_motorcycle,
+                SremProfile.PASSENGER_CAR to R.drawable.ic_station_type_passenger_car,
+                SremProfile.PUBLIC_TRANSPORT_BUS to R.drawable.ic_station_type_bus,
+                SremProfile.LIGHT_TRUCK to R.drawable.ic_station_type_light_truck,
+                SremProfile.HEAVY_TRUCK to R.drawable.ic_station_type_heavy_truck,
+                SremProfile.SPECIAL_VEHICLE to R.drawable.ic_station_type_special_vehicles,
+                SremProfile.TRAM to R.drawable.ic_station_type_tram,
+            ),
+            SremProfile.entries.associateWith { it.iconRes() },
+        )
     }
 }

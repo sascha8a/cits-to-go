@@ -32,6 +32,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -119,6 +121,7 @@ fun VehicleProfileSelector(
             SremProfile.entries.forEach { option ->
                 DropdownMenuItem(
                     text = { Text(option.displayName) },
+                    modifier = Modifier.semantics { selected = option == profile },
                     leadingIcon = { VehicleProfileIcon(option, size = 32.dp) },
                     trailingIcon = if (option == profile) {
                         { Icon(imageVector = Icons.Rounded.Check, contentDescription = null) }

@@ -52,10 +52,11 @@ CAM page):
 - A position older than five seconds is not advertised; CAM broadcast waits
   until a fresh phone location is available.
 - RSU uses `RSUContainerHighFrequency`; all other selectable station types use
-  `BasicVehicleContainerHighFrequency`. The app UI only exposes pedestrian and
-  bicycle station types. Release 1 does not define pedestrian/cyclist-specific
-  high-frequency CAM containers, so these are experimental interoperability
-  modes. Do not treat them as a substitute for VAM.
+  `BasicVehicleContainerHighFrequency`. The app offers ten vehicle profiles
+  (station types 1–8, 10 and 11) on the CAM Broadcast page and in Settings.
+  Release 1 does not define pedestrian/cyclist-specific high-frequency CAM
+  containers, so these are experimental interoperability modes. Do not treat
+  them as a substitute for VAM.
 
 ## Generation policy
 

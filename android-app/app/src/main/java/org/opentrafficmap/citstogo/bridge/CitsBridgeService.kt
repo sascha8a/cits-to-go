@@ -1085,7 +1085,6 @@ class CitsBridgeService : Service() {
             .putInt(PREF_CAM_VEHICLE_LENGTH_DM, dimensions.lengthDm ?: 0)
             .putInt(PREF_CAM_VEHICLE_WIDTH_DM, dimensions.widthDm ?: 0)
             .putInt(PREF_CAM_TRAILER, dimensions.trailer.code)
-            .putInt(PREF_VEHICLE_TYPE, camStationType.code)
             .putInt(PREF_CAM_INTERVAL_MS, camIntervalMs)
             .putBoolean(PREF_CAM_RANDOMIZE_MAC, camMacRandomizationEnabled)
             .putInt(PREF_CAM_RANDOMIZATION_INTERVAL_MS, camRandomizationIntervalMs)

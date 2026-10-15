@@ -250,7 +250,6 @@ fun CitsApp(
     onCamRandomizationIntervalChange: (String) -> Unit,
     onConfigureCam: (Boolean) -> Unit,
     sremProfile: SremProfile,
-    onSremProfileChange: (SremProfile) -> Unit,
     onSelectVehicleProfile: (SremProfile) -> Unit,
     vehicleDimensions: Map<SremProfile, VehicleDimensions>,
     onSaveVehicleDimensions: (SremProfile, VehicleDimensions) -> Unit,
@@ -570,7 +569,8 @@ fun CitsApp(
                                 onNodeIdChange(updatedNodeId)
                                 onMaxQueueLengthChange(updatedMaxQueueLength)
                                 onMaxQueueAgeSecondsChange(updatedMaxQueueAgeSeconds)
-                                onSremProfileChange(updatedSremProfile)
+                                // Like a switch on the CAM page, so that a running broadcast takes the new profile over.
+                                if (updatedSremProfile != sremProfile) onSelectVehicleProfile(updatedSremProfile)
                                 onSaveSettings(
                                     updatedMqttUri,
                                     updatedNodeId,

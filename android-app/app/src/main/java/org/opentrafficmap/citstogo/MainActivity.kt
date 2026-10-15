@@ -490,7 +490,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     onCamRandomizationIntervalChange = { camRandomizationIntervalSeconds = it },
                     onConfigureCam = ::configureCam,
                     sremProfile = sremProfile,
-                    onSremProfileChange = { sremProfile = it },
                     onSelectVehicleProfile = ::selectVehicleProfile,
                     vehicleDimensions = vehicleDimensions,
                     onSaveVehicleDimensions = ::saveVehicleDimensions,
