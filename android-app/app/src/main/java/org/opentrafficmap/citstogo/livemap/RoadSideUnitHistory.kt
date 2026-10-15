@@ -26,6 +26,9 @@ object RoadSideUnitHistory {
     private const val DAY_MS = 86_400_000L
     private val INTERSECTION_MESSAGES = setOf(ItsPacketType.MAPEM, ItsPacketType.SPATEM, ItsPacketType.SSEM)
 
+    /** Whether a road side unit sent intersection messages itself: MAPEM, SPATEM or SSEM. */
+    fun trafficLight(messageCounts: Map<ItsPacketType, Int>): Boolean = messageCounts.keys.any { it in INTERSECTION_MESSAGES }
+
     /** The road side units of [stations] last heard within [maxAgeDays] before [nowMs], all of them for 0 days. */
     fun build(stations: List<DiscoveredStation>, nowMs: Long, maxAgeDays: Int): List<RoadSideUnitMarker> =
         stations.mapNotNull { station ->
@@ -33,7 +36,7 @@ object RoadSideUnitHistory {
             val longitude = station.longitudeE7 ?: return@mapNotNull null
             if (!station.roadSideUnit) return@mapNotNull null
             if (maxAgeDays > 0 && nowMs - station.lastSeenMs > maxAgeDays * DAY_MS) return@mapNotNull null
-            val trafficLight = station.typeCounts.keys.any { it in INTERSECTION_MESSAGES }
+            val trafficLight = trafficLight(station.typeCounts)
             RoadSideUnitMarker(
                 macAddress = station.macAddress,
                 latitude = latitude / 10_000_000.0,

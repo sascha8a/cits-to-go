@@ -282,6 +282,8 @@ fun CitsApp(
     var selectedPage by rememberSaveable { mutableStateOf(AppPage.Home) }
     // Keeps the camera of the Map page while other pages are shown.
     val mapPageState = rememberSaveableStateHolder()
+    // A station of the discovery table that the Map page shows until it is left.
+    var mapFocusStation by rememberSaveable { mutableStateOf<DiscoveredStation?>(null) }
     var confettiRun by rememberSaveable { mutableStateOf(0) }
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -325,6 +327,7 @@ fun CitsApp(
     LaunchedEffect(selectedPage) {
         onIntersectionLocationActiveChange(selectedPage == AppPage.IntersectionView || selectedPage == AppPage.Map)
         onFlashingPageActive(selectedPage == AppPage.Flashing)
+        if (selectedPage != AppPage.Map) mapFocusStation = null
     }
     
     LaunchedEffect(txApprovalPromptState) {
@@ -460,6 +463,12 @@ fun CitsApp(
                             onColumnWidthChange = onStationColumnWidthChange,
                             onColumnWidthChangeFinished = onStationColumnWidthChangeFinished,
                             onClearStations = onClearDiscoveredStations,
+                            onShowOnMap = { station ->
+                                // The history shows road side units, so their own marker can carry the card.
+                                if (station.roadSideUnit) onMapHistoryShownChange(true)
+                                mapFocusStation = station
+                                selectedPage = AppPage.Map
+                            },
                             modifier = Modifier.weight(1f),
                         )
                         AppPage.CamBroadcast -> CamBroadcastPage(
@@ -494,6 +503,13 @@ fun CitsApp(
                                     historyShown = mapHistoryShown,
                                     onHistoryShownChange = onMapHistoryShownChange,
                                     historyDays = mapHistoryDays,
+                                    // The latest row of the station, so that its card keeps updating.
+                                    focusStation = mapFocusStation?.let { focus ->
+                                        discoveredStations.firstOrNull { it.macAddress == focus.macAddress }
+                                            ?: roadSideUnits.firstOrNull { it.macAddress == focus.macAddress }
+                                            ?: focus
+                                    },
+                                    onFocusStationCleared = { mapFocusStation = null },
                                     currentPosition = currentPosition,
                                     darkTheme = resolveDarkTheme(themeMode, isSystemInDarkTheme()),
                                     receiving = status.running,

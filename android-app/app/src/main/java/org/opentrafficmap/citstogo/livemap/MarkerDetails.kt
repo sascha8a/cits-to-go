@@ -1,6 +1,7 @@
 package org.opentrafficmap.citstogo.livemap
 
 import kotlin.math.roundToInt
+import org.opentrafficmap.citstogo.station.DiscoveredStation
 import org.opentrafficmap.citstogo.station.ItsPacketType
 
 /** What the detail card of a tapped marker shows. */
@@ -46,16 +47,52 @@ object MarkerDetailsFormat {
     /** A road side unit from history. Times are when the receiver heard it, in a replay when the capture did. */
     fun roadSideUnit(unit: RoadSideUnitMarker, nowMs: Long): MarkerDetails = MarkerDetails(
         title = if (unit.trafficLight) "Traffic light" else "Road side unit",
-        rows = listOf(
-            "MAC address" to unit.macAddress,
-            "Last heard" to ago(unit.lastSeenMs, nowMs),
-            "First heard" to ago(unit.firstSeenMs, nowMs),
-            "Messages" to ItsPacketType.entries
-                .mapNotNull { type -> unit.messageCounts[type]?.let { "${type.label} $it" } }
-                .joinToString(", ")
-                .ifEmpty { "No ITS messages" },
-            "RSSI" to (unit.lastRssiDbm?.let { "$it dBm, best ${unit.bestRssiDbm ?: it} dBm" } ?: UNAVAILABLE),
+        rows = heard(
+            unit.macAddress,
+            unit.firstSeenMs,
+            unit.lastSeenMs,
+            unit.messageCounts,
+            unit.lastRssiDbm,
+            unit.bestRssiDbm,
+            nowMs,
         ),
+    )
+
+    /** A station of the discovery table that the map shows on request, named by its GeoNetworking station type. */
+    fun discoveredStation(station: DiscoveredStation, nowMs: Long): MarkerDetails = MarkerDetails(
+        title = when {
+            station.roadSideUnit && RoadSideUnitHistory.trafficLight(station.typeCounts) -> "Traffic light"
+            station.roadSideUnit -> "Road side unit"
+            else -> station.geoNetworkingStationType?.let(StationTypes::label) ?: "Station"
+        },
+        rows = heard(
+            station.macAddress,
+            station.firstSeenMs,
+            station.lastSeenMs,
+            station.typeCounts,
+            station.lastRssiDbm,
+            station.bestRssiDbm,
+            nowMs,
+        ),
+    )
+
+    private fun heard(
+        macAddress: String,
+        firstSeenMs: Long,
+        lastSeenMs: Long,
+        messageCounts: Map<ItsPacketType, Int>,
+        lastRssiDbm: Int?,
+        bestRssiDbm: Int?,
+        nowMs: Long,
+    ): List<Pair<String, String>> = listOf(
+        "MAC address" to macAddress,
+        "Last heard" to ago(lastSeenMs, nowMs),
+        "First heard" to ago(firstSeenMs, nowMs),
+        "Messages" to ItsPacketType.entries
+            .mapNotNull { type -> messageCounts[type]?.let { "${type.label} $it" } }
+            .joinToString(", ")
+            .ifEmpty { "No ITS messages" },
+        "RSSI" to (lastRssiDbm?.let { "$it dBm, best ${bestRssiDbm ?: it} dBm" } ?: UNAVAILABLE),
     )
 
     /** Whole seconds, minutes from one minute, hours from one hour and days from one day on. */

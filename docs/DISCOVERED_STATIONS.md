@@ -21,6 +21,10 @@ and a selection that holds no constraint removes the filter instead of hiding ev
 GeoNetworking position cannot be filtered; it still sorts. Both filter and sort are stored in app
 preferences, and `Reset` returns to the default view: last seen, newest first.
 
+A double tap on a GeoNetworking position, shown in the accent colour, opens the [map](MAP_VIEW.md) at that
+station; screen readers offer it as "Show on map". While a capture runs, the default sort by last seen keeps
+moving active rows, so a double tap is easier with another sort or a stopped capture.
+
 A row is the *radio*, not the logical station: the ITS station ID and station
 type of the payload are deliberately not shown, because one MAP or SPAT feed can
 be transmitted by several radios (and one radio can carry payloads authored

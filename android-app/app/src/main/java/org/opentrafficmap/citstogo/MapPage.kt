@@ -62,6 +62,7 @@ import java.io.Serializable
 import kotlinx.coroutines.delay
 import org.maplibre.android.MapLibre
 import org.maplibre.android.camera.CameraPosition
+import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.gestures.MoveGestureDetector
 import org.maplibre.android.location.LocationComponent
@@ -74,6 +75,7 @@ import org.maplibre.android.maps.MapLibreMapOptions
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
 import org.opentrafficmap.citstogo.livemap.LiveMap
+import org.opentrafficmap.citstogo.livemap.FocusMarker
 import org.opentrafficmap.citstogo.livemap.LiveMapFeatures
 import org.opentrafficmap.citstogo.livemap.LiveMapLayers
 import org.opentrafficmap.citstogo.livemap.LiveMapModel
@@ -92,6 +94,7 @@ private const val MAP_REFRESH_INTERVAL_MS = 1_000L
 private const val FOLLOW_ZOOM = 16.0
 private const val FOLLOW_MIN_ZOOM = 12.0
 private const val FOLLOW_TRANSITION_MS = 750L
+private const val FOCUS_ZOOM = 17.0
 
 private data class SavedCamera(
     val latitude: Double,
@@ -111,7 +114,8 @@ private data class MapFrame(val liveMap: LiveMap, val roadSideUnits: List<RoadSi
  * Received stations and DENM events on an OpenFreeMap base map. The markers are rebuilt from [snapshot] once per
  * second while the page is resumed. The own position comes from [currentPosition], not from MapLibre. With
  * [historyShown], the map also shows the [roadSideUnits] of the discovery table heard within [historyDays], all of
- * them for 0 days.
+ * them for 0 days. A [focusStation] of the discovery table gets a pin and its detail card, until the card is closed,
+ * another marker is tapped or [onFocusStationCleared] is called; a road side unit the history shows needs no pin.
  */
 @Composable
 fun MapPage(
@@ -121,6 +125,8 @@ fun MapPage(
     historyShown: Boolean,
     onHistoryShownChange: (Boolean) -> Unit,
     historyDays: Int,
+    focusStation: DiscoveredStation?,
+    onFocusStationCleared: () -> Unit,
     currentPosition: DevicePosition?,
     darkTheme: Boolean,
     receiving: Boolean,
@@ -139,6 +145,8 @@ fun MapPage(
     val latestSnapshot by rememberUpdatedState(snapshot)
     val latestStationTimeoutMs by rememberUpdatedState(stationTimeoutMs)
     val latestRoadSideUnits by rememberUpdatedState(roadSideUnits)
+    val latestOnFocusStationCleared by rememberUpdatedState(onFocusStationCleared)
+    val latestFocusStation by rememberUpdatedState(focusStation)
 
     val mapView = remember {
         MapLibre.getInstance(context)
@@ -190,14 +198,17 @@ fun MapPage(
                 override fun onMoveEnd(detector: MoveGestureDetector) = Unit
             })
             loadedMap.addOnMapClickListener { point ->
-                selected = loadedMap
+                val tapped = loadedMap
                     .queryRenderedFeatures(
                         loadedMap.projection.toScreenLocation(point),
+                        LiveMapLayers.FOCUS,
                         LiveMapLayers.STATIONS,
                         LiveMapLayers.DENMS,
                         LiveMapLayers.ROAD_SIDE_UNITS,
                     )
                     .firstNotNullOfOrNull(LiveMapFeatures::markerOf)
+                if (tapped !is MarkerRef.Focus) latestOnFocusStationCleared()
+                selected = tapped
                 true
             }
             map = loadedMap
@@ -225,8 +236,12 @@ fun MapPage(
         }
     }
 
-    LaunchedEffect(style, frame) {
-        style?.let { LiveMapLayers.update(it, frame.liveMap, frame.roadSideUnits) }
+    // A road side unit that the history shows is marked by its own marker.
+    val focusMarker = focusStation
+        ?.takeUnless { station -> frame.roadSideUnits.any { it.macAddress == station.macAddress } }
+        ?.let(FocusMarker::of)
+    LaunchedEffect(style, frame, focusMarker) {
+        style?.let { LiveMapLayers.update(it, frame.liveMap, frame.roadSideUnits, focusMarker) }
     }
 
     LaunchedEffect(style, currentPosition) {
@@ -243,6 +258,20 @@ fun MapPage(
         if (locationShown) loadedMap.follow(follow)
     }
 
+    // Once per station: its row keeps updating while the card is open.
+    LaunchedEffect(map, focusStation?.macAddress) {
+        val loadedMap = map ?: return@LaunchedEffect
+        val station = latestFocusStation ?: return@LaunchedEffect
+        val pin = FocusMarker.of(station) ?: return@LaunchedEffect
+        follow = false
+        if (locationShown) loadedMap.follow(false)
+        selected = MarkerRef.Focus(station.macAddress)
+        loadedMap.animateCamera(
+            CameraUpdateFactory.newLatLngZoom(LatLng(pin.latitude, pin.longitude), FOCUS_ZOOM),
+            FOLLOW_TRANSITION_MS.toInt(),
+        )
+    }
+
     val details = when (val marker = selected) {
         is MarkerRef.Station -> frame.liveMap.stations
             .firstOrNull { it.stationId == marker.stationId }
@@ -253,6 +282,9 @@ fun MapPage(
         is MarkerRef.RoadSideUnit -> frame.roadSideUnits
             .firstOrNull { it.macAddress == marker.macAddress }
             ?.let { MarkerDetailsFormat.roadSideUnit(it, frame.nowMs) }
+        is MarkerRef.Focus -> focusStation
+            ?.takeIf { it.macAddress == marker.macAddress }
+            ?.let { MarkerDetailsFormat.discoveredStation(it, frame.nowMs) }
         null -> null
     }
     LaunchedEffect(selected, details == null) {
@@ -304,7 +336,15 @@ fun MapPage(
                     description = if (follow) "Stop following my position" else "Follow my position",
                 )
             }
-            details?.let { MarkerDetailsCard(it, onClose = { selected = null }) }
+            details?.let {
+                MarkerDetailsCard(
+                    it,
+                    onClose = {
+                        selected = null
+                        onFocusStationCleared()
+                    },
+                )
+            }
             MapAttribution()
         }
     }

@@ -9,6 +9,7 @@ import org.junit.Test
 import org.maplibre.geojson.Feature
 import org.maplibre.geojson.FeatureCollection
 import org.maplibre.geojson.Point
+import org.opentrafficmap.citstogo.station.DiscoveredStation
 
 class LiveMapFeaturesTest {
     private val car = StationMarker(
@@ -97,6 +98,23 @@ class LiveMapFeaturesTest {
         assertEquals("02:42:42:00:00:01", feature.getStringProperty(LiveMapFeatures.MAC_ADDRESS))
         assertEquals(RoadSideUnitHistory.TRAFFIC_LIGHT_ICON, feature.getStringProperty(LiveMapFeatures.ICON))
         assertFalse(feature.hasProperty(LiveMapFeatures.STATION_ID))
+    }
+
+    @Test
+    fun focusIsAPinAtTheStationPosition() {
+        val station = DiscoveredStation(macAddress = "02:42:42:00:00:05", latitudeE7 = 481_234_567, longitudeE7 = 162_345_678)
+        val pin = requireNotNull(FocusMarker.of(station))
+
+        val feature = LiveMapFeatures.focus(pin).features()!!.single()
+
+        assertEquals(Point.fromLngLat(16.2345678, 48.1234567), feature.geometry())
+        assertEquals("02:42:42:00:00:05", feature.getStringProperty(LiveMapFeatures.FOCUS_MAC_ADDRESS))
+        assertEquals(0, LiveMapFeatures.focus(null).features()!!.size)
+        assertNull(FocusMarker.of(station.copy(latitudeE7 = null)))
+        assertEquals(
+            MarkerRef.Focus("02:42:42:00:00:05"),
+            LiveMapFeatures.markerOf(Feature.fromJson(feature.toJson())),
+        )
     }
 
     @Test

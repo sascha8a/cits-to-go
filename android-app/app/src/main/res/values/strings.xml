@@ -56,6 +56,7 @@
     <string name="clear_stations_keep_road_side_units">This forgets the stored stations except the road side units the map shows from history. Packets received afterwards build a new table.</string>
     <string name="clear_stations_all">This forgets all stored stations, also the road side units the map shows from history. Packets received afterwards build a new table.</string>
     <string name="clear_stations_include_road_side_units">Also forget the road side units</string>
+    <string name="show_on_map">Show on map</string>
 
     <!-- Bluetooth Section -->
     <string name="bluetooth_title">Bluetooth</string>

@@ -11,6 +11,7 @@ import org.maplibre.android.style.expressions.Expression.switchCase
 import org.maplibre.android.style.layers.Layer
 import org.maplibre.android.style.layers.Property
 import org.maplibre.android.style.layers.PropertyFactory.iconAllowOverlap
+import org.maplibre.android.style.layers.PropertyFactory.iconAnchor
 import org.maplibre.android.style.layers.PropertyFactory.iconIgnorePlacement
 import org.maplibre.android.style.layers.PropertyFactory.iconImage
 import org.maplibre.android.style.layers.PropertyFactory.iconOpacity
@@ -27,6 +28,9 @@ sealed interface MarkerRef {
     data class Station(val stationId: Long) : MarkerRef
     data class Denm(val id: String) : MarkerRef
     data class RoadSideUnit(val macAddress: String) : MarkerRef
+
+    /** The pin of a station that the map was asked to show. */
+    data class Focus(val macAddress: String) : MarkerRef
 }
 
 /** The GeoJSON features of the map layers. Plain GeoJSON, so that JVM tests cover it. */
@@ -34,6 +38,7 @@ object LiveMapFeatures {
     const val STATION_ID = "stationId"
     const val DENM_ID = "denmId"
     const val MAC_ADDRESS = "macAddress"
+    const val FOCUS_MAC_ADDRESS = "focusMacAddress"
     const val ICON = "icon"
     const val HEADING = "heading"
     const val STALE = "stale"
@@ -75,7 +80,16 @@ object LiveMapFeatures {
         },
     )
 
+    fun focus(marker: FocusMarker?): FeatureCollection = FeatureCollection.fromFeatures(
+        listOfNotNull(marker).map { focus ->
+            val properties = JsonObject().apply { addProperty(FOCUS_MAC_ADDRESS, focus.macAddress) }
+            Feature.fromGeometry(Point.fromLngLat(focus.longitude, focus.latitude), properties, focus.macAddress)
+        },
+    )
+
     fun markerOf(feature: Feature): MarkerRef? = when {
+        feature.hasNonNullValueForProperty(FOCUS_MAC_ADDRESS) ->
+            MarkerRef.Focus(feature.getStringProperty(FOCUS_MAC_ADDRESS))
         feature.hasNonNullValueForProperty(DENM_ID) -> MarkerRef.Denm(feature.getStringProperty(DENM_ID))
         feature.hasNonNullValueForProperty(STATION_ID) ->
             feature.getStringProperty(STATION_ID).toLongOrNull()?.let { MarkerRef.Station(it) }
@@ -84,11 +98,15 @@ object LiveMapFeatures {
     }
 }
 
-/** The sources and symbol layers of the live map: road side units from history, stations above them, DENMs on top. */
+/**
+ * The sources and symbol layers of the live map: road side units from history, stations above them, DENMs above
+ * those, and on top the pin of a station the map was asked to show.
+ */
 object LiveMapLayers {
     const val STATIONS = "stations"
     const val DENMS = "denms"
     const val ROAD_SIDE_UNITS = "roadSideUnits"
+    const val FOCUS = "focus"
     private const val STALE_OPACITY = 0.6f
     private const val HISTORY_OPACITY = 0.75f
     private const val OWN_POSITION_LAYER_PREFIX = "mapbox-location-"
@@ -100,6 +118,7 @@ object LiveMapLayers {
         style.addSource(GeoJsonSource(ROAD_SIDE_UNITS))
         style.addSource(GeoJsonSource(STATIONS))
         style.addSource(GeoJsonSource(DENMS))
+        style.addSource(GeoJsonSource(FOCUS))
         // After a style change MapLibre has already put the own position on the new style; it stays on top.
         val ownPosition = style.layers.firstOrNull { it.id.startsWith(OWN_POSITION_LAYER_PREFIX) }?.id
         fun add(layer: Layer) {
@@ -136,13 +155,22 @@ object LiveMapLayers {
                 iconIgnorePlacement(true),
             ),
         )
+        add(
+            SymbolLayer(FOCUS, FOCUS).withProperties(
+                iconImage(FocusMarker.ICON),
+                iconAnchor(Property.ICON_ANCHOR_BOTTOM),
+                iconAllowOverlap(true),
+                iconIgnorePlacement(true),
+            ),
+        )
     }
 
-    fun update(style: Style, liveMap: LiveMap, roadSideUnits: List<RoadSideUnitMarker>) {
+    fun update(style: Style, liveMap: LiveMap, roadSideUnits: List<RoadSideUnitMarker>, focus: FocusMarker?) {
         // A style that a newer one replaced must not be touched.
         if (!style.isFullyLoaded) return
         style.getSourceAs<GeoJsonSource>(ROAD_SIDE_UNITS)?.setGeoJson(LiveMapFeatures.roadSideUnits(roadSideUnits))
         style.getSourceAs<GeoJsonSource>(STATIONS)?.setGeoJson(LiveMapFeatures.stations(liveMap.stations))
         style.getSourceAs<GeoJsonSource>(DENMS)?.setGeoJson(LiveMapFeatures.denms(liveMap.denms))
+        style.getSourceAs<GeoJsonSource>(FOCUS)?.setGeoJson(LiveMapFeatures.focus(focus))
     }
 }

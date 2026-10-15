@@ -117,6 +117,12 @@ or DENMs, and units known only from packets that other stations forwarded. Both 
 its MAC address, when it was first and last heard, its message counts and its signal strength. A unit known only
 from packets that other stations forwarded has no message counts and no signal strength.
 
+A double tap on the GeoNetworking position of a row on the Discovered Stations page opens the map there: follow
+turns off, the map centres on the position and the detail card of the station opens and keeps updating. A road
+side unit turns the history on and is marked by its history marker; any other station, or a unit the history does
+not show, gets a pin. Pin and card stay until the card is closed, the map or another marker is tapped, or the page
+is left.
+
 **Settings → Map → Road side units heard within** limits the history to units last heard within that many days.
 Empty or 0, the default, shows all. Replayed captures count with their capture time.
 
@@ -158,6 +164,8 @@ Then open **Home → Replay PCAP**, choose the file and switch to **Map**. Check
 - follow, tapping markers, and the detail card,
 - the map stays where it was after switching pages, and switches to the dark style with the app theme,
 - nothing renders or refreshes while the app is in the background.
+- a double tap on a position on the Discovered Stations page opens the map there with a pin (or, for a road side
+  unit, with the history on) and the card of the station; closing the card removes the pin,
 - with the history button on, the road side units of the capture appear and stay after the replay ends; tapping one
   shows its card; a days limit in the settings hides older ones; turning the button off removes them and closes
   their card; the button keeps its state after a restart.

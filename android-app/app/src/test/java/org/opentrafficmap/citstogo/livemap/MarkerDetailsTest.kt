@@ -2,6 +2,7 @@ package org.opentrafficmap.citstogo.livemap
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import org.opentrafficmap.citstogo.station.DiscoveredStation
 import org.opentrafficmap.citstogo.station.ItsPacketType
 
 class MarkerDetailsTest {
@@ -154,6 +155,39 @@ class MarkerDetailsTest {
         assertEquals("Unavailable", known.rows.toMap()["First heard"])
         assertEquals("No ITS messages", known.rows.toMap()["Messages"])
         assertEquals("Unavailable", known.rows.toMap()["RSSI"])
+    }
+
+    @Test
+    fun discoveredStationIsNamedByItsGeonetworkingStationType() {
+        val car = DiscoveredStation(
+            macAddress = "02:42:42:00:00:05",
+            firstSeenMs = nowMs - 600_000L,
+            lastSeenMs = nowMs - 5_000L,
+            typeCounts = mapOf(ItsPacketType.CAM to 12),
+            lastRssiDbm = -80,
+            bestRssiDbm = -70,
+            latitudeE7 = 481_234_567,
+            longitudeE7 = 162_345_678,
+            geoNetworkingStationType = 5,
+        )
+
+        assertEquals(
+            MarkerDetails(
+                title = "Passenger car",
+                rows = listOf(
+                    "MAC address" to "02:42:42:00:00:05",
+                    "Last heard" to "5 s ago",
+                    "First heard" to "10 min 0 s ago",
+                    "Messages" to "CAM 12",
+                    "RSSI" to "-80 dBm, best -70 dBm",
+                ),
+            ),
+            MarkerDetailsFormat.discoveredStation(car, nowMs),
+        )
+        val title = { station: DiscoveredStation -> MarkerDetailsFormat.discoveredStation(station, nowMs).title }
+        assertEquals("Station", title(car.copy(geoNetworkingStationType = null)))
+        assertEquals("Road side unit", title(car.copy(geoNetworkingStationType = 15, typeCounts = emptyMap())))
+        assertEquals("Traffic light", title(car.copy(geoNetworkingStationType = 15, typeCounts = mapOf(ItsPacketType.SPATEM to 1))))
     }
 
     @Test

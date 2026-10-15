@@ -7,6 +7,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -75,6 +76,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
@@ -123,6 +126,7 @@ fun DiscoveredStationsPage(
     onColumnWidthChange: (StationColumn, Int) -> Unit,
     onColumnWidthChangeFinished: () -> Unit,
     onClearStations: (includeRoadSideUnits: Boolean) -> Unit,
+    onShowOnMap: (DiscoveredStation) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -192,6 +196,7 @@ fun DiscoveredStationsPage(
                             nowMs = nowMs,
                             striped = index % 2 == 1,
                             stripedColor = stripedColor,
+                            onShowOnMap = onShowOnMap,
                         )
                     }
                 }
@@ -501,6 +506,7 @@ private fun StationTableRow(
     nowMs: Long,
     striped: Boolean,
     stripedColor: Color,
+    onShowOnMap: (DiscoveredStation) -> Unit,
 ) {
     val background = if (striped) Modifier.background(stripedColor) else Modifier
     Row(
@@ -516,6 +522,7 @@ private fun StationTableRow(
                 width = widths.getValue(column),
                 sorted = tableState.sortColumn == column,
                 nowMs = nowMs,
+                onShowOnMap = onShowOnMap,
             )
         }
     }
@@ -528,13 +535,39 @@ private fun StationTableCell(
     width: Dp,
     sorted: Boolean,
     nowMs: Long,
+    onShowOnMap: (DiscoveredStation) -> Unit,
 ) {
     val text = column.display(station)
     val missing = text == StationColumn.MISSING
+    // A double tap on a position shows the station on the map. The gesture outlives recompositions of the row, so it
+    // reads the latest station.
+    val showOnMapLabel = stringResource(R.string.show_on_map)
+    val currentStation by rememberUpdatedState(station)
+    val currentOnShowOnMap by rememberUpdatedState(onShowOnMap)
+    val onMap = column.kind == StationColumnKind.Position &&
+        station.latitudeE7 != null &&
+        station.longitudeE7 != null
     val zeroPacketType = column.packetType != null && station.typeCounts[column.packetType] == null
     Box(
         modifier = Modifier
             .width(width)
+            .then(
+                if (onMap) {
+                    Modifier
+                        .pointerInput(station.macAddress) {
+                            detectTapGestures(onDoubleTap = { currentOnShowOnMap(currentStation) })
+                        }
+                        .semantics(mergeDescendants = true) {
+                            role = Role.Button
+                            onClick(label = showOnMapLabel) {
+                                onShowOnMap(station)
+                                true
+                            }
+                        }
+                } else {
+                    Modifier
+                },
+            )
             .padding(horizontal = 8.dp, vertical = 5.dp),
     ) {
         Column {
@@ -546,6 +579,7 @@ private fun StationTableCell(
                 fontWeight = if (sorted) FontWeight.Medium else FontWeight.Normal,
                 color = when {
                     zeroPacketType || missing -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f)
+                    onMap -> MaterialTheme.colorScheme.primary
                     else -> MaterialTheme.colorScheme.onSurface
                 },
                 maxLines = 1,

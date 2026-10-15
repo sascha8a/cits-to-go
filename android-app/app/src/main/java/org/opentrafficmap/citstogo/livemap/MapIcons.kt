@@ -23,6 +23,7 @@ object MapIcons {
     private const val DOT_SIZE_DP = 20f
     private const val SIGN_SIZE_DP = 34f
     private const val ROAD_SIDE_UNIT_SIZE_DP = 26f
+    private const val PIN_SIZE_DP = 38f
     private const val OUTLINE = 0xFFFFFFFF.toInt()
     private const val INK = 0xFF111827.toInt()
     private const val STALE = 0xFF94A3B8.toInt()
@@ -33,6 +34,7 @@ object MapIcons {
     private const val SIGNAL_RED = 0xFFEF4444.toInt()
     private const val SIGNAL_AMBER = 0xFFF59E0B.toInt()
     private const val SIGNAL_GREEN = 0xFF22C55E.toInt()
+    private const val PIN_RED = 0xFFE11D48.toInt()
 
     /** Adds every icon to [style]. A new style starts without them, so this runs after each style change. */
     fun addTo(style: Style, context: Context) {
@@ -47,6 +49,7 @@ object MapIcons {
         DenmIconGroup.entries.forEach { style.addImage(it.icon, painter.sign(it)) }
         style.addImage(RoadSideUnitHistory.TRAFFIC_LIGHT_ICON, painter.trafficLight())
         style.addImage(RoadSideUnitHistory.ROAD_SIDE_UNIT_ICON, painter.roadSideUnit())
+        style.addImage(FocusMarker.ICON, painter.pin())
     }
 
     // Not the blue of the own position.
@@ -85,6 +88,23 @@ object MapIcons {
                     drawCircle(size / 2f, size / 2f, radius, fill)
                 }
             }
+        }
+
+        /** A map pin whose tip marks the position; the layer anchors it at its bottom. */
+        fun pin(): Bitmap = draw(PIN_SIZE_DP) { size ->
+            val head = RectF(0.2f * size, 0.06f * size, 0.8f * size, 0.66f * size)
+            val path = Path().apply {
+                moveTo(0.5f * size, 0.95f * size)
+                cubicTo(0.36f * size, 0.76f * size, 0.2f * size, 0.6f * size, 0.2f * size, 0.36f * size)
+                arcTo(head, 180f, 180f)
+                cubicTo(0.8f * size, 0.6f * size, 0.64f * size, 0.76f * size, 0.5f * size, 0.95f * size)
+                close()
+            }
+            drawPath(path, outline)
+            fill.color = PIN_RED
+            drawPath(path, fill)
+            fill.color = OUTLINE
+            drawCircle(0.5f * size, 0.36f * size, 0.11f * size, fill)
         }
 
         /** A traffic light head: a dark housing with red, amber and green lamps. */
