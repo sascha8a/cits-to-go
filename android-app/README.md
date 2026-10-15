@@ -166,8 +166,38 @@ The app also publishes retained `its/<nodeid>/status` messages (`online`/`offlin
 
 You need:
 
-- Android SDK and build tools
-- Gradle
+- JDK 17
+- Android SDK 35 with build tools 34.0.0 and 35.0.0
+- Gradle (the wrapper `./gradlew` downloads it)
+- tshark, for the tests that check encoded and decoded packets against Wireshark
+
+`android-app/shell.nix` provides all of them. With Nix installed, `nix-shell shell.nix` in `android-app/` opens a
+shell with the whole toolchain.
+
+### Dev container
+
+Without Nix on the host, the dev container in `.devcontainer/` brings the same toolchain. In VS Code with the Dev
+Containers extension, run **Dev Containers: Reopen in Container**. The first start downloads the toolchain into a
+Docker volume, which takes a while; later starts and rebuilds reuse it, as well as the Gradle cache and the debug
+keystore. New terminals open inside the nix-shell, so the commands below work as they are:
+
+```bash
+cd android-app
+./gradlew assembleDebug testDebugUnitTest
+```
+
+16 unit tests fail without the maintainer captures `cits-178*.pcap`, which are not in the repository: 15 in
+`MapSpatDecoderTest` and `ItsFrameExtractorTest.readsTheSourcePositionsOfAFieldCapture`. Any other failure is real.
+
+The container has no USB access and no emulator. To install on a phone, turn on **Wireless debugging** in the
+developer options (Android 11 or newer), pair once with the pairing code and connect with the port shown on the
+phone:
+
+```bash
+adb pair <phone-ip>:<pairing-port> <pairing-code>
+adb connect <phone-ip>:<port>
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
 
 ---
 

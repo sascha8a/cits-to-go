@@ -1,0 +1,51 @@
+// Dev container for the Android app: a Debian base with the Nix feature, so the VS Code server runs normally and
+// the toolchain (JDK 17, Android SDK, tshark) comes from android-app/shell.nix.
+{
+  "name": "cits-to-go",
+  "image": "mcr.microsoft.com/devcontainers/base:bookworm",
+
+  "features": {
+    "ghcr.io/devcontainers/features/nix:1": {
+      // Single-user install: no nix-daemon needed inside the container
+      "multiUser": false
+    }
+  },
+
+  "mounts": [
+    // Keep the Nix store (Android SDK etc.) across container rebuilds
+    "source=cits-to-go-nix,target=/nix,type=volume",
+    // Keep the Gradle cache across container rebuilds
+    "source=cits-to-go-gradle,target=/home/vscode/.gradle,type=volume",
+    // Keep the debug keystore and the adb key, so debug builds still install over the previous one and a paired
+    // phone stays paired
+    "source=cits-to-go-android,target=/home/vscode/.android,type=volume"
+  ],
+
+  // The bind-mounted workspace belongs to the host user, so Git needs it as a safe directory. The first run downloads
+  // the whole toolchain once, later starts are fast.
+  "postCreateCommand": "sudo chown -R vscode:vscode /home/vscode/.gradle /home/vscode/.android && git config --global --add safe.directory ${containerWorkspaceFolder} && bash -lc 'nix-shell android-app/shell.nix --run \"echo nix-shell ready\"'",
+
+  "remoteUser": "vscode",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "jnoortheen.nix-ide",
+        "fwcd.kotlin"
+      ],
+      "settings": {
+        // New terminals open directly inside the project's nix-shell
+        "terminal.integrated.defaultProfile.linux": "nix-shell",
+        "terminal.integrated.profiles.linux": {
+          "nix-shell": {
+            "path": "bash",
+            "args": ["-lc", "nix-shell android-app/shell.nix"]
+          },
+          "bash": {
+            "path": "bash"
+          }
+        }
+      }
+    }
+  }
+}

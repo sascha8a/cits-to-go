@@ -1,0 +1,4 @@
+# Scripts run in Linux, also from a Windows checkout (dev container, WSL), so they keep LF line endings there.
+*.sh text eol=lf
+*.nix text eol=lf
+gradlew text eol=lf
