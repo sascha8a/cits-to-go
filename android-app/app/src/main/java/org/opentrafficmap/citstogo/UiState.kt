@@ -70,6 +70,7 @@ enum class AppPage(val title: String) {
     Flashing("Flashing"),
     Settings("Settings"),
     Debug("Debug"),
+    Logs("Logs"),
     About("About"),
     ;
 

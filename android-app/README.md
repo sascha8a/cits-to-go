@@ -28,6 +28,37 @@ from the Home page.
 
 ## Running the app
 
+### Connection diagnostics
+
+Logging starts automatically when the app process starts. To report a USB or
+Bluetooth problem, reproduce it, open **Logs** in the navigation drawer, and tap
+**Export all**. Attach the saved text file to the bug report along with what you
+were doing. Export includes all retained levels, regardless of the screen filter.
+
+The screen shows timestamps (UTC), source, and Debug/Info/Warning/Error severity,
+with minimum-level filters and a Clear action. History is limited to the latest
+2,000 entries in memory; it is lost when Android terminates the process. Individual
+messages and stack traces are truncated to 8,192 characters each. Export before
+restarting the app. Exports include app/Android/device versions and connection
+details; packet payloads are not logged.
+
+Connection diagnostics include USB inventory and selection decisions, permission
+prompt/callback state, per-transport attempt IDs, BLE setup stages and elapsed
+connection time, and the first bytes, valid CTG frame, and firmware statistics.
+Normal capture has no separate request/response handshake: the first valid CTG
+frame confirms protocol communication. USB enrollment additionally logs the
+firmware acknowledgement and encrypted BLE verification. Repeated empty reads,
+notifications, and malformed records are limited to preserve startup context.
+
+Diagnostics use `java.util.logging.Logger`. A root `Handler` collects propagated
+JUL records while preserving existing handlers. App loggers under
+`org.opentrafficmap.citstogo` enable debug (`FINE`) records; other loggers retain
+their own thresholds. `SEVERE` maps to Error, `WARNING` to Warning, `INFO` to Info,
+and lower levels to Debug. This does not capture arbitrary `android.util.Log`
+calls or system Bluetooth stack logs.
+
+### Capture
+
 1. Flash the CITS-to-go firmware to the XIAO ESP32-C5.
 2. Connect the XIAO to the Android phone with a USB-C data cable.
 3. Open the app.

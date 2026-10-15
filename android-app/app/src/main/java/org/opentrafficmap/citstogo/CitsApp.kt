@@ -31,6 +31,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -71,6 +72,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -332,6 +334,7 @@ fun CitsApp(
                 // reconfigure the drawer's drag detector in the middle of a slider gesture.
                 drawerContent = {
                     ModalDrawerSheet(
+                        modifier = Modifier.fillMaxHeight(),
                         drawerContainerColor = MaterialTheme.colorScheme.surface,
                         drawerContentColor = MaterialTheme.colorScheme.onSurface,
                     ) {
@@ -342,25 +345,27 @@ fun CitsApp(
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.primary,
                         )
-                        visiblePages.forEach { page ->
-                            NavigationDrawerItem(
-                                label = { Text(page.title) },
-                                selected = page == selectedPage,
-                                onClick = {
-                                    if (txApprovalPromptState == TxApprovalPromptState.Ready) {
-                                        onDismissTxApproval()
-                                    }
-                                    selectedPage = page
-                                    scope.launch { drawerState.close() }
-                                },
-                                modifier = Modifier.padding(horizontal = 12.dp),
-                                colors = NavigationDrawerItemDefaults.colors(
-                                    selectedContainerColor = Color(ContextCompat.getColor(context, R.color.primary_container)),
-                                    unselectedContainerColor = MaterialTheme.colorScheme.surface,
-                                    selectedTextColor = MaterialTheme.colorScheme.primary,
-                                    unselectedTextColor = MaterialTheme.colorScheme.secondary,
-                                ),
-                            )
+                        Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                            visiblePages.forEach { page ->
+                                NavigationDrawerItem(
+                                    label = { Text(if (page == AppPage.Logs) stringResource(R.string.logs_title) else page.title) },
+                                    selected = page == selectedPage,
+                                    onClick = {
+                                        if (txApprovalPromptState == TxApprovalPromptState.Ready) {
+                                            onDismissTxApproval()
+                                        }
+                                        selectedPage = page
+                                        scope.launch { drawerState.close() }
+                                    },
+                                    modifier = Modifier.padding(horizontal = 12.dp),
+                                    colors = NavigationDrawerItemDefaults.colors(
+                                        selectedContainerColor = Color(ContextCompat.getColor(context, R.color.primary_container)),
+                                        unselectedContainerColor = MaterialTheme.colorScheme.surface,
+                                        selectedTextColor = MaterialTheme.colorScheme.primary,
+                                        unselectedTextColor = MaterialTheme.colorScheme.secondary,
+                                    ),
+                                )
+                            }
                         }
                     }
                 },
@@ -372,7 +377,7 @@ fun CitsApp(
                     .windowInsetsPadding(WindowInsets.safeDrawing)
                     .padding(if (selectedPage == AppPage.Home && !txPromptActive) 16.dp else 20.dp)
                     .then(
-                        if (txPromptActive || selectedPage == AppPage.IntersectionView || selectedPage == AppPage.DiscoveredStations) {
+                        if (txPromptActive || selectedPage == AppPage.IntersectionView || selectedPage == AppPage.DiscoveredStations || selectedPage == AppPage.Logs) {
                             Modifier
                         } else {
                             Modifier.verticalScroll(mainScrollState)
@@ -388,7 +393,11 @@ fun CitsApp(
                         else -> null
                     }
                     AppHeader(
-                        title = if (txPromptActive) "TX Approval" else selectedPage.title,
+                        title = when {
+                            txPromptActive -> "TX Approval"
+                            selectedPage == AppPage.Logs -> stringResource(R.string.logs_title)
+                            else -> selectedPage.title
+                        },
                         onOpenMenu = { scope.launch { drawerState.open() } },
                         subtitle = headerSubtitle,
                     )
@@ -502,6 +511,7 @@ fun CitsApp(
                             connectionMode = connectionMode,
                         )
                         AppPage.About -> AboutPage()
+                        AppPage.Logs -> LogsPage(Modifier.weight(1f))
                     }
                 }
             }

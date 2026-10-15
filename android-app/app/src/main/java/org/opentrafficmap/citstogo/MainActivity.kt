@@ -59,6 +59,7 @@ import org.opentrafficmap.citstogo.intersection.IntersectionDiagnostics
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
 import org.opentrafficmap.citstogo.protocol.FirmwareStatistics
+import org.opentrafficmap.citstogo.bridge.ConnectionDiagnostics
 import org.opentrafficmap.citstogo.srem.SremProfile
 import org.opentrafficmap.citstogo.srem.estimateSremRequestTimeMs
 import org.opentrafficmap.citstogo.station.DiscoveredStation
@@ -157,6 +158,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private val bluetoothPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { grants ->
+        java.util.logging.Logger.getLogger("org.opentrafficmap.citstogo.Permissions").info("Bluetooth permission result: $grants")
         if (grants.isNotEmpty() && grants.values.all { it }) {
             if (enrollmentAfterBluetoothPermission) requestEnrollmentUsb() else startBridge()
         } else if (enrollmentAfterBluetoothPermission) {
@@ -193,7 +195,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action != CitsBridgeService.ACTION_USB_PERMISSION) return
             val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+            java.util.logging.Logger.getLogger("org.opentrafficmap.citstogo.Permissions").info("USB permission result: granted=$granted")
             val device = intent.parcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
+            java.util.logging.Logger.getLogger("org.opentrafficmap.citstogo.Permissions").info(
+                "USB permission callback: device=${device?.deviceName} pending=${startAfterPermission?.deviceName} " +
+                    "enrollment=$enrollmentAfterPermission flashing=$flashAfterPermission " +
+                    "currentGrant=${device?.let { usbManager.hasPermission(it) }}",
+            )
             refreshDevices()
             if (granted) {
                 selectedDeviceName = device?.deviceName ?: selectedDeviceName
@@ -621,6 +629,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
         val pendingIntent = PendingIntent.getBroadcast(this, 22, intent, flags)
+        java.util.logging.Logger.getLogger("org.opentrafficmap.citstogo.Permissions").info(
+            "USB enrollment permission request: ${ConnectionDiagnostics.usb(device, usbManager)} requestCode=22 flags=$flags",
+        )
         usbManager.requestPermission(device, pendingIntent)
         bluetoothEnrollmentMessage = "USB permission is required to enroll this phone."
     }
@@ -640,6 +651,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         logLine = "Bluetooth enrollment complete"
                     },
                     onFailure = { error ->
+                        java.util.logging.Logger.getLogger("org.opentrafficmap.citstogo.BluetoothEnrollment").log(java.util.logging.Level.SEVERE, "Enrollment failed", error)
                         bluetoothEnrollmentError = true
                         bluetoothEnrollmentMessage = enrollmentErrorMessage(error)
                         logLine = bluetoothEnrollmentMessage
@@ -674,6 +686,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun requestBluetoothThenStart() {
+        java.util.logging.Logger.getLogger("org.opentrafficmap.citstogo.Permissions").info(
+            "Bluetooth start requested: ${ConnectionDiagnostics.bluetoothPermissions(this)}",
+        )
         saveSettings()
         val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
@@ -685,11 +700,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             startBridge()
         } else {
             bluetoothPermissionLauncher.launch(missing.toTypedArray())
+            java.util.logging.Logger.getLogger("org.opentrafficmap.citstogo.Permissions").info("Bluetooth permission prompt launched: missing=$missing")
             logLine = "Requesting Bluetooth permission"
         }
     }
 
     private fun requestUsbThenStart() {
+        java.util.logging.Logger.getLogger("org.opentrafficmap.citstogo.Permissions").info("USB start requested; selected=$selectedDeviceName")
         saveSettings()
         refreshDevices()
         val device = devices.firstOrNull { it.deviceName == selectedDeviceName } ?: devices.firstOrNull()
@@ -707,6 +724,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
         val pendingIntent = PendingIntent.getBroadcast(this, 20, intent, flags)
+        java.util.logging.Logger.getLogger("org.opentrafficmap.citstogo.Permissions").info(
+            "USB capture permission request: ${ConnectionDiagnostics.usb(device, usbManager)} requestCode=20 flags=$flags",
+        )
         usbManager.requestPermission(device, pendingIntent)
         logLine = "Requesting USB permission"
     }
@@ -1326,11 +1346,16 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     }
 
     private fun refreshDevices() {
+        val logger = java.util.logging.Logger.getLogger("org.opentrafficmap.citstogo.USB.Discovery")
+        logger.fine("Refreshing USB inventory; previous selection=$selectedDeviceName USB host=${packageManager.hasSystemFeature(PackageManager.FEATURE_USB_HOST)}")
         devices.clear()
         devices.addAll(usbManager.deviceList.values.sortedWith(compareByDescending<UsbDevice> { it.vendorId == 0x303A }.thenBy { it.deviceName }))
         if (selectedDeviceName == null || devices.none { it.deviceName == selectedDeviceName }) {
             selectedDeviceName = devices.firstOrNull()?.deviceName
         }
+        logger.fine("USB inventory: count=${devices.size} selected=$selectedDeviceName")
+        devices.forEach { logger.fine(ConnectionDiagnostics.usb(it, usbManager)) }
+        if (devices.isEmpty()) logger.warning("Android UsbManager reports no attached USB devices")
     }
 
     private fun saveSettings(

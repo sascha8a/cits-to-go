@@ -1,4 +1,19 @@
 <resources>
+    <string name="logs_title">Logs</string>
+    <string name="logs_time_column">Time (UTC)</string>
+    <string name="logs_level_column">Level</string>
+    <string name="logs_source_column">Source</string>
+    <string name="logs_message_column">Message</string>
+    <string name="logs_count">%1$d / %2$d entries</string>
+    <string name="logs_empty">No logs at this level.</string>
+    <string name="logs_clear">Clear</string>
+    <string name="logs_export">Export all</string>
+    <string name="logs_export_success">Logs exported</string>
+    <string name="logs_export_error">Could not export logs</string>
+    <string name="logs_debug">Debug+</string>
+    <string name="logs_info">Info+</string>
+    <string name="logs_warning">Warning+</string>
+    <string name="logs_error">Error</string>
     <string name="app_name">C-ITS to go</string>
     <string name="author_name">Alexander Lampalzer</string>
     <string name="author_email">sascha@localhost.systems</string>

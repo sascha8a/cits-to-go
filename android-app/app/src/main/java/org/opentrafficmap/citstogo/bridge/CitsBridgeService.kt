@@ -62,6 +62,7 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.min
 
 class CitsBridgeService : Service() {
+    private val logger = java.util.logging.Logger.getLogger("org.opentrafficmap.citstogo.Bridge")
     private val handler = Handler(Looper.getMainLooper())
     private val pcapLock = Any()
     private lateinit var usbManager: UsbManager
@@ -146,6 +147,7 @@ class CitsBridgeService : Service() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
                 UsbManager.ACTION_USB_DEVICE_ATTACHED -> {
+                    logger.info("USB device attached")
                     val device = intent.parcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
                     if (device != null) {
                         handleDiscoveredDevice(device)
@@ -156,6 +158,7 @@ class CitsBridgeService : Service() {
                     if (connectionWanted && connectionMode == ConnectionMode.USB && serial == null) scheduleConnectionReconnect(0)
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
+                    logger.info("USB device detached")
                     val device = intent.parcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
                     if (device == null || device.deviceName == selectedDeviceName) {
                         permissionRequestedDeviceName = null
@@ -164,6 +167,7 @@ class CitsBridgeService : Service() {
                     }
                 }
                 ACTION_USB_PERMISSION -> {
+                    logger.info("USB permission result: granted=${intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)}")
                     // Either answer ends the wait: granted opens the port right away, denied falls
                     // back to the slow reconnect poll without nagging the user with another prompt.
                     if (connectionWanted && connectionMode == ConnectionMode.USB && serial == null) scheduleConnectionReconnect(0)
@@ -425,6 +429,7 @@ class CitsBridgeService : Service() {
     }
 
     private fun openConnection() {
+        logger.fine("Connection attempt: mode=$connectionMode wanted=$connectionWanted selected=$selectedDeviceName")
         if (!connectionWanted) return
         when (connectionMode) {
             ConnectionMode.USB -> openUsb()
@@ -454,7 +459,7 @@ class CitsBridgeService : Service() {
             serial = opened
             promoteConnectedDeviceForeground()
             status = status.copy(running = true, usbState = "Connected: ${opened.description()}")
-            val reader = SerialPacketReader(::handlePacket, ::handleTxResult, ::handleProtocolError, ::handleFirmwareStatistics)
+            val reader = SerialPacketReader(::handlePacket, ::handleTxResult, ::handleProtocolError, ::handleFirmwareStatistics, diagnosticSource = "USB")
             serialReadThread = Thread({
                 val buffer = ByteArray(16 * 1024)
                 // The firmware emits a CTG1 statistics record every second, so a healthy open
@@ -495,6 +500,7 @@ class CitsBridgeService : Service() {
             publishStatus("USB connected")
         } catch (e: Exception) {
             closeSerial(null)
+            logger.log(java.util.logging.Level.SEVERE, "USB open failed", e)
             status = status.copy(running = connectionWanted, usbState = "USB error", lastError = "USB open failed: ${e.message}")
             publishStatus(status.lastError)
             scheduleConnectionReconnect(2_000)
@@ -509,14 +515,18 @@ class CitsBridgeService : Service() {
      * fresh attach allows a new prompt again. The result arrives through [usbReceiver].
      */
     private fun requestUsbPermission(device: UsbDevice) {
-        if (permissionRequestedDeviceName == device.deviceName) return
+        if (permissionRequestedDeviceName == device.deviceName) {
+            logger.fine("USB permission prompt already requested for ${device.deviceName}; waiting for grant or reattach")
+            return
+        }
         permissionRequestedDeviceName = device.deviceName
+        logger.info("Requesting USB permission from service: ${ConnectionDiagnostics.usb(device, usbManager)}")
         val intent = Intent(ACTION_USB_PERMISSION).setPackage(packageName)
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
         runCatching {
             usbManager.requestPermission(device, PendingIntent.getBroadcast(this, USB_PERMISSION_REQUEST_CODE, intent, flags))
-        }
+        }.onFailure { logger.log(java.util.logging.Level.SEVERE, "USB permission request failed", it) }
     }
 
     private fun openBluetooth() {
@@ -533,7 +543,7 @@ class CitsBridgeService : Service() {
                 serial = opened
                 promoteConnectedDeviceForeground()
                 status = status.copy(running = true, usbState = "Connected: ${opened.description()}", lastError = "")
-                val reader = SerialPacketReader(::handlePacket, ::handleTxResult, ::handleProtocolError, ::handleFirmwareStatistics)
+                val reader = SerialPacketReader(::handlePacket, ::handleTxResult, ::handleProtocolError, ::handleFirmwareStatistics, diagnosticSource = "BLE")
                 serialReadThread = Thread({
                     val buffer = ByteArray(16 * 1024)
                     while (connectionWanted && connectionMode == ConnectionMode.BLUETOOTH && serial === opened) {
@@ -561,6 +571,7 @@ class CitsBridgeService : Service() {
                 publishStatus("Bluetooth connected")
             } catch (e: Exception) {
                 closeSerial(null)
+                logger.log(java.util.logging.Level.SEVERE, "Bluetooth connect failed", e)
                 status = status.copy(
                     running = connectionWanted,
                     usbState = "Bluetooth error",
@@ -1193,6 +1204,7 @@ class CitsBridgeService : Service() {
     }
 
     private fun handleSerialError(error: Exception) {
+        logger.log(java.util.logging.Level.SEVERE, "$connectionMode transport I/O failed", error)
         status = status.copy(usbState = "USB error", lastError = "Serial read failed: ${error.message}")
         publishStatus(status.lastError)
         closeSerial(null)
@@ -1334,6 +1346,7 @@ class CitsBridgeService : Service() {
 
     private fun scheduleConnectionReconnect(delayMs: Long) {
         if (!connectionWanted) return
+        logger.fine("$connectionMode reconnect scheduled in ${delayMs}ms")
         handler.postDelayed({ if (connectionWanted && serial == null) openConnection() }, delayMs)
     }
 
@@ -1346,11 +1359,22 @@ class CitsBridgeService : Service() {
 
     private fun findDevice(deviceName: String?): UsbDevice? {
         val devices = usbManager.deviceList.values.toList()
-        if (devices.isEmpty()) return null
-        if (deviceName != null) {
-            devices.firstOrNull { it.deviceName == deviceName }?.let { return it }
+        logger.fine("USB selection: requested=$deviceName attached=${devices.size}")
+        devices.forEach { logger.fine("USB candidate: ${ConnectionDiagnostics.usb(it, usbManager)}") }
+        if (devices.isEmpty()) {
+            logger.fine("No USB devices enumerated; waiting for attach")
+            return null
         }
-        return devices.firstOrNull { it.vendorId == ESPRESSIF_VENDOR_ID } ?: devices.first()
+        if (deviceName != null) {
+            devices.firstOrNull { it.deviceName == deviceName }?.let {
+                logger.fine("Using selected USB device ${it.deviceName}")
+                return it
+            }
+            logger.warning("Selected USB device $deviceName is absent; falling back to available device")
+        }
+        return (devices.firstOrNull { it.vendorId == ESPRESSIF_VENDOR_ID } ?: devices.first()).also {
+            logger.info("USB fallback selection: ${ConnectionDiagnostics.usb(it, usbManager)} Espressif=${it.vendorId == ESPRESSIF_VENDOR_ID}")
+        }
     }
 
     private fun scanKnownUsbDevices() {
@@ -1358,6 +1382,7 @@ class CitsBridgeService : Service() {
     }
 
     private fun handleDiscoveredDevice(device: UsbDevice) {
+        logger.fine("USB discovery: ${ConnectionDiagnostics.usb(device, usbManager)} recognized=${device.isCitsDevice()}")
         if (!device.isCitsDevice()) return
         val message = "C-ITS device discovered: ${device.discoveryLabel()}"
         publishStatus(message)
@@ -1371,6 +1396,9 @@ class CitsBridgeService : Service() {
     }
 
     private fun publishStatus(log: String?) {
+        if (!log.isNullOrBlank() && !log.startsWith("Packet ") && !log.startsWith("TX ")) {
+            logger.log(if (log == status.lastError) java.util.logging.Level.SEVERE else java.util.logging.Level.INFO, log)
+        }
         refreshIntersectionSnapshots()
         status = status.copy(
             running = connectionWanted || replayWanted,
