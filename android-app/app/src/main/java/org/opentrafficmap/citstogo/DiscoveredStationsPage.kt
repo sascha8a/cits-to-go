@@ -1,5 +1,6 @@
 package org.opentrafficmap.citstogo
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -10,9 +11,13 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,21 +26,36 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.FilterAlt
 import androidx.compose.material.icons.rounded.SwapVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DatePickerDefaults
+import androidx.compose.material3.DateRangePicker
+import androidx.compose.material3.DateRangePickerState
+import androidx.compose.material3.DisplayMode
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RangeSlider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -58,6 +78,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
@@ -65,20 +86,31 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.coerceIn
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import org.opentrafficmap.citstogo.station.END_OF_DAY
 import org.opentrafficmap.citstogo.station.DiscoveredStation
 import org.opentrafficmap.citstogo.station.StationColumn
 import org.opentrafficmap.citstogo.station.StationColumnKind
+import org.opentrafficmap.citstogo.station.StationFilter
 import org.opentrafficmap.citstogo.station.StationTableState
 import org.opentrafficmap.citstogo.station.StationTime
+import org.opentrafficmap.citstogo.station.TextMatchMode
+import org.opentrafficmap.citstogo.station.TimeShortcut
 
 /**
  * Table of the C-ITS stations the receiver has heard from. Tapping a header sorts by that column, its
- * funnel opens a filter for it, and dragging its right edge sets the width by hand; the current sort,
- * filters and widths arrive through [tableState] and are handed back through the callbacks so the
- * activity can persist them.
+ * funnel opens a filter editor that fits the column's values, and dragging its right edge sets the
+ * width by hand; the current sort, filters and widths arrive through [tableState] and are handed back
+ * through the callbacks so the activity can persist them.
  */
 @Composable
 fun DiscoveredStationsPage(
@@ -100,7 +132,7 @@ fun DiscoveredStationsPage(
     // Keyed on what actually selects and orders the rows, so a column-width drag does not re-sort
     // and re-measure the whole table on every frame.
     val rows = remember(stations, tableState.filters, tableState.sortColumn, tableState.sortDescending, nowMs) {
-        tableState.rows(stations)
+        tableState.rows(stations, nowMs)
     }
     val columnWidths = rememberColumnWidths(rows, tableState)
     var filterColumn by remember { mutableStateOf<StationColumn?>(null) }
@@ -167,9 +199,9 @@ fun DiscoveredStationsPage(
     filterColumn?.let { column ->
         StationFilterDialog(
             column = column,
-            initialQuery = tableState.filters[column].orEmpty(),
-            onApply = { query ->
-                onTableStateChange(tableState.withFilter(column, query))
+            initialFilter = tableState.filters[column],
+            onApply = { filter ->
+                onTableStateChange(tableState.withFilter(column, filter))
                 filterColumn = null
             },
             onClear = {
@@ -210,8 +242,8 @@ private fun StationTableToolbar(
 ) {
     // Every view override the user has set, each one removable by tapping its chip.
     val overrides = buildList {
-        tableState.filters.forEach { (column, query) ->
-            add("${column.title}: $query" to { onDropFilter(column) })
+        tableState.filters.forEach { (column, filter) ->
+            add("${column.title}: ${filter.summary}" to { onDropFilter(column) })
         }
         tableState.widths.forEach { (column, width) ->
             add("${column.title}: fixed ${width} dp" to { onAutoWidth(column) })
@@ -354,19 +386,21 @@ private fun StationTableHeaderCell(
                 tint = accentColor.copy(alpha = if (sorted) 1f else 0.45f),
             )
             Spacer(Modifier.width(2.dp))
-            Box(
-                modifier = Modifier
-                    .size(24.dp)
-                    .clip(RoundedCornerShape(4.dp))
-                    .clickable(onClick = onFilterClick),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Rounded.FilterAlt,
-                    contentDescription = "Filter ${column.title}",
-                    modifier = Modifier.size(14.dp),
-                    tint = if (filtered) MaterialTheme.colorScheme.primary else accentColor.copy(alpha = 0.45f),
-                )
+            if (column.filterable) {
+                Box(
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clip(RoundedCornerShape(4.dp))
+                        .clickable(onClick = onFilterClick),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.FilterAlt,
+                        contentDescription = "Filter ${column.title}",
+                        modifier = Modifier.size(14.dp),
+                        tint = if (filtered) MaterialTheme.colorScheme.primary else accentColor.copy(alpha = 0.45f),
+                    )
+                }
             }
             StationColumnResizeHandle(
                 column = column,
@@ -520,43 +554,477 @@ private fun StationTableMessage(title: String, detail: String) {
     }
 }
 
+/**
+ * Filter editor for one column. Each kind of value gets controls that fit it - match modes for text,
+ * bounds for counts, a dBm slider for signal, a date range with rolling shortcuts for timestamps -
+ * and the result is handed back as a [StationFilter]; a selection that holds no constraint removes
+ * the filter again.
+ */
 @Composable
 private fun StationFilterDialog(
     column: StationColumn,
-    initialQuery: String,
-    onApply: (String) -> Unit,
+    initialFilter: StationFilter?,
+    onApply: (StationFilter?) -> Unit,
     onClear: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var query by remember(column) { mutableStateOf(initialQuery) }
+    when (column.kind) {
+        StationColumnKind.Text -> StationTextFilterDialog(column, initialFilter, onApply, onClear, onDismiss)
+        StationColumnKind.Count -> StationCountFilterDialog(column, initialFilter, onApply, onClear, onDismiss)
+        StationColumnKind.Signal -> StationSignalFilterDialog(column, initialFilter, onApply, onClear, onDismiss)
+        StationColumnKind.Timestamp -> StationTimeFilterDialog(column, initialFilter, onApply, onClear, onDismiss)
+        StationColumnKind.Position -> Unit // the header has no funnel for this kind
+    }
+}
+
+@Composable
+private fun StationFilterDialogScaffold(
+    column: StationColumn,
+    hasStoredFilter: Boolean,
+    confirmEnabled: Boolean,
+    onApply: () -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit,
+) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Filter ${column.title}", fontSize = 18.sp) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    label = { Text(column.title) },
-                    placeholder = { Text(filterPlaceholder(column), fontSize = 13.sp) },
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                    textStyle = TextStyle(fontSize = 14.sp),
-                )
-                Text(column.filterHint, fontSize = 12.sp, color = MaterialTheme.colorScheme.secondary)
-            }
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(7.dp),
+            ) { content() }
         },
-        confirmButton = { TextButton(onClick = { onApply(query) }) { Text("Apply") } },
+        confirmButton = { TextButton(onClick = onApply, enabled = confirmEnabled) { Text("Apply") } },
         dismissButton = {
             Row {
-                if (initialQuery.isNotEmpty()) {
+                if (hasStoredFilter) {
                     TextButton(onClick = onClear) { Text("Clear") }
                 }
                 TextButton(onClick = onDismiss) { Text("Cancel") }
             }
         },
     )
+}
+
+/**
+ * Chip border with a clearly drawn outline, so a filter option reads as a button rather than a
+ * label. Material's default unchecked border is too faint for that inside a dialog.
+ */
+@Composable
+private fun StationFilterChipBorder(selected: Boolean): BorderStroke = FilterChipDefaults.filterChipBorder(
+    enabled = true,
+    selected = selected,
+    borderColor = MaterialTheme.colorScheme.outline,
+    selectedBorderColor = MaterialTheme.colorScheme.primary,
+)
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun StationTextFilterDialog(
+    column: StationColumn,
+    initialFilter: StationFilter?,
+    onApply: (StationFilter?) -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val stored = initialFilter as? StationFilter.Text
+    var query by remember(column) { mutableStateOf(stored?.query.orEmpty()) }
+    var mode by remember(column) { mutableStateOf(stored?.mode ?: TextMatchMode.Contains) }
+    StationFilterDialogScaffold(
+        column = column,
+        hasStoredFilter = initialFilter != null,
+        confirmEnabled = true,
+        onApply = { onApply(StationFilter.Text(mode, query)) },
+        onClear = onClear,
+        onDismiss = onDismiss,
+    ) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            TextMatchMode.entries.forEach { option ->
+                FilterChip(
+                    selected = mode == option,
+                    onClick = { mode = option },
+                    border = StationFilterChipBorder(mode == option),
+                    label = { Text(option.label, fontSize = 12.sp) },
+                )
+            }
+        }
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true,
+            label = { Text(column.title) },
+            placeholder = { Text("02:1a", fontSize = 13.sp) },
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            textStyle = TextStyle(fontSize = 14.sp),
+        )
+        Text(
+            "Upper and lower case are treated the same. An empty query removes the filter.",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun StationCountFilterDialog(
+    column: StationColumn,
+    initialFilter: StationFilter?,
+    onApply: (StationFilter?) -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val stored = initialFilter as? StationFilter.NumberRange
+    var minText by remember(column) { mutableStateOf(stored?.min?.toString().orEmpty()) }
+    var maxText by remember(column) { mutableStateOf(stored?.max?.toString().orEmpty()) }
+    val min = minText.trim().toLongOrNull()
+    val max = maxText.trim().toLongOrNull()
+    val notWholeNumbers = (minText.isNotBlank() && min == null) || (maxText.isNotBlank() && max == null)
+    val reversed = min != null && max != null && min > max
+    StationFilterDialogScaffold(
+        column = column,
+        hasStoredFilter = initialFilter != null,
+        confirmEnabled = !notWholeNumbers && !reversed,
+        onApply = { onApply(StationFilter.NumberRange(min = min, max = max)) },
+        onClear = onClear,
+        onDismiss = onDismiss,
+    ) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            FilterChip(
+                selected = min == 1L && max == null,
+                onClick = {
+                    minText = "1"
+                    maxText = ""
+                },
+                border = StationFilterChipBorder(min == 1L && max == null),
+                label = { Text("Sent at least one", fontSize = 12.sp) },
+            )
+            FilterChip(
+                selected = min == 0L && max == 0L,
+                onClick = {
+                    minText = "0"
+                    maxText = "0"
+                },
+                border = StationFilterChipBorder(min == 0L && max == 0L),
+                label = { Text("Sent none", fontSize = 12.sp) },
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            StationNumberField(minText, { minText = it }, "At least", Modifier.weight(1f))
+            StationNumberField(maxText, { maxText = it }, "At most", Modifier.weight(1f))
+        }
+        when {
+            notWholeNumbers -> StationFilterError("Counts are whole numbers.")
+            reversed -> StationFilterError("The minimum must not be above the maximum.")
+        }
+        Text(
+            "Leave a bound empty to keep the range open there.",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+    }
+}
+
+/** Whole dBm a signal filter may span; a bound left at the edge of this range means "no limit". */
+private val RSSI_FILTER_RANGE_DBM = -110f..-20f
+
+@Composable
+private fun StationSignalFilterDialog(
+    column: StationColumn,
+    initialFilter: StationFilter?,
+    onApply: (StationFilter?) -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val stored = initialFilter as? StationFilter.NumberRange
+    var missingOnly by remember(column) { mutableStateOf(stored?.missingOnly == true) }
+    var bounds by remember(column) {
+        mutableStateOf(
+            (stored?.min?.toFloat() ?: RSSI_FILTER_RANGE_DBM.start)..
+                (stored?.max?.toFloat() ?: RSSI_FILTER_RANGE_DBM.endInclusive),
+        )
+    }
+    val atLeast = bounds.start.roundToInt().takeIf { it > RSSI_FILTER_RANGE_DBM.start.toInt() }
+    val atMost = bounds.endInclusive.roundToInt().takeIf { it < RSSI_FILTER_RANGE_DBM.endInclusive.toInt() }
+    StationFilterDialogScaffold(
+        column = column,
+        hasStoredFilter = initialFilter != null,
+        confirmEnabled = true,
+        onApply = {
+            onApply(
+                if (missingOnly) {
+                    StationFilter.NumberRange(missingOnly = true)
+                } else {
+                    StationFilter.NumberRange(min = atLeast?.toLong(), max = atMost?.toLong())
+                },
+            )
+        },
+        onClear = onClear,
+        onDismiss = onDismiss,
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            Checkbox(checked = missingOnly, onCheckedChange = { missingOnly = it })
+            Text("Only stations without any RSSI", fontSize = 13.sp)
+        }
+        Column(Modifier.padding(top = 2.dp)) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(
+                    "${RSSI_FILTER_RANGE_DBM.start.toInt()} dBm",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+                Text(
+                    "${RSSI_FILTER_RANGE_DBM.endInclusive.toInt()} dBm",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
+            // 44 steps over 90 dBm puts the thumb on every second dBm, coarse enough to hit with a finger.
+            RangeSlider(
+                value = bounds,
+                onValueChange = { bounds = it },
+                valueRange = RSSI_FILTER_RANGE_DBM,
+                steps = 44,
+                enabled = !missingOnly,
+            )
+            Text(
+                text = when {
+                    atLeast != null && atMost != null -> "Keeps signals between $atLeast and $atMost dBm."
+                    atLeast != null -> "Keeps signals of $atLeast dBm or stronger."
+                    atMost != null -> "Keeps signals of $atMost dBm or weaker."
+                    else -> "Drag both ends of the slider to narrow the signal range."
+                },
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+        }
+        Text(
+            "A stronger signal is closer to zero: -50 dBm beats -80 dBm.",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun StationTimeFilterDialog(
+    column: StationColumn,
+    initialFilter: StationFilter?,
+    onApply: (StationFilter?) -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val stored = initialFilter as? StationFilter.TimeRange
+    var shortcut by remember(column) { mutableStateOf(stored?.shortcut ?: TimeShortcut.None) }
+    var fromDay by remember(column) { mutableStateOf(stored?.startMs?.let(::dayOf)) }
+    var toDay by remember(column) { mutableStateOf(stored?.endMs?.let(::dayOf)) }
+    var pickingRange by remember(column) { mutableStateOf(false) }
+
+    val custom = shortcut == TimeShortcut.None
+    val startMs = fromDay?.let(::dayStartMs)
+    val endMs = toDay?.let(::dayEndMs)
+    val reversed = custom && startMs != null && endMs != null && startMs > endMs
+
+    StationFilterDialogScaffold(
+        column = column,
+        hasStoredFilter = initialFilter != null,
+        confirmEnabled = !reversed,
+        onApply = {
+            onApply(
+                if (custom) {
+                    StationFilter.TimeRange(startMs = startMs, endMs = endMs)
+                } else {
+                    StationFilter.TimeRange(shortcut = shortcut)
+                },
+            )
+        },
+        onClear = onClear,
+        onDismiss = onDismiss,
+    ) {
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            TimeShortcut.entries.forEach { option ->
+                FilterChip(
+                    selected = shortcut == option,
+                    onClick = { shortcut = option },
+                    border = StationFilterChipBorder(shortcut == option),
+                    label = { Text(option.label, fontSize = 12.sp) },
+                )
+            }
+        }
+        StationDateRangeButton(fromDay, toDay, Modifier.fillMaxWidth()) { pickingRange = true }
+        if (reversed) {
+            StationFilterError("The last day must not be before the first day.")
+        }
+    }
+
+    if (pickingRange) {
+        StationDateRangePickerDialog(fromDay, toDay, onDismiss = { pickingRange = false }) { from, to ->
+            fromDay = from
+            toDay = to
+            shortcut = TimeShortcut.None
+            pickingRange = false
+        }
+    }
+}
+
+@Composable
+private fun StationDateRangeButton(
+    fromDay: LocalDate?,
+    toDay: LocalDate?,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val from = fromDay?.let(FILTER_DAY_FORMAT::format)
+    val to = toDay?.let(FILTER_DAY_FORMAT::format)
+    OutlinedCard(modifier = modifier.clickable(onClick = onClick)) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Text("Date range", fontSize = 11.sp, color = MaterialTheme.colorScheme.secondary)
+            Text(
+                text = when {
+                    from != null && to != null -> "$from – $to"
+                    from != null -> "since $from"
+                    to != null -> "until $to"
+                    else -> "any day"
+                },
+                fontSize = 13.sp,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
+    }
+}
+
+/**
+ * Material's range calendar in one dialog: both ends are selected in the same view. 1.4.0 ships no
+ * `DateRangePickerDialog`, and a plain `AlertDialog` sizes itself to its content - the picker's
+ * minimum content width then squeezes the month grid until day letters overlap - so the dialog
+ * takes the screen width itself and hands the full measure to the picker.
+ */
+@Composable
+private fun StationDateRangePickerDialog(
+    initialFrom: LocalDate?,
+    initialTo: LocalDate?,
+    onDismiss: () -> Unit,
+    onPick: (LocalDate?, LocalDate?) -> Unit,
+) {
+    // The picker reports UTC middays; they are read back as dates and placed in the local zone by
+    // the caller, so the days that are selected are the days that are filtered on.
+    val pickerState = rememberDateRangePickerState(
+        initialSelectedStartDateMillis = initialFrom?.toPickerUtcMillis(),
+        initialSelectedEndDateMillis = initialTo?.toPickerUtcMillis(),
+    )
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxWidth().padding(14.dp),
+            shape = RoundedCornerShape(28.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 6.dp,
+        ) {
+            Column(Modifier.padding(top = 14.dp)) {
+                // Bounded height, not a scroll wrapper: the picker scrolls its months itself.
+                // The compact headline skeleton and the own title/headline slots keep "Select
+                // dates" and the range left aligned with the calendar, and the mode toggle on the
+                // right edge, instead of the default's indented, wrapping layout.
+                Box(modifier = Modifier.heightIn(max = 520.dp)) {
+                    DateRangePicker(
+                        state = pickerState,
+                        modifier = Modifier.fillMaxWidth(),
+                        dateFormatter = DatePickerDefaults.dateFormatter(selectedDateSkeleton = "dd.MM.yy"),
+                        title = {
+                            Text(
+                                "Select dates",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 16.dp, top = 20.dp, end = 16.dp),
+                            )
+                        },
+                        headline = {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    text = rangeHeadline(pickerState),
+                                    style = MaterialTheme.typography.headlineSmall,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                    modifier = Modifier.weight(1f).padding(top = 8.dp, bottom = 16.dp),
+                                )
+                                val onTextInput = pickerState.displayMode == DisplayMode.Input
+                                IconButton(
+                                    onClick = {
+                                        pickerState.displayMode =
+                                            if (onTextInput) DisplayMode.Picker else DisplayMode.Input
+                                    },
+                                ) {
+                                    Icon(
+                                        imageVector = if (onTextInput) Icons.Rounded.CalendarMonth else Icons.Rounded.Edit,
+                                        contentDescription = if (onTextInput) "Switch to calendar" else "Switch to text input",
+                                    )
+                                }
+                            }
+                        },
+                        showModeToggle = false,
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                    TextButton(onClick = {
+                        onPick(
+                            pickerState.selectedStartDateMillis?.toPickerUtcDay(),
+                            pickerState.selectedEndDateMillis?.toPickerUtcDay(),
+                        )
+                    }) { Text("Apply") }
+                }
+            }
+        }
+    }
+}
+
+private fun LocalDate.toPickerUtcMillis(): Long = atStartOfDay().toInstant(ZoneOffset.UTC).toEpochMilli()
+
+private fun Long.toPickerUtcDay(): LocalDate = Instant.ofEpochMilli(this).atZone(ZoneOffset.UTC).toLocalDate()
+
+private val FILTER_HEADLINE_FORMAT = DateTimeFormatter.ofPattern("dd.MM.yy")
+
+/** Headline like `15.10.26 – 17.10.26` from the UTC middays the picker reports. */
+private fun rangeHeadline(state: DateRangePickerState): String {
+    fun part(millis: Long?) =
+        millis?.let { FILTER_HEADLINE_FORMAT.format(Instant.ofEpochMilli(it).atZone(ZoneOffset.UTC)) } ?: "----"
+    return "${part(state.selectedStartDateMillis)} – ${part(state.selectedEndDateMillis)}"
+}
+
+@Composable
+private fun StationNumberField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    keyboardType: KeyboardType = KeyboardType.Number,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        modifier = modifier,
+        singleLine = true,
+        label = { Text(label, fontSize = 13.sp) },
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = ImeAction.Done),
+        textStyle = TextStyle(fontSize = 14.sp),
+    )
+}
+
+@Composable
+private fun StationFilterError(text: String) {
+    Text(text, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
 }
 
 /**
@@ -637,10 +1105,15 @@ private val MONOSPACE_COLUMNS: Set<StationColumn> = setOf(
     StationColumn.position,
 ) + StationColumn.packetTypes
 
-private fun filterPlaceholder(column: StationColumn): String = when (column) {
-    StationColumn.macAddress -> "02:1a"
-    StationColumn.firstSeen, StationColumn.lastSeen -> "09:4"
-    StationColumn.lastRssi, StationColumn.bestRssi -> ">=-80"
-    StationColumn.position -> "48.2"
-    else -> if (column.kind == StationColumnKind.Count) ">=1" else "text"
-}
+/** Day text of the timestamp filter, kept in the table's own `dd.MM.yyyy` idiom. */
+private val FILTER_DAY_FORMAT = DateTimeFormatter.ofPattern("dd.MM.yyyy")
+
+private fun dayOf(epochMs: Long): LocalDate =
+    Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).toLocalDate()
+
+/** First instant of [day] local time, and the last millisecond the table's epoch values can hold in it. */
+private fun dayStartMs(day: LocalDate): Long =
+    day.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli()
+
+private fun dayEndMs(day: LocalDate): Long =
+    day.atTime(END_OF_DAY).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()

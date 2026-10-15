@@ -6,7 +6,7 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 import org.json.JSONObject
 
-/** What kind of values a column holds, which decides its filter hint and first sort direction. */
+/** What kind of values a column holds, which decides its filter editor and first sort direction. */
 enum class StationColumnKind {
     Text,
     Count,
@@ -24,7 +24,7 @@ enum class StationColumnKind {
  * rendered, and how it sorts and filters.
  *
  * The definitions live outside the composable so that sorting, filtering, and the preference format
- * are testable without a composition, and so a filter always matches the text the user can see.
+ * are testable without a composition, and so a text filter always matches what the user can see.
  */
 class StationColumn(
     val key: String,
@@ -36,34 +36,11 @@ class StationColumn(
     val packetType: ItsPacketType? = null,
     /** Numeric value used for sorting and comparisons, null when the station has no value here. */
     val number: (DiscoveredStation) -> Double? = { null },
-    /** Cell text, which is also what a plain filter matches against. */
+    /** Cell text; the [StationColumnKind.Text] filter matches against exactly this. */
     val display: (DiscoveredStation) -> String = { MISSING },
 ) {
-    val filterHint: String get() = when (kind) {
-        StationColumnKind.Text -> "Contains text"
-        StationColumnKind.Count -> "Number, or a comparison such as >=5"
-        StationColumnKind.Signal -> "dBm, or a comparison such as >=-75"
-        StationColumnKind.Timestamp -> "Time or date, or compare epoch ms with > <"
-        StationColumnKind.Position -> "Coordinate contains, e.g. 48.20"
-    }
-
-    fun matches(station: DiscoveredStation, query: String): Boolean {
-        val trimmed = query.trim()
-        if (trimmed.isEmpty()) return true
-        val comparison = COMPARISON.matchEntire(trimmed)
-        if (comparison != null) {
-            val value = number(station) ?: return false
-            val operand = comparison.groupValues[2].toDouble()
-            return when (comparison.groupValues[1]) {
-                ">" -> value > operand
-                "<" -> value < operand
-                ">=" -> value >= operand
-                "<=" -> value <= operand
-                else -> value == operand
-            }
-        }
-        return display(station).contains(trimmed, ignoreCase = true)
-    }
+    /** Whether the table offers a filter for this column at all. */
+    val filterable: Boolean get() = kind != StationColumnKind.Position
 
     override fun toString(): String = key
 
@@ -164,8 +141,6 @@ class StationColumn(
         val default: StationColumn get() = lastSeen
 
         fun fromKey(key: String?): StationColumn? = ordered.firstOrNull { it.key == key }
-
-        private val COMPARISON = Regex("^(>=|<=|>|<|=)\\s*(-?\\d+(?:\\.\\d+)?)$")
     }
 }
 
@@ -201,7 +176,7 @@ object StationTime {
 data class StationTableState(
     val sortColumn: StationColumn = StationColumn.default,
     val sortDescending: Boolean = StationColumn.default.kind.sortsDescendingFirst,
-    val filters: Map<StationColumn, String> = emptyMap(),
+    val filters: Map<StationColumn, StationFilter> = emptyMap(),
     /**
      * Columns the user has dragged wider or narrower, in dp, overriding the width measured from the
      * cell contents.
@@ -225,13 +200,16 @@ data class StationTableState(
     fun withoutWidth(column: StationColumn): StationTableState =
         if (!widths.containsKey(column)) this else copy(widths = widths - column)
 
-    fun withFilter(column: StationColumn, query: String): StationTableState {
-        val trimmed = query.trim()
+    /**
+     * Sets or drops [column]'s filter; a blank filter, or one for a column that cannot be filtered,
+     * removes it instead of storing a no-op.
+     */
+    fun withFilter(column: StationColumn, filter: StationFilter?): StationTableState {
         val next = filters.toMutableMap()
-        if (trimmed.isEmpty()) {
+        if (filter == null || filter.isBlank || !column.filterable) {
             next.remove(column)
         } else {
-            next[column] = trimmed
+            next[column] = filter
         }
         return copy(filters = next)
     }
@@ -242,10 +220,13 @@ data class StationTableState(
     /** Back to the default ordering, every filter dropped and every column measured again. */
     fun resetView(): StationTableState = DEFAULT
 
-    /** Filters first, so the visible rows are the ones the user sorted. */
-    fun rows(stations: List<DiscoveredStation>): List<DiscoveredStation> {
+    /**
+     * Filters first, so the visible rows are the ones the user sorted. [nowMs] resolves the rolling
+     * time shortcuts; passing the table's ticking clock keeps them following a live capture.
+     */
+    fun rows(stations: List<DiscoveredStation>, nowMs: Long = System.currentTimeMillis()): List<DiscoveredStation> {
         val matching = if (filters.isEmpty()) stations else stations.filter { station ->
-            filters.all { (column, query) -> column.matches(station, query) }
+            filters.all { (column, filter) -> filter.matches(column, station, nowMs) }
         }
         val sign = if (sortDescending) -1 else 1
         return matching.sortedWith { first, second ->
@@ -267,7 +248,7 @@ data class StationTableState(
         .put(KEY_SORT, sortColumn.key)
         .put(KEY_DESCENDING, sortDescending)
         .put(KEY_FILTERS, JSONObject().apply {
-            filters.forEach { (column, query) -> put(column.key, query) }
+            filters.forEach { (column, filter) -> put(column.key, JSONObject().also(filter::encode)) }
         })
         .put(KEY_WIDTHS, JSONObject().apply {
             widths.forEach { (column, width) -> put(column.key, width) }
@@ -284,9 +265,7 @@ data class StationTableState(
             // belonged to it: an order without its column would be a surprise, not a preference.
             val storedSortColumn = StationColumn.fromKey(json.optString(KEY_SORT).takeIf { it.isNotEmpty() })
             val sortColumn = storedSortColumn ?: StationColumn.default
-            val filters = storedColumns(json.optJSONObject(KEY_FILTERS)) { _, raw ->
-                raw.trim().takeIf { it.isNotEmpty() }
-            }
+            val filters = storedFilters(json.optJSONObject(KEY_FILTERS))
             val widths = storedColumns(json.optJSONObject(KEY_WIDTHS)) { column, raw ->
                 raw.toIntOrNull()?.coerceIn(column.minWidthDp, StationColumn.MAX_WIDTH_DP)
             }
@@ -304,7 +283,29 @@ data class StationTableState(
         }
 
         /**
-         * Reads a `{ columnKey: value }` object from stored state, dropping keys whose column no
+         * Reads the stored filters, accepting both the JSON objects the dedicated editors write and
+         * the free-text queries left by older versions. Keys whose column no longer exists or cannot
+         * be filtered, and values that convert to nothing usable, are dropped.
+         */
+        private fun storedFilters(stored: JSONObject?): Map<StationColumn, StationFilter> {
+            if (stored == null) return emptyMap()
+            return buildMap {
+                val keys = stored.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val column = StationColumn.fromKey(key) ?: continue
+                    val filter = when (val raw = stored.opt(key)) {
+                        is JSONObject -> StationFilter.decode(column, raw)
+                        is String -> StationFilter.fromLegacyQuery(column, raw)
+                        else -> null
+                    } ?: continue
+                    put(column, filter)
+                }
+            }
+        }
+
+        /**
+         * Reads a `{ columnKey: value }` object of non-filter state, dropping keys whose column no
          * longer exists and values [parse] rejects.
          */
         private fun <T : Any> storedColumns(

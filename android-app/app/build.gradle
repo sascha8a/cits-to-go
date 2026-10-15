@@ -18,8 +18,8 @@ android {
         applicationId = 'org.opentrafficmap.citstogo'
         minSdk = 26
         targetSdk = 35
-        versionCode = 97
-        versionName = '2.50.1'
+        versionCode = 103
+        versionName = '2.51.5'
         testInstrumentationRunner = 'androidx.test.runner.AndroidJUnitRunner'
     }
 

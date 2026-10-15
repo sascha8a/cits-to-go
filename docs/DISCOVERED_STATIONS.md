@@ -8,10 +8,17 @@ address of its frames. The columns are MAC address, last seen, first seen,
 GeoNetworking position, one counter per decoded ITS message type (DENM, CAM,
 SPATEM, MAPEM, IVIM, SREM, SSEM), last RSSI and best RSSI.
 
-Every column sorts by tapping its header, and every column has its own filter
-behind the funnel icon. Sorting is remembered per tap, both filter and sort are
-stored in app preferences, and `Reset` returns to the default view: last seen,
-newest first.
+Every column sorts by tapping its header. Filtering is per column behind the funnel icon, and each
+kind of column gets an editor that fits its values: the MAC address matches as text (contains, starts
+with or exact, ignoring case); the packet-type counters take an open or closed minimum/maximum with
+`Sent at least one` and `Sent none` shortcuts; the RSSI columns filter with a dBm range slider plus a
+`without any RSSI` switch; and the timestamp columns pick a whole-day range in one material
+`DateRangePicker` calendar - both ends selected in the same view - beside rolling `Today`,
+`Last hour` and `Last 24 h` shortcuts that keep chasing a live capture. A filter never silently
+drops a row whose value is missing where that state exists: the RSSI editors ask for it explicitly,
+and a selection that holds no constraint removes the filter instead of hiding everything. The
+GeoNetworking position cannot be filtered; it still sorts. Both filter and sort are stored in app
+preferences, and `Reset` returns to the default view: last seen, newest first.
 
 A row is the *radio*, not the logical station: the ITS station ID and station
 type of the payload are deliberately not shown, because one MAP or SPAT feed can
@@ -69,9 +76,15 @@ Two preference keys in the shared `cits_bridge` store back the page:
 
 Both formats tolerate what older versions wrote: keys of columns that no longer
 exist are dropped, and so is a stored sort direction whose column is gone, which
-leaves the default order instead of an order nobody can see. Records written
-before the station ID, station type and packet total were dropped are read as
-usual, those fields are simply ignored.
+leaves the default order instead of an order nobody can see. Filters are stored
+as JSON objects describing the dedicated editors' state; the free-text queries
+saved by older versions are converted where the new editors can express them -
+a text query stays a contains match, a comparison such as `>=-70` becomes the
+equivalent bound, and the `—` dash becomes the missing-value request - while
+text a dedicated editor cannot represent, and every stored filter on the
+position column, are dropped. Records written before the station ID, station
+type and packet total were dropped are read as usual, those fields are simply
+ignored.
 
 The store keeps the 500 addresses seen most recently and drops the longest
 unseen one beyond that. Status broadcasts carry at most
@@ -92,7 +105,9 @@ timestamps, so the Home counter and the table agree; `Clear list` empties both.
 
 `StationDiscoveryStoreTest` covers aggregation, eviction, position filtering,
 the JSON round trip including an older record layout, and seeding.
-`StationTableStateTest` covers the column set and order, sorting, the filter
-grammar, width clamping and round trip, and dropping retired columns.
+`StationTableStateTest` covers the column set and order, sorting, the text,
+number-range and time-range filters including the rolling shortcuts, the stored
+filter format and its migration from the old free-text queries, width clamping
+and round trip, and dropping retired columns.
 `ItsFrameExtractorTest` checks the GeoNetworking source position against a
 synthetic frame and against the recorded captures in the repository root.
