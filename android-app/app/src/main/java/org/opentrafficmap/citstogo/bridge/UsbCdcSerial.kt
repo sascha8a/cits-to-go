@@ -13,9 +13,9 @@ class UsbCdcSerial(
     private val usbManager: UsbManager,
     val device: UsbDevice,
 ) : CtgByteTransport {
-    private var connection: UsbDeviceConnection? = null
-    private var inEndpoint: UsbEndpoint? = null
-    private var outEndpoint: UsbEndpoint? = null
+    @Volatile private var connection: UsbDeviceConnection? = null
+    @Volatile private var inEndpoint: UsbEndpoint? = null
+    @Volatile private var outEndpoint: UsbEndpoint? = null
     private var controlInterfaceId: Int? = null
     private val claimedInterfaces = mutableListOf<UsbInterface>()
 

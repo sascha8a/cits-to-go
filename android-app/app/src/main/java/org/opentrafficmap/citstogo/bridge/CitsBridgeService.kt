@@ -53,6 +53,7 @@ import org.opentrafficmap.citstogo.station.ItsPacketType
 import org.opentrafficmap.citstogo.station.StationDiscoveryStore
 import org.opentrafficmap.citstogo.station.StationObservation
 import org.opentrafficmap.citstogo.util.parcelableExtra
+import java.io.IOException
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
@@ -67,7 +68,7 @@ class CitsBridgeService : Service() {
     private lateinit var locationManager: LocationManager
     private lateinit var spool: MqttSpool
 
-    private var serial: CtgByteTransport? = null
+    @Volatile private var serial: CtgByteTransport? = null
     private var serialReadThread: Thread? = null
     private var serialWriteThread: Thread? = null
     private var pcapWriter: PcapWriter? = null
@@ -76,8 +77,8 @@ class CitsBridgeService : Service() {
     private var mqttClient = MiniMqttClient()
     private var wakeLock: PowerManager.WakeLock? = null
 
-    private var connectionWanted = false
-    private var connectionMode = ConnectionMode.USB
+    @Volatile private var connectionWanted = false
+    @Volatile private var connectionMode = ConnectionMode.USB
     private var mqttEnabled = false
     private var mqttEnabledByUser = true
     private var mqttConnecting = AtomicBoolean(false)
@@ -456,10 +457,20 @@ class CitsBridgeService : Service() {
             val reader = SerialPacketReader(::handlePacket, ::handleTxResult, ::handleProtocolError, ::handleFirmwareStatistics)
             serialReadThread = Thread({
                 val buffer = ByteArray(16 * 1024)
+                // The firmware emits a CTG1 statistics record every second, so a healthy open
+                // port never goes this long without bytes. bulkTransfer cannot distinguish a
+                // read timeout from a stalled pipe, so byte-level silence is the reliable
+                // liveness signal; on expiry the shared error path closes and reconnects.
+                var lastActivityMs = SystemClock.elapsedRealtime()
                 while (connectionWanted && connectionMode == ConnectionMode.USB && serial === opened) {
                     try {
                         val count = opened.read(buffer, USB_READ_TIMEOUT_MS)
-                        if (count > 0) reader.accept(buffer, count)
+                        if (count > 0) {
+                            lastActivityMs = SystemClock.elapsedRealtime()
+                            reader.accept(buffer, count)
+                        } else if (SystemClock.elapsedRealtime() - lastActivityMs > USB_SILENCE_TIMEOUT_MS) {
+                            throw IOException("USB serial silent for ${USB_SILENCE_TIMEOUT_MS / 1000}s")
+                        }
                     } catch (e: Exception) {
                         handleSerialError(e)
                     }
@@ -1843,6 +1854,8 @@ class CitsBridgeService : Service() {
         private const val NOTIFICATION_ID = 2301
         private const val STATION_NOTIFICATION_ID_BASE = 2400
         private const val USB_READ_TIMEOUT_MS = 5_000
+        /** Grace for the firmware's 1 Hz statistics stream before the pipe is declared dead. */
+        private const val USB_SILENCE_TIMEOUT_MS = 15_000
         private const val BLE_WRITE_TIMEOUT_MS = 5_000
         private const val USB_WRITE_TIMEOUT_MS = 2_000
         /** Distinct from the activity's permission prompt codes 20..22. */
