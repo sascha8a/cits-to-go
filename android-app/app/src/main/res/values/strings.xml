@@ -39,6 +39,24 @@
     <string name="srem_previous">Previous</string>
     <string name="srem_next">Next</string>
 
+    <!-- Map -->
+    <string name="map_history_show">Show road side units heard before</string>
+    <string name="map_history_hide">Hide road side units heard before</string>
+    <string name="map_history_none">No road side units heard yet.</string>
+    <plurals name="map_history_none_within_days">
+        <item quantity="one">No road side units heard in the last day.</item>
+        <item quantity="other">No road side units heard in the last %d days.</item>
+    </plurals>
+    <string name="map_history_days_label">Road side units heard within</string>
+    <string name="map_history_days_placeholder">All</string>
+    <string name="map_history_days_suffix">days</string>
+    <string name="map_history_days_supporting">The history button on the map shows road side units and traffic lights heard within this many days. Empty or 0 shows all.</string>
+
+    <!-- Discovered Stations -->
+    <string name="clear_stations_keep_road_side_units">This forgets the stored stations except the road side units the map shows from history. Packets received afterwards build a new table.</string>
+    <string name="clear_stations_all">This forgets all stored stations, also the road side units the map shows from history. Packets received afterwards build a new table.</string>
+    <string name="clear_stations_include_road_side_units">Also forget the road side units</string>
+
     <!-- Bluetooth Section -->
     <string name="bluetooth_title">Bluetooth</string>
     <string name="bluetooth_description">Enrollment uses USB once. Afterwards the Bluetooth bond secures normal connections.</string>

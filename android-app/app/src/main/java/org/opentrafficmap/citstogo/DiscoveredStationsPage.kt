@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -70,6 +71,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -119,7 +122,7 @@ fun DiscoveredStationsPage(
     onTableStateChange: (StationTableState) -> Unit,
     onColumnWidthChange: (StationColumn, Int) -> Unit,
     onColumnWidthChangeFinished: () -> Unit,
-    onClearStations: () -> Unit,
+    onClearStations: (includeRoadSideUnits: Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -213,16 +216,40 @@ fun DiscoveredStationsPage(
     }
 
     if (confirmClear) {
+        // The map shows the road side units of this table from history, so they stay unless asked for.
+        var includeRoadSideUnits by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text("Delete discovered stations?") },
             text = {
-                Text("This forgets all ${stations.size} stored stations. Packets received afterwards build a new table.")
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        stringResource(
+                            if (includeRoadSideUnits) R.string.clear_stations_all else R.string.clear_stations_keep_road_side_units,
+                        ),
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .toggleable(
+                                value = includeRoadSideUnits,
+                                role = Role.Checkbox,
+                                onValueChange = { includeRoadSideUnits = it },
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(checked = includeRoadSideUnits, onCheckedChange = null)
+                        Text(
+                            stringResource(R.string.clear_stations_include_road_side_units),
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
+                    }
+                }
             },
             confirmButton = {
                 TextButton(onClick = {
                     confirmClear = false
-                    onClearStations()
+                    onClearStations(includeRoadSideUnits)
                 }) { Text("Delete") }
             },
             dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Cancel") } },

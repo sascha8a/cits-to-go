@@ -1,6 +1,7 @@
 package org.opentrafficmap.citstogo.livemap
 
 import kotlin.math.roundToInt
+import org.opentrafficmap.citstogo.station.ItsPacketType
 
 /** What the detail card of a tapped marker shows. */
 data class MarkerDetails(
@@ -42,15 +43,34 @@ object MarkerDetailsFormat {
         return MarkerDetails(title = denm.label, rows = rows)
     }
 
-    /** Whole seconds, minutes from one minute and hours from one hour on. */
+    /** A road side unit from history. Times are when the receiver heard it, in a replay when the capture did. */
+    fun roadSideUnit(unit: RoadSideUnitMarker, nowMs: Long): MarkerDetails = MarkerDetails(
+        title = if (unit.trafficLight) "Traffic light" else "Road side unit",
+        rows = listOf(
+            "MAC address" to unit.macAddress,
+            "Last heard" to ago(unit.lastSeenMs, nowMs),
+            "First heard" to ago(unit.firstSeenMs, nowMs),
+            "Messages" to ItsPacketType.entries
+                .mapNotNull { type -> unit.messageCounts[type]?.let { "${type.label} $it" } }
+                .joinToString(", ")
+                .ifEmpty { "No ITS messages" },
+            "RSSI" to (unit.lastRssiDbm?.let { "$it dBm, best ${unit.bestRssiDbm ?: it} dBm" } ?: UNAVAILABLE),
+        ),
+    )
+
+    /** Whole seconds, minutes from one minute, hours from one hour and days from one day on. */
     fun duration(ms: Long): String {
         val seconds = ms.coerceAtLeast(0L) / 1_000L
         return when {
             seconds < 60 -> "$seconds s"
             seconds < 3_600 -> "${seconds / 60} min ${seconds % 60} s"
-            else -> "${seconds / 3_600} h ${seconds % 3_600 / 60} min"
+            seconds < 86_400 -> "${seconds / 3_600} h ${seconds % 3_600 / 60} min"
+            else -> "${seconds / 86_400} d ${seconds % 86_400 / 3_600} h"
         }
     }
+
+    // A zero time stands for never, in rows carried over from before the discovery table had times.
+    private fun ago(atMs: Long, nowMs: Long): String = if (atMs == 0L) UNAVAILABLE else "${duration(nowMs - atMs)} ago"
 
     private const val UNAVAILABLE = "Unavailable"
 }

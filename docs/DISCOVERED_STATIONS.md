@@ -98,11 +98,17 @@ equivalent bound, and the `—` dash becomes the missing-value request - while
 text a dedicated editor cannot represent, and every stored filter on the
 position column, are dropped. Records written before the station ID, station
 type and packet total were dropped are read as usual, those fields are simply
-ignored.
+ignored. The station type of a row is stored as `gnStationType`: older
+versions used `type` for the station type of the ITS payload, which does not
+describe the radio.
 
 The store keeps the 500 addresses seen most recently and drops the longest
-unseen one beyond that. Status broadcasts carry at most
-`DiscoveredStationList.BROADCAST_LIMIT` rows, at most once per second.
+unseen one beyond that. Road side units, whose GeoNetworking address carries
+station type 15, have a limit of their own of another 500, so that the
+[map](MAP_VIEW.md) can show them from history however much traffic passed
+since. Status broadcasts carry at most `DiscoveredStationList.BROADCAST_LIMIT`
+rows, at most once per second, and with them every road side unit that has a
+position.
 
 That list travels as a `Serializable` extra, which `Parcel.writeSerializable`
 writes with `ObjectOutputStream`, so `DiscoveredStation` and every type in it
@@ -113,11 +119,15 @@ error instead of letting it kill the service.
 
 Addresses discovered before per-station tracking existed are still in
 `discovered_mac_addresses`. They are seeded into the store as rows without
-timestamps, so the Home counter and the table agree; `Clear list` empties both.
+timestamps, so that every address the Home counter includes also has a row.
+`Clear list` empties both. Its dialog keeps the road side units, which the
+[map](MAP_VIEW.md) shows from history, unless it is told to forget them too.
+Kept road side units also stay in the Home counter.
 
 ## Tests
 
-`StationDiscoveryStoreTest` covers aggregation, eviction, position filtering,
+`StationDiscoveryStoreTest` covers aggregation, eviction with the separate limit
+for road side units, position filtering, forwarded packets, the station type,
 the JSON round trip including an older record layout, and seeding.
 `StationTableStateTest` covers the column set and order, sorting, the text,
 number-range and time-range filters including the rolling shortcuts, the stored

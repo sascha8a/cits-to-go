@@ -28,6 +28,7 @@ import androidx.compose.material.icons.rounded.BrightnessHigh
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.DarkMode
 import androidx.compose.material.icons.rounded.LightMode
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Map
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Schedule
@@ -57,6 +58,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -64,6 +66,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import org.opentrafficmap.citstogo.livemap.LiveMapModel
+import org.opentrafficmap.citstogo.livemap.MapHistoryDays
 import org.opentrafficmap.citstogo.livemap.MapStationTimeout
 import org.opentrafficmap.citstogo.srem.SremProfile
 
@@ -76,6 +79,7 @@ fun SettingsPage(
     maxQueueLength: String,
     maxQueueAgeSeconds: String,
     mapStationTimeoutSeconds: Int,
+    mapHistoryDays: Int,
     txApproved: Boolean,
     sremProfile: SremProfile,
     bridgeRunning: Boolean,
@@ -94,7 +98,7 @@ fun SettingsPage(
     onAppUpdateNotificationChange: (Boolean) -> Unit,
     onEnrollBluetooth: () -> Unit,
     onRevokeTxApproval: () -> Unit,
-    onSave: (String, String, String, String, SremProfile, String) -> Unit,
+    onSave: (String, String, String, String, SremProfile, String, String) -> Unit,
 ) {
     val context = LocalContext.current
     var draftMqttUri by rememberSaveable(mqttUri) { mutableStateOf(mqttUri) }
@@ -104,6 +108,10 @@ fun SettingsPage(
     var draftSremProfile by rememberSaveable(sremProfile) { mutableStateOf(sremProfile) }
     var draftMapStationTimeoutSeconds by rememberSaveable(mapStationTimeoutSeconds) {
         mutableStateOf(mapStationTimeoutSeconds.toString())
+    }
+    // All days show as the empty field with its placeholder.
+    var draftMapHistoryDays by rememberSaveable(mapHistoryDays) {
+        mutableStateOf(if (mapHistoryDays == MapHistoryDays.ALL) "" else mapHistoryDays.toString())
     }
 
     Column(
@@ -131,6 +139,8 @@ fun SettingsPage(
         MapCard(
             stationTimeoutSeconds = draftMapStationTimeoutSeconds,
             onStationTimeoutSecondsChange = { draftMapStationTimeoutSeconds = it },
+            historyDays = draftMapHistoryDays,
+            onHistoryDaysChange = { draftMapHistoryDays = it },
         )
 
         BluetoothCard(
@@ -174,6 +184,7 @@ fun SettingsPage(
                     draftMaxQueueAgeSeconds,
                     draftSremProfile,
                     draftMapStationTimeoutSeconds,
+                    draftMapHistoryDays,
                 )
             },
             modifier = Modifier
@@ -499,6 +510,8 @@ private fun VehicleTypeCard(
 private fun MapCard(
     stationTimeoutSeconds: String,
     onStationTimeoutSecondsChange: (String) -> Unit,
+    historyDays: String,
+    onHistoryDaysChange: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val range = MapStationTimeout.RANGE_SECONDS
@@ -577,6 +590,26 @@ private fun MapCard(
                 trailingIcon = {
                     Icon(
                         imageVector = Icons.Rounded.Schedule,
+                        contentDescription = null,
+                        tint = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
+                        modifier = Modifier.size(20.dp),
+                    )
+                },
+            )
+
+            OutlinedTextField(
+                value = historyDays,
+                onValueChange = onHistoryDaysChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text(stringResource(R.string.map_history_days_label)) },
+                placeholder = { Text(stringResource(R.string.map_history_days_placeholder)) },
+                suffix = { Text(stringResource(R.string.map_history_days_suffix)) },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                supportingText = { Text(stringResource(R.string.map_history_days_supporting)) },
+                trailingIcon = {
+                    Icon(
+                        imageVector = Icons.Rounded.History,
                         contentDescription = null,
                         tint = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
                         modifier = Modifier.size(20.dp),

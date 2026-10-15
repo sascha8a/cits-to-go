@@ -9,10 +9,13 @@ enough.
 ```text
 capture thread   CitsBridgeService.handlePacket() → ItsFrameExtractor → ItsPacket
                      → LiveMapStore.accept(packet, receivedAt, capturedAt)      (CamDecoder, DenmDecoder)
-status broadcast publishStatus() → EXTRA_LIVE_MAP_SNAPSHOT, at most once per second
-activity         MainActivity keeps the last LiveMapSnapshot
-Map page         every second while resumed: LiveMapModel.build(snapshot, now, station timeout)
-                     → LiveMapFeatures → GeoJsonSource "stations" / "denms" → SymbolLayer with MapIcons
+                     → StationDiscoveryStore.observe(...)                       (discovery table)
+status broadcast publishStatus() → EXTRA_LIVE_MAP_SNAPSHOT and EXTRA_ROAD_SIDE_UNITS, at most once per second
+activity         MainActivity keeps the last LiveMapSnapshot and road side units
+Map page         every second while resumed: LiveMapModel.build(snapshot, now, station timeout),
+                     with the history button on also RoadSideUnitHistory.build(road side units, now, days)
+                     → LiveMapFeatures → GeoJsonSource "roadSideUnits" / "stations" / "denms"
+                     → SymbolLayer with MapIcons
 ```
 
 - **Decoders** (`cam/CamDecoder.kt`, `denm/DenmDecoder.kt`) read CAM and DENM UPER up to the fields the map needs:
@@ -26,8 +29,8 @@ Map page         every second while resumed: LiveMapModel.build(snapshot, now, s
 - **Model** (`livemap/LiveMapModel.kt`) is plain Kotlin: from a snapshot, the current time and the station timeout
   it computes what is visible, in display units, with labels (`StationTypes`, `DenmCauses`) and icon names.
 - **Layers** (`livemap/LiveMapLayers.kt`) turn the model into GeoJSON features (`LiveMapFeatures`, covered by JVM
-  tests) and add two sources and two symbol layers to the style, DENMs above stations. `livemap/MapIcons.kt` draws
-  the icons with an Android `Canvas` for the screen density.
+  tests) and add three sources and symbol layers to the style: road side units from history at the bottom, stations
+  above them, DENMs on top. `livemap/MapIcons.kt` draws the icons with an Android `Canvas` for the screen density.
 - **Page** (`MapPage.kt`) hosts a MapLibre `MapView` in an `AndroidView` and forwards the activity lifecycle to it.
 
 The own position comes from the location listener of `MainActivity`, the same one Intersection View uses. It runs
@@ -103,6 +106,25 @@ DENM events have no timeout of their own: they show until they expire or are ter
 - While the map is shown, swiping does not open the navigation drawer, so that swipes move the map; the menu button
   still opens the drawer.
 
+## Road side units from history
+
+The history button above the follow button (off by default; the app remembers it) adds the road side units of the
+[discovery table](DISCOVERED_STATIONS.md) to the map, also when nothing is being received. They are the stations whose
+GeoNetworking address carries station type 15, at the last position of their own Source Position Vector; unlike the
+road side unit timeout of the live map, this does not depend on the CAM. A traffic light icon marks the units the phone
+heard sending MAPEM, SPATEM or SSEM directly, a mast with radio waves all others: units that only send beacons, IVIMs
+or DENMs, and units known only from packets that other stations forwarded. Both are translucent and lie below the live markers. Tapping one shows
+its MAC address, when it was first and last heard, its message counts and its signal strength. A unit known only
+from packets that other stations forwarded has no message counts and no signal strength.
+
+**Settings → Map → Road side units heard within** limits the history to units last heard within that many days.
+Empty or 0, the default, shows all. Replayed captures count with their capture time.
+
+The discovery table keeps up to 500 road side units apart from the 500 other stations, so that passing traffic
+does not push them out. The service publishes them with the status broadcast at most once per second, in addition
+to the rows the table shows. **Clear list** on the Discovered Stations page keeps them unless its dialog is told to
+forget them as well.
+
 ## Map source and attribution
 
 The base map is OpenFreeMap: `https://tiles.openfreemap.org/styles/liberty`, or `.../styles/dark` when the app uses
@@ -136,6 +158,9 @@ Then open **Home → Replay PCAP**, choose the file and switch to **Map**. Check
 - follow, tapping markers, and the detail card,
 - the map stays where it was after switching pages, and switches to the dark style with the app theme,
 - nothing renders or refreshes while the app is in the background.
+- with the history button on, the road side units of the capture appear and stay after the replay ends; tapping one
+  shows its card; a days limit in the settings hides older ones; turning the button off removes them and closes
+  their card; the button keeps its state after a restart.
 
 ## Updating MapLibre
 
@@ -166,3 +191,7 @@ Then open **Home → Replay PCAP**, choose the file and switch to **Map**. Check
 - DENM events are points; traces, event zones and closed lanes are not drawn yet.
 - Replay runs in real time only.
 - Infrastructure DENMs without a centrally assigned actionID can show twice when several road side units send them.
+- Road side units from history show where they last were and are not updated by the live map; a unit that also
+  sends CAMs appears twice while it is live.
+- Rows stored by app versions before 2.56.0 carry no GeoNetworking station type, so such a road side unit shows in
+  history only after it has been heard again, live or in a replay.

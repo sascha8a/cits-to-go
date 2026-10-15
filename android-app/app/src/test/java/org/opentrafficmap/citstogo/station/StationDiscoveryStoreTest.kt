@@ -124,6 +124,69 @@ class StationDiscoveryStoreTest {
     }
 
     @Test
+    fun takesTheStationTypeOfTheStationThatCreatedThePacket() {
+        store.observe(MAC_A, observation(type = ItsPacketType.CAM, stationType = PASSENGER_CAR), 1_000L)
+        store.observe(
+            MAC_A,
+            observation(
+                type = ItsPacketType.IVIM,
+                latitude = 481_000_000,
+                longitude = 162_000_000,
+                stationType = ROAD_SIDE_UNIT,
+                forwardedFrom = MAC_B,
+            ),
+            2_000L,
+        )
+        store.observe(MAC_C, observation(stationType = ROAD_SIDE_UNIT), 3_000L)
+
+        val stations = store.snapshot().associateBy { it.macAddress }
+        assertEquals(PASSENGER_CAR, stations.getValue(MAC_A).geoNetworkingStationType)
+        assertEquals(ROAD_SIDE_UNIT, stations.getValue(MAC_B).geoNetworkingStationType)
+        assertTrue(stations.getValue(MAC_B).roadSideUnit)
+        assertEquals(ROAD_SIDE_UNIT, stations.getValue(MAC_C).geoNetworkingStationType)
+        // Only road side units with a position.
+        assertEquals(listOf(MAC_B), store.roadSideUnits().map { it.macAddress })
+    }
+
+    @Test
+    fun listsRoadSideUnitsNewestFirst() {
+        store.observe(MAC_A, observation(latitude = 481_000_000, longitude = 162_000_000, stationType = ROAD_SIDE_UNIT), 1_000L)
+        store.observe(MAC_B, observation(latitude = 481_100_000, longitude = 162_100_000, stationType = ROAD_SIDE_UNIT), 3_000L)
+        store.observe(MAC_C, observation(latitude = 481_200_000, longitude = 162_200_000, stationType = PASSENGER_CAR), 2_000L)
+
+        assertEquals(listOf(MAC_B, MAC_A), store.roadSideUnits().map { it.macAddress })
+    }
+
+    @Test
+    fun keepsRoadSideUnitsApartFromPassingTraffic() {
+        val bounded = StationDiscoveryStore(maxStations = 2, maxRoadSideUnits = 2)
+        bounded.observe(MAC_A, observation(stationType = ROAD_SIDE_UNIT), 1_000L)
+        listOf(MAC_B, MAC_C, MAC_D).forEachIndexed { index, mac ->
+            bounded.observe(mac, observation(type = ItsPacketType.CAM, stationType = PASSENGER_CAR), (index + 2) * 1_000L)
+        }
+
+        assertEquals(listOf(MAC_D, MAC_C, MAC_A), bounded.snapshot().map { it.macAddress })
+
+        bounded.observe(MAC_E, observation(stationType = ROAD_SIDE_UNIT), 5_000L)
+        bounded.observe(MAC_F, observation(stationType = ROAD_SIDE_UNIT), 6_000L)
+
+        assertEquals(listOf(MAC_F, MAC_E, MAC_D, MAC_C), bounded.snapshot().map { it.macAddress })
+    }
+
+    @Test
+    fun storesTheStationType() {
+        store.observe(MAC_A, observation(latitude = 481_000_000, longitude = 162_000_000, stationType = ROAD_SIDE_UNIT), 1_000L)
+        store.observe(MAC_B, observation(type = ItsPacketType.CAM), 2_000L)
+
+        val restored = StationDiscoveryStore().apply { restore(store.encode()) }
+
+        assertEquals(store.snapshot(), restored.snapshot())
+        assertEquals(ROAD_SIDE_UNIT, restored.snapshot().first { it.macAddress == MAC_A }.geoNetworkingStationType)
+        assertNull(restored.snapshot().first { it.macAddress == MAC_B }.geoNetworkingStationType)
+        assertEquals(listOf(MAC_A), restored.roadSideUnits().map { it.macAddress })
+    }
+
+    @Test
     fun tracksStationsWhoseFramesItCannotDecode() {
         store.observe(MAC_A, observation(), 1_000L)
 
@@ -232,6 +295,8 @@ class StationDiscoveryStoreTest {
         assertEquals(-55, station.bestRssiDbm)
         assertEquals(482_024_036, station.latitudeE7)
         assertEquals(2_000L, station.positionTimeMs)
+        // That station type came from the ITS payload, not from the GeoNetworking address.
+        assertNull(station.geoNetworkingStationType)
     }
 
     @Test
@@ -260,6 +325,24 @@ class StationDiscoveryStoreTest {
     }
 
     @Test
+    fun clearingCanKeepTheRoadSideUnits() {
+        store.observe(MAC_A, observation(latitude = 481_000_000, longitude = 162_000_000, stationType = ROAD_SIDE_UNIT), 1_000L)
+        store.observe(MAC_B, observation(type = ItsPacketType.CAM, stationType = PASSENGER_CAR), 2_000L)
+        store.seedMacAddresses(listOf(MAC_C))
+        val generationBeforeClear = store.generation
+
+        store.clear(keepRoadSideUnits = true)
+
+        assertEquals(listOf(MAC_A), store.snapshot().map { it.macAddress })
+        assertTrue(store.generation > generationBeforeClear)
+        val onlyRoadSideUnits = store.generation
+        store.clear(keepRoadSideUnits = true)
+        assertEquals(onlyRoadSideUnits, store.generation)
+        store.clear()
+        assertEquals(0, store.stationCount)
+    }
+
+    @Test
     fun clearingResetsGenerationAndContent() {
         store.observe(MAC_A, observation(type = ItsPacketType.CAM), 1_000L)
         val generationBeforeClear = store.generation
@@ -280,12 +363,14 @@ class StationDiscoveryStoreTest {
         rssi: Int? = null,
         latitude: Int? = null,
         longitude: Int? = null,
+        stationType: Int? = null,
         forwardedFrom: String? = null,
     ) = StationObservation(
         packetType = type,
         rssiDbm = rssi,
         latitudeE7 = latitude,
         longitudeE7 = longitude,
+        stationType = stationType,
         forwardedFrom = forwardedFrom,
     )
 
@@ -294,5 +379,9 @@ class StationDiscoveryStoreTest {
         const val MAC_B = "02:00:00:00:00:0b"
         const val MAC_C = "02:00:00:00:00:0c"
         const val MAC_D = "02:00:00:00:00:0d"
+        const val MAC_E = "02:00:00:00:00:0e"
+        const val MAC_F = "02:00:00:00:00:0f"
+        const val PASSENGER_CAR = 5
+        const val ROAD_SIDE_UNIT = 15
     }
 }

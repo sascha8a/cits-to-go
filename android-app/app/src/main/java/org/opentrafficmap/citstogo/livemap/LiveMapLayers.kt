@@ -26,12 +26,14 @@ import org.maplibre.geojson.Point
 sealed interface MarkerRef {
     data class Station(val stationId: Long) : MarkerRef
     data class Denm(val id: String) : MarkerRef
+    data class RoadSideUnit(val macAddress: String) : MarkerRef
 }
 
 /** The GeoJSON features of the map layers. Plain GeoJSON, so that JVM tests cover it. */
 object LiveMapFeatures {
     const val STATION_ID = "stationId"
     const val DENM_ID = "denmId"
+    const val MAC_ADDRESS = "macAddress"
     const val ICON = "icon"
     const val HEADING = "heading"
     const val STALE = "stale"
@@ -63,25 +65,39 @@ object LiveMapFeatures {
         },
     )
 
+    fun roadSideUnits(units: List<RoadSideUnitMarker>): FeatureCollection = FeatureCollection.fromFeatures(
+        units.map { unit ->
+            val properties = JsonObject().apply {
+                addProperty(MAC_ADDRESS, unit.macAddress)
+                addProperty(ICON, unit.icon)
+            }
+            Feature.fromGeometry(Point.fromLngLat(unit.longitude, unit.latitude), properties, unit.macAddress)
+        },
+    )
+
     fun markerOf(feature: Feature): MarkerRef? = when {
         feature.hasNonNullValueForProperty(DENM_ID) -> MarkerRef.Denm(feature.getStringProperty(DENM_ID))
         feature.hasNonNullValueForProperty(STATION_ID) ->
             feature.getStringProperty(STATION_ID).toLongOrNull()?.let { MarkerRef.Station(it) }
+        feature.hasNonNullValueForProperty(MAC_ADDRESS) -> MarkerRef.RoadSideUnit(feature.getStringProperty(MAC_ADDRESS))
         else -> null
     }
 }
 
-/** The sources and symbol layers of the live map, DENMs above stations. */
+/** The sources and symbol layers of the live map: road side units from history, stations above them, DENMs on top. */
 object LiveMapLayers {
     const val STATIONS = "stations"
     const val DENMS = "denms"
+    const val ROAD_SIDE_UNITS = "roadSideUnits"
     private const val STALE_OPACITY = 0.6f
+    private const val HISTORY_OPACITY = 0.75f
     private const val OWN_POSITION_LAYER_PREFIX = "mapbox-location-"
 
     /** Adds the sources and layers once per style; the icons must be added as well, see [MapIcons]. */
     fun addTo(style: Style) {
         if (style.getSource(STATIONS) != null) return
         val stale = eq(get(LiveMapFeatures.STALE), true)
+        style.addSource(GeoJsonSource(ROAD_SIDE_UNITS))
         style.addSource(GeoJsonSource(STATIONS))
         style.addSource(GeoJsonSource(DENMS))
         // After a style change MapLibre has already put the own position on the new style; it stays on top.
@@ -89,6 +105,14 @@ object LiveMapLayers {
         fun add(layer: Layer) {
             if (ownPosition != null) style.addLayerBelow(layer, ownPosition) else style.addLayer(layer)
         }
+        add(
+            SymbolLayer(ROAD_SIDE_UNITS, ROAD_SIDE_UNITS).withProperties(
+                iconImage(get(LiveMapFeatures.ICON)),
+                iconOpacity(HISTORY_OPACITY),
+                iconAllowOverlap(true),
+                iconIgnorePlacement(true),
+            ),
+        )
         add(
             SymbolLayer(STATIONS, STATIONS).withProperties(
                 iconImage(
@@ -114,9 +138,10 @@ object LiveMapLayers {
         )
     }
 
-    fun update(style: Style, liveMap: LiveMap) {
+    fun update(style: Style, liveMap: LiveMap, roadSideUnits: List<RoadSideUnitMarker>) {
         // A style that a newer one replaced must not be touched.
         if (!style.isFullyLoaded) return
+        style.getSourceAs<GeoJsonSource>(ROAD_SIDE_UNITS)?.setGeoJson(LiveMapFeatures.roadSideUnits(roadSideUnits))
         style.getSourceAs<GeoJsonSource>(STATIONS)?.setGeoJson(LiveMapFeatures.stations(liveMap.stations))
         style.getSourceAs<GeoJsonSource>(DENMS)?.setGeoJson(LiveMapFeatures.denms(liveMap.denms))
     }

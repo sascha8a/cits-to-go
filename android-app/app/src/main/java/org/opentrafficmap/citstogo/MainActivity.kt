@@ -59,6 +59,7 @@ import org.opentrafficmap.citstogo.intersection.IntersectionDiagnostics
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
 import org.opentrafficmap.citstogo.livemap.LiveMapSnapshot
+import org.opentrafficmap.citstogo.livemap.MapHistoryDays
 import org.opentrafficmap.citstogo.livemap.MapStationTimeout
 import org.opentrafficmap.citstogo.protocol.FirmwareStatistics
 import org.opentrafficmap.citstogo.bridge.ConnectionDiagnostics
@@ -102,6 +103,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var intersectionSortMode by mutableStateOf(IntersectionSortMode.FirstReceived)
     private var liveMapSnapshot by mutableStateOf<LiveMapSnapshot?>(null)
     private var mapStationTimeoutSeconds by mutableStateOf(MapStationTimeout.DEFAULT_SECONDS)
+    private var roadSideUnits by mutableStateOf<List<DiscoveredStation>>(emptyList())
+    private var mapHistoryShown by mutableStateOf(false)
+    private var mapHistoryDays by mutableStateOf(MapHistoryDays.ALL)
     private var currentPosition by mutableStateOf<DevicePosition?>(null)
     private var sremProfile by mutableStateOf(SremProfile.PEDESTRIAN)
     private var camIntervalMs by mutableStateOf(CitsBridgeService.DEFAULT_CAM_INTERVAL_MS.toString())
@@ -302,6 +306,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             intent.serializableExtra<DiscoveredStationList>(CitsBridgeService.EXTRA_DISCOVERED_STATIONS)?.let {
                 discoveredStations = it.stations
             }
+            intent.serializableExtra<DiscoveredStationList>(CitsBridgeService.EXTRA_ROAD_SIDE_UNITS)?.let {
+                roadSideUnits = it.stations
+            }
             intent.serializableExtra<IntersectionSnapshotList>(CitsBridgeService.EXTRA_INTERSECTION_SNAPSHOTS)?.let {
                 intersectionSnapshots = it.snapshots
                 intersectionSnapshot = it.snapshots.firstOrNull()
@@ -345,12 +352,16 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         )
         stationTableState = StationTableState.decode(prefs.getString(PREF_STATION_TABLE_STATE, null))
         // Show the stored discovery table even before the bridge service publishes its own snapshot.
-        discoveredStations = StationDiscoveryStore().apply {
+        val storedStations = StationDiscoveryStore().apply {
             restore(prefs.getString(CitsBridgeService.PREF_DISCOVERED_STATIONS, null))
-        }.snapshot(DiscoveredStationList.BROADCAST_LIMIT)
+        }
+        discoveredStations = storedStations.snapshot(DiscoveredStationList.BROADCAST_LIMIT)
+        roadSideUnits = storedStations.roadSideUnits()
         mapStationTimeoutSeconds = MapStationTimeout.clamp(
             prefs.getInt(PREF_MAP_STATION_TIMEOUT_S, MapStationTimeout.DEFAULT_SECONDS),
         )
+        mapHistoryShown = prefs.getBoolean(PREF_MAP_HISTORY_SHOWN, false)
+        mapHistoryDays = MapHistoryDays.clamp(prefs.getInt(PREF_MAP_HISTORY_DAYS, MapHistoryDays.ALL))
         mqttUri = prefs.getString(CitsBridgeService.PREF_MQTT_URI, CitsBridgeService.DEFAULT_MQTT_URI).orEmpty()
         mqttEnabled = prefs.getBoolean(CitsBridgeService.PREF_MQTT_ENABLED, true)
         nodeId = prefs.getString(CitsBridgeService.PREF_NODE_ID, null) ?: createAndStoreNodeId()
@@ -433,15 +444,26 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                         stationTableState = stationTableState.withWidth(column, width)
                     },
                     onStationColumnWidthChangeFinished = ::persistStationTableState,
-                    onClearDiscoveredStations = {
+                    onClearDiscoveredStations = { includeRoadSideUnits ->
                         // Clear locally right away; the service confirms with its next status.
-                        discoveredStations = emptyList()
-                        sendServiceIntent(CitsBridgeService.ACTION_CLEAR_DISCOVERED_STATIONS)
+                        if (includeRoadSideUnits) {
+                            discoveredStations = emptyList()
+                            roadSideUnits = emptyList()
+                        } else {
+                            discoveredStations = discoveredStations.filter { it.roadSideUnit }
+                        }
+                        sendServiceIntent(CitsBridgeService.ACTION_CLEAR_DISCOVERED_STATIONS) {
+                            putExtra(CitsBridgeService.EXTRA_INCLUDE_ROAD_SIDE_UNITS, includeRoadSideUnits)
+                        }
                     },
                     logLine = logLine,
                     intersectionSnapshots = intersectionSnapshots.ifEmpty { listOfNotNull(intersectionSnapshot) },
                     liveMapSnapshot = liveMapSnapshot,
                     mapStationTimeoutSeconds = mapStationTimeoutSeconds,
+                    roadSideUnits = roadSideUnits,
+                    mapHistoryShown = mapHistoryShown,
+                    onMapHistoryShownChange = ::updateMapHistoryShown,
+                    mapHistoryDays = mapHistoryDays,
                     intersectionSortMode = intersectionSortMode,
                     onIntersectionSortModeChange = ::updateIntersectionSortMode,
                     currentPosition = currentPosition,
@@ -517,7 +539,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     onChooseCustomFirmware = ::chooseCustomFirmware,
                     onUseReleaseFirmware = ::useReleaseFirmware,
                     onFlashFirmware = ::requestFirmwareFlash,
-                    onSaveSettings = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds, updatedSremProfile, updatedMapStationTimeoutSeconds ->
+                    onSaveSettings = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds, updatedSremProfile, updatedMapStationTimeoutSeconds, updatedMapHistoryDays ->
                         mqttUri = updatedMqttUri
                         nodeId = updatedNodeId
                         maxQueueLength = updatedMaxQueueLength
@@ -530,6 +552,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                             updatedMaxQueueAgeSeconds,
                             updatedSremProfile,
                             MapStationTimeout.parse(updatedMapStationTimeoutSeconds),
+                            MapHistoryDays.parse(updatedMapHistoryDays),
                         )
                     },
                 )
@@ -1274,6 +1297,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             .apply()
     }
 
+    private fun updateMapHistoryShown(shown: Boolean) {
+        mapHistoryShown = shown
+        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+            .putBoolean(PREF_MAP_HISTORY_SHOWN, shown)
+            .apply()
+    }
+
     /** Keeps the discovery table's sorting, filters and column widths across visits and restarts. */
     private fun updateStationTableState(state: StationTableState) {
         stationTableState = state
@@ -1378,6 +1408,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         maxQueueAgeSecondsValue: String = maxQueueAgeSeconds,
         sremProfileValue: SremProfile = sremProfile,
         mapStationTimeoutSecondsValue: Int = mapStationTimeoutSeconds,
+        mapHistoryDaysValue: Int = mapHistoryDays,
     ) {
         val parsedMaxQueueLength = parseMaxQueueLength(maxQueueLengthValue)
         val parsedMaxQueueAgeMs = parseMaxQueueAgeMs(maxQueueAgeSecondsValue)
@@ -1387,6 +1418,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         maxQueueAgeSeconds = formatQueueAgeSeconds(parsedMaxQueueAgeMs)
         sremProfile = sremProfileValue
         mapStationTimeoutSeconds = mapStationTimeoutSecondsValue
+        mapHistoryDays = mapHistoryDaysValue
         getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
             .putString(CitsBridgeService.PREF_MQTT_URI, mqttUri)
             .putString(CitsBridgeService.PREF_NODE_ID, nodeId)
@@ -1394,6 +1426,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             .putLong(CitsBridgeService.PREF_MQTT_MAX_QUEUE_AGE_MS, parsedMaxQueueAgeMs)
             .putInt(CitsBridgeService.PREF_VEHICLE_TYPE, sremProfile.preferenceCode)
             .putInt(PREF_MAP_STATION_TIMEOUT_S, mapStationTimeoutSeconds)
+            .putInt(PREF_MAP_HISTORY_DAYS, mapHistoryDays)
             .apply()
     }
 
@@ -1500,6 +1533,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         private const val PREF_THEME_MODE = "theme_mode"
         private const val PREF_DISPLAY_ALWAYS_ON = "display_always_on"
         private const val PREF_MAP_STATION_TIMEOUT_S = "map_station_timeout_s"
+        private const val PREF_MAP_HISTORY_SHOWN = "map_history_shown"
+        private const val PREF_MAP_HISTORY_DAYS = "map_history_days"
         private const val INTERSECTION_LOCATION_MIN_TIME_MS = 500L
         private const val TX_SHAKE_THRESHOLD_G = 2.7f
         private const val TX_SHAKE_COOLDOWN_MS = 1_200L

@@ -40,6 +40,18 @@ class LiveMapFeaturesTest {
         sinceReceivedMs = 1_000,
         expiresAtMs = 0,
     )
+    private val trafficLight = RoadSideUnitMarker(
+        macAddress = "02:42:42:00:00:01",
+        latitude = 48.1234567,
+        longitude = 16.2345678,
+        trafficLight = true,
+        icon = RoadSideUnitHistory.TRAFFIC_LIGHT_ICON,
+        firstSeenMs = 1_000L,
+        lastSeenMs = 2_000L,
+        messageCounts = emptyMap(),
+        lastRssiDbm = null,
+        bestRssiDbm = null,
+    )
 
     @Test
     fun stationBecomesAPointWithItsProperties() {
@@ -77,9 +89,21 @@ class LiveMapFeaturesTest {
     }
 
     @Test
+    fun roadSideUnitBecomesAPointWithItsAddressAndIcon() {
+        val feature = LiveMapFeatures.roadSideUnits(listOf(trafficLight)).features()!!.single()
+
+        assertEquals("02:42:42:00:00:01", feature.id())
+        assertEquals(Point.fromLngLat(16.2345678, 48.1234567), feature.geometry())
+        assertEquals("02:42:42:00:00:01", feature.getStringProperty(LiveMapFeatures.MAC_ADDRESS))
+        assertEquals(RoadSideUnitHistory.TRAFFIC_LIGHT_ICON, feature.getStringProperty(LiveMapFeatures.ICON))
+        assertFalse(feature.hasProperty(LiveMapFeatures.STATION_ID))
+    }
+
+    @Test
     fun emptyMapHasNoFeatures() {
         assertEquals(0, LiveMapFeatures.stations(emptyList()).features()!!.size)
         assertEquals(0, LiveMapFeatures.denms(emptyList()).features()!!.size)
+        assertEquals(0, LiveMapFeatures.roadSideUnits(emptyList()).features()!!.size)
     }
 
     @Test
@@ -94,6 +118,10 @@ class LiveMapFeaturesTest {
         assertEquals(
             MarkerRef.Denm("1021000/7"),
             LiveMapFeatures.markerOf(tapped(LiveMapFeatures.denms(listOf(roadworks)))),
+        )
+        assertEquals(
+            MarkerRef.RoadSideUnit("02:42:42:00:00:01"),
+            LiveMapFeatures.markerOf(tapped(LiveMapFeatures.roadSideUnits(listOf(trafficLight)))),
         )
     }
 

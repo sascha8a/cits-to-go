@@ -25,6 +25,7 @@ import org.opentrafficmap.citstogo.SettingsPage
 import org.opentrafficmap.citstogo.ThemeMode
 import org.opentrafficmap.citstogo.TxApprovalPromptState
 import org.opentrafficmap.citstogo.TxApprovalScreen
+import org.opentrafficmap.citstogo.livemap.MapHistoryDays
 import org.opentrafficmap.citstogo.livemap.MapStationTimeout
 import org.opentrafficmap.citstogo.srem.SremProfile
 
@@ -100,6 +101,7 @@ class TxApprovalUiTest {
                 maxQueueLength = "100",
                 maxQueueAgeSeconds = "0.2",
                 mapStationTimeoutSeconds = MapStationTimeout.DEFAULT_SECONDS,
+                mapHistoryDays = MapHistoryDays.ALL,
                 txApproved = txApproved,
                 sremProfile = SremProfile.PEDESTRIAN,
                 bridgeRunning = false,
@@ -118,7 +120,7 @@ class TxApprovalUiTest {
                 onAppUpdateNotificationChange = {},
                 onEnrollBluetooth = {},
                 onRevokeTxApproval = onRevokeTxApproval,
-                onSave = { _, _, _, _, _, _ -> },
+                onSave = { _, _, _, _, _, _, _ -> },
             )
         }
     }

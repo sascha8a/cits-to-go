@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.LocationSearching
 import androidx.compose.material.icons.rounded.MyLocation
 import androidx.compose.material3.Card
@@ -40,7 +41,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
@@ -78,6 +82,9 @@ import org.opentrafficmap.citstogo.livemap.MapIcons
 import org.opentrafficmap.citstogo.livemap.MarkerDetails
 import org.opentrafficmap.citstogo.livemap.MarkerDetailsFormat
 import org.opentrafficmap.citstogo.livemap.MarkerRef
+import org.opentrafficmap.citstogo.livemap.RoadSideUnitHistory
+import org.opentrafficmap.citstogo.livemap.RoadSideUnitMarker
+import org.opentrafficmap.citstogo.station.DiscoveredStation
 
 private const val LIGHT_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
 private const val DARK_STYLE_URL = "https://tiles.openfreemap.org/styles/dark"
@@ -98,16 +105,22 @@ private val DEFAULT_CAMERA = SavedCamera(latitude = 47.6, longitude = 13.3, zoom
 
 private val EMPTY_SNAPSHOT = LiveMapSnapshot(emptyList(), emptyList())
 
-private data class MapFrame(val liveMap: LiveMap, val nowMs: Long)
+private data class MapFrame(val liveMap: LiveMap, val roadSideUnits: List<RoadSideUnitMarker>, val nowMs: Long)
 
 /**
  * Received stations and DENM events on an OpenFreeMap base map. The markers are rebuilt from [snapshot] once per
- * second while the page is resumed. The own position comes from [currentPosition], not from MapLibre.
+ * second while the page is resumed. The own position comes from [currentPosition], not from MapLibre. With
+ * [historyShown], the map also shows the [roadSideUnits] of the discovery table heard within [historyDays], all of
+ * them for 0 days.
  */
 @Composable
 fun MapPage(
     snapshot: LiveMapSnapshot?,
     stationTimeoutMs: Long,
+    roadSideUnits: List<DiscoveredStation>,
+    historyShown: Boolean,
+    onHistoryShownChange: (Boolean) -> Unit,
+    historyDays: Int,
     currentPosition: DevicePosition?,
     darkTheme: Boolean,
     receiving: Boolean,
@@ -122,9 +135,10 @@ fun MapPage(
     var styleFailed by remember { mutableStateOf(false) }
     var locationShown by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf<MarkerRef?>(null) }
-    var frame by remember { mutableStateOf(MapFrame(LiveMap(emptyList(), emptyList()), 0L)) }
+    var frame by remember { mutableStateOf(MapFrame(LiveMap(emptyList(), emptyList()), emptyList(), 0L)) }
     val latestSnapshot by rememberUpdatedState(snapshot)
     val latestStationTimeoutMs by rememberUpdatedState(stationTimeoutMs)
+    val latestRoadSideUnits by rememberUpdatedState(roadSideUnits)
 
     val mapView = remember {
         MapLibre.getInstance(context)
@@ -181,6 +195,7 @@ fun MapPage(
                         loadedMap.projection.toScreenLocation(point),
                         LiveMapLayers.STATIONS,
                         LiveMapLayers.DENMS,
+                        LiveMapLayers.ROAD_SIDE_UNITS,
                     )
                     .firstNotNullOfOrNull(LiveMapFeatures::markerOf)
                 true
@@ -195,12 +210,14 @@ fun MapPage(
         loadedMap.setStyle(Style.Builder().fromUri(if (darkTheme) DARK_STYLE_URL else LIGHT_STYLE_URL))
     }
 
-    LaunchedEffect(lifecycleOwner) {
+    // Restarts on a change of the history, so that the map follows the button at once.
+    LaunchedEffect(lifecycleOwner, historyShown, historyDays) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
             while (true) {
                 val nowMs = System.currentTimeMillis()
                 frame = MapFrame(
                     LiveMapModel.build(latestSnapshot ?: EMPTY_SNAPSHOT, nowMs, latestStationTimeoutMs),
+                    if (historyShown) RoadSideUnitHistory.build(latestRoadSideUnits, nowMs, historyDays) else emptyList(),
                     nowMs,
                 )
                 delay(MAP_REFRESH_INTERVAL_MS)
@@ -209,7 +226,7 @@ fun MapPage(
     }
 
     LaunchedEffect(style, frame) {
-        style?.let { LiveMapLayers.update(it, frame.liveMap) }
+        style?.let { LiveMapLayers.update(it, frame.liveMap, frame.roadSideUnits) }
     }
 
     LaunchedEffect(style, currentPosition) {
@@ -233,6 +250,9 @@ fun MapPage(
         is MarkerRef.Denm -> frame.liveMap.denms
             .firstOrNull { it.id == marker.id }
             ?.let { MarkerDetailsFormat.denm(it, frame.nowMs) }
+        is MarkerRef.RoadSideUnit -> frame.roadSideUnits
+            .firstOrNull { it.macAddress == marker.macAddress }
+            ?.let { MarkerDetailsFormat.roadSideUnit(it, frame.nowMs) }
         null -> null
     }
     LaunchedEffect(selected, details == null) {
@@ -248,13 +268,19 @@ fun MapPage(
             receiving -> "Waiting for CAMs and DENMs…"
             else -> "Start a capture or a PCAP replay on Home to see stations and DENMs."
         }
-        hint?.let {
-            MapHint(
-                it,
-                Modifier
-                    .align(Alignment.TopStart)
-                    .padding(12.dp),
-            )
+        val historyHint = when {
+            !historyShown || frame.roadSideUnits.isNotEmpty() -> null
+            historyDays > 0 -> pluralStringResource(R.plurals.map_history_none_within_days, historyDays, historyDays)
+            else -> stringResource(R.string.map_history_none)
+        }
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            hint?.let { MapHint(it) }
+            historyHint?.let { MapHint(it) }
         }
         Column(
             modifier = Modifier
@@ -264,7 +290,20 @@ fun MapPage(
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (locationShown) FollowButton(follow = follow, onToggle = { follow = !follow })
+            MapToggleButton(
+                active = historyShown,
+                onToggle = { onHistoryShownChange(!historyShown) },
+                icon = Icons.Rounded.History,
+                description = stringResource(if (historyShown) R.string.map_history_hide else R.string.map_history_show),
+            )
+            if (locationShown) {
+                MapToggleButton(
+                    active = follow,
+                    onToggle = { follow = !follow },
+                    icon = if (follow) Icons.Rounded.MyLocation else Icons.Rounded.LocationSearching,
+                    description = if (follow) "Stop following my position" else "Follow my position",
+                )
+            }
             details?.let { MarkerDetailsCard(it, onClose = { selected = null }) }
             MapAttribution()
         }
@@ -379,26 +418,24 @@ private fun CameraPosition.toSavedCamera(): SavedCamera? {
     return SavedCamera(target.latitude, target.longitude, zoom, bearing)
 }
 
+/** A map button that is filled while its function is on. */
 @Composable
-private fun FollowButton(follow: Boolean, onToggle: () -> Unit) {
+private fun MapToggleButton(active: Boolean, onToggle: () -> Unit, icon: ImageVector, description: String) {
     val context = LocalContext.current
     SmallFloatingActionButton(
         onClick = onToggle,
-        containerColor = if (follow) {
+        containerColor = if (active) {
             Color(ContextCompat.getColor(context, R.color.primary))
         } else {
             Color(ContextCompat.getColor(context, R.color.card))
         },
-        contentColor = if (follow) {
+        contentColor = if (active) {
             Color(ContextCompat.getColor(context, R.color.on_primary))
         } else {
             Color(ContextCompat.getColor(context, R.color.primary))
         },
     ) {
-        Icon(
-            imageVector = if (follow) Icons.Rounded.MyLocation else Icons.Rounded.LocationSearching,
-            contentDescription = if (follow) "Stop following my position" else "Follow my position",
-        )
+        Icon(imageVector = icon, contentDescription = description)
     }
 }
 

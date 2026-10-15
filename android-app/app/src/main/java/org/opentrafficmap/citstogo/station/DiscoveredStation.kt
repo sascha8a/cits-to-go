@@ -21,7 +21,15 @@ data class DiscoveredStation(
     val latitudeE7: Int? = null,
     val longitudeE7: Int? = null,
     val positionTimeMs: Long = 0L,
-) : Serializable
+    /** The ITS station type in the GeoNetworking address of the packets this station created. */
+    val geoNetworkingStationType: Int? = null,
+) : Serializable {
+    val roadSideUnit: Boolean get() = geoNetworkingStationType == ROAD_SIDE_UNIT_STATION_TYPE
+
+    companion object {
+        const val ROAD_SIDE_UNIT_STATION_TYPE = 15
+    }
+}
 
 /** A single received packet's contribution to the picture of its sender. */
 data class StationObservation(
@@ -29,9 +37,11 @@ data class StationObservation(
     val rssiDbm: Int? = null,
     val latitudeE7: Int? = null,
     val longitudeE7: Int? = null,
+    /** The ITS station type in the GeoNetworking address of the station that created the packet. */
+    val stationType: Int? = null,
     /**
      * The link-layer address of the station that created the packet, when another radio forwarded it. The
-     * position is then that station's, not the position of the radio that sent the frame.
+     * position and station type are then that station's, not those of the radio that sent the frame.
      */
     val forwardedFrom: String? = null,
 )
@@ -43,8 +53,10 @@ data class StationObservation(
 data class DiscoveredStationList(val stations: List<DiscoveredStation>) : Serializable {
     companion object {
         /**
-         * Most stations one status broadcast carries, which keeps the intent well clear of the
-         * binder buffer. More may be stored, so this also caps what the table can show.
+         * Most rows of the table one status broadcast carries, which keeps the intent well clear of
+         * the binder buffer. More may be stored, so this also caps what the table can show. The road
+         * side units the map shows from history travel next to them, at most
+         * [StationDiscoveryStore.MAX_ROAD_SIDE_UNITS].
          */
         const val BROADCAST_LIMIT = 250
     }

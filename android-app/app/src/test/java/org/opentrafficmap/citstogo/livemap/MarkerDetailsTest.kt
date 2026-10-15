@@ -2,6 +2,7 @@ package org.opentrafficmap.citstogo.livemap
 
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import org.opentrafficmap.citstogo.station.ItsPacketType
 
 class MarkerDetailsTest {
     private val nowMs = 1_785_242_510_000L
@@ -118,6 +119,44 @@ class MarkerDetailsTest {
     }
 
     @Test
+    fun roadSideUnitShowsAddressTimesMessagesAndSignal() {
+        val unit = RoadSideUnitMarker(
+            macAddress = "02:42:42:00:00:01",
+            latitude = 48.1,
+            longitude = 16.2,
+            trafficLight = true,
+            icon = RoadSideUnitHistory.TRAFFIC_LIGHT_ICON,
+            firstSeenMs = nowMs - 3 * 86_400_000L - 7_200_000L,
+            lastSeenMs = nowMs - 90_000L,
+            messageCounts = mapOf(ItsPacketType.SPATEM to 1_200, ItsPacketType.MAPEM to 30, ItsPacketType.DENM to 2),
+            lastRssiDbm = -71,
+            bestRssiDbm = -58,
+        )
+
+        assertEquals(
+            MarkerDetails(
+                title = "Traffic light",
+                rows = listOf(
+                    "MAC address" to "02:42:42:00:00:01",
+                    "Last heard" to "1 min 30 s ago",
+                    "First heard" to "3 d 2 h ago",
+                    "Messages" to "DENM 2, SPATEM 1200, MAPEM 30",
+                    "RSSI" to "-71 dBm, best -58 dBm",
+                ),
+            ),
+            MarkerDetailsFormat.roadSideUnit(unit, nowMs),
+        )
+        val known = MarkerDetailsFormat.roadSideUnit(
+            unit.copy(trafficLight = false, firstSeenMs = 0L, messageCounts = emptyMap(), lastRssiDbm = null, bestRssiDbm = null),
+            nowMs,
+        )
+        assertEquals("Road side unit", known.title)
+        assertEquals("Unavailable", known.rows.toMap()["First heard"])
+        assertEquals("No ITS messages", known.rows.toMap()["Messages"])
+        assertEquals("Unavailable", known.rows.toMap()["RSSI"])
+    }
+
+    @Test
     fun durationsGrowTheirUnits() {
         assertEquals("0 s", MarkerDetailsFormat.duration(-1_000))
         assertEquals("0 s", MarkerDetailsFormat.duration(999))
@@ -125,6 +164,9 @@ class MarkerDetailsTest {
         assertEquals("1 min 0 s", MarkerDetailsFormat.duration(60_000))
         assertEquals("59 min 59 s", MarkerDetailsFormat.duration(3_599_999))
         assertEquals("1 h 0 min", MarkerDetailsFormat.duration(3_600_000))
-        assertEquals("25 h 1 min", MarkerDetailsFormat.duration(90_060_000))
+        assertEquals("23 h 59 min", MarkerDetailsFormat.duration(86_399_999))
+        assertEquals("1 d 0 h", MarkerDetailsFormat.duration(86_400_000))
+        assertEquals("1 d 1 h", MarkerDetailsFormat.duration(90_060_000))
+        assertEquals("400 d 23 h", MarkerDetailsFormat.duration(34_646_399_000))
     }
 }

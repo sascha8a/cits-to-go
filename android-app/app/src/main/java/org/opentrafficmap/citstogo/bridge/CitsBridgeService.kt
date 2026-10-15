@@ -327,7 +327,9 @@ class CitsBridgeService : Service() {
             )
             ACTION_STOP_REPLAY -> stopReplay(log = true)
             ACTION_REQUEST_STATUS -> publishStatus(null)
-            ACTION_CLEAR_DISCOVERED_STATIONS -> clearDiscoveredStations()
+            ACTION_CLEAR_DISCOVERED_STATIONS -> clearDiscoveredStations(
+                intent.getBooleanExtra(EXTRA_INCLUDE_ROAD_SIDE_UNITS, true),
+            )
             ACTION_CONFIGURE_CAM -> configureCam(
                 intent.getBooleanExtra(EXTRA_CAM_ENABLED, false),
                 StationType.selectableFromCode(intent.getIntExtra(EXTRA_CAM_STATION_TYPE, StationType.PEDESTRIAN.code)),
@@ -649,6 +651,7 @@ class CitsBridgeService : Service() {
                     rssiDbm = packet.rssiDbm.takeIf { it != 0 },
                     latitudeE7 = geoNetworkingSource?.latitude,
                     longitudeE7 = geoNetworkingSource?.longitude,
+                    stationType = geoNetworkingSource?.stationType,
                     forwardedFrom = geoNetworkingSource?.takeIf { it.forwarded }?.address,
                 ),
                 packet.wallClockMs ?: System.currentTimeMillis(),
@@ -1505,6 +1508,7 @@ class CitsBridgeService : Service() {
                 EXTRA_DISCOVERED_STATIONS,
                 DiscoveredStationList(stationStore.snapshot(DiscoveredStationList.BROADCAST_LIMIT)),
             )
+            intent.putExtra(EXTRA_ROAD_SIDE_UNITS, DiscoveredStationList(stationStore.roadSideUnits()))
         }
         if (liveMapSnapshotDue()) {
             intent.putExtra(EXTRA_LIVE_MAP_SNAPSHOT, liveMapStore.snapshot(System.currentTimeMillis()))
@@ -1754,16 +1758,18 @@ class CitsBridgeService : Service() {
 
     /**
      * Forgets every discovered station: the aggregated table, the stored copy, and the address set
-     * behind the home screen counter. Packets received afterwards start the table again.
+     * behind the home screen counter. Packets received afterwards start the table again. Without
+     * [includeRoadSideUnits] the road side units stay, because the map shows them from history.
      */
-    private fun clearDiscoveredStations() {
-        stationStore.clear()
-        discoveredMacAddresses.clear()
-        discoveredDevices = 0L
+    private fun clearDiscoveredStations(includeRoadSideUnits: Boolean) {
+        stationStore.clear(keepRoadSideUnits = !includeRoadSideUnits)
+        val kept = stationStore.snapshot().mapTo(HashSet()) { it.macAddress }
+        discoveredMacAddresses.retainAll(kept)
+        discoveredDevices = discoveredMacAddresses.size.toLong()
         stationsPublishForced = true
         persistStations()
         storeDiscoveredMacAddresses()
-        status = status.copy(discoveredDevices = 0L)
+        status = status.copy(discoveredDevices = discoveredDevices)
         publishStatus("Discovery table cleared")
     }
 
@@ -1833,6 +1839,8 @@ class CitsBridgeService : Service() {
         const val EXTRA_REPLAY_PACKETS = "replayPackets"
         const val EXTRA_DISCOVERED_DEVICES = "discoveredDevices"
         const val EXTRA_DISCOVERED_STATIONS = "discoveredStations"
+        const val EXTRA_ROAD_SIDE_UNITS = "roadSideUnits"
+        const val EXTRA_INCLUDE_ROAD_SIDE_UNITS = "includeRoadSideUnits"
         const val EXTRA_TRUNCATED = "truncated"
         const val EXTRA_TRANSPORT_DROPPED = "transportDropped"
         const val EXTRA_FIRMWARE_STATISTICS = "firmwareStatistics"

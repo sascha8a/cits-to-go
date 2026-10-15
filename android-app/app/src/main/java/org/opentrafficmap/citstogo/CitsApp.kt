@@ -218,11 +218,15 @@ fun CitsApp(
     onStationTableStateChange: (StationTableState) -> Unit,
     onStationColumnWidthChange: (StationColumn, Int) -> Unit,
     onStationColumnWidthChangeFinished: () -> Unit,
-    onClearDiscoveredStations: () -> Unit,
+    onClearDiscoveredStations: (includeRoadSideUnits: Boolean) -> Unit,
     logLine: String,
     intersectionSnapshots: List<IntersectionSnapshot>,
     liveMapSnapshot: LiveMapSnapshot?,
     mapStationTimeoutSeconds: Int,
+    roadSideUnits: List<DiscoveredStation>,
+    mapHistoryShown: Boolean,
+    onMapHistoryShownChange: (Boolean) -> Unit,
+    mapHistoryDays: Int,
     intersectionSortMode: IntersectionSortMode,
     onIntersectionSortModeChange: (IntersectionSortMode) -> Unit,
     currentPosition: DevicePosition?,
@@ -272,7 +276,7 @@ fun CitsApp(
     onChooseCustomFirmware: () -> Unit,
     onUseReleaseFirmware: () -> Unit,
     onFlashFirmware: () -> Unit,
-    onSaveSettings: (String, String, String, String, SremProfile, String) -> Unit,
+    onSaveSettings: (String, String, String, String, SremProfile, String, String) -> Unit,
 ) {
     val context = LocalContext.current
     var selectedPage by rememberSaveable { mutableStateOf(AppPage.Home) }
@@ -486,6 +490,10 @@ fun CitsApp(
                                 MapPage(
                                     snapshot = liveMapSnapshot,
                                     stationTimeoutMs = mapStationTimeoutSeconds * 1_000L,
+                                    roadSideUnits = roadSideUnits,
+                                    historyShown = mapHistoryShown,
+                                    onHistoryShownChange = onMapHistoryShownChange,
+                                    historyDays = mapHistoryDays,
                                     currentPosition = currentPosition,
                                     darkTheme = resolveDarkTheme(themeMode, isSystemInDarkTheme()),
                                     receiving = status.running,
@@ -511,6 +519,7 @@ fun CitsApp(
                             maxQueueLength = maxQueueLength,
                             maxQueueAgeSeconds = maxQueueAgeSeconds,
                             mapStationTimeoutSeconds = mapStationTimeoutSeconds,
+                            mapHistoryDays = mapHistoryDays,
                             txApproved = txApproved,
                             sremProfile = sremProfile,
                             bridgeRunning = status.running,
@@ -529,7 +538,7 @@ fun CitsApp(
                             onAppUpdateNotificationChange = onAppUpdateNotificationChange,
                             onEnrollBluetooth = onEnrollBluetooth,
                             onRevokeTxApproval = onRevokeTxApproval,
-                            onSave = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds, updatedSremProfile, updatedMapStationTimeoutSeconds ->
+                            onSave = { updatedMqttUri, updatedNodeId, updatedMaxQueueLength, updatedMaxQueueAgeSeconds, updatedSremProfile, updatedMapStationTimeoutSeconds, updatedMapHistoryDays ->
                                 onMqttUriChange(updatedMqttUri)
                                 onNodeIdChange(updatedNodeId)
                                 onMaxQueueLengthChange(updatedMaxQueueLength)
@@ -542,6 +551,7 @@ fun CitsApp(
                                     updatedMaxQueueAgeSeconds,
                                     updatedSremProfile,
                                     updatedMapStationTimeoutSeconds,
+                                    updatedMapHistoryDays,
                                 )
                             },
                         )

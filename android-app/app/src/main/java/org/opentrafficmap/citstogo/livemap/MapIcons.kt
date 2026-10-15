@@ -13,7 +13,8 @@ import org.maplibre.android.maps.Style
 /**
  * The marker icons of the live map, drawn for the screen density. Stations are arrows along their heading or dots,
  * coloured by [StationIconGroup], each with a grey variant for stale markers. DENMs are warning signs by
- * [DenmIconGroup]. The white outlines keep them readable on light and dark map styles.
+ * [DenmIconGroup]. Road side units from history are a traffic light or a mast with radio waves. The white outlines
+ * keep them readable on light and dark map styles.
  */
 object MapIcons {
     const val STALE_SUFFIX = "-stale"
@@ -21,12 +22,17 @@ object MapIcons {
     private const val ARROW_SIZE_DP = 30f
     private const val DOT_SIZE_DP = 20f
     private const val SIGN_SIZE_DP = 34f
+    private const val ROAD_SIDE_UNIT_SIZE_DP = 26f
     private const val OUTLINE = 0xFFFFFFFF.toInt()
     private const val INK = 0xFF111827.toInt()
     private const val STALE = 0xFF94A3B8.toInt()
     private const val WARNING_RED = 0xFFDC2626.toInt()
     private const val EMERGENCY_BLUE = 0xFF1D4ED8.toInt()
     private const val ROADWORKS_YELLOW = 0xFFFACC15.toInt()
+    private const val SLATE = 0xFF334155.toInt()
+    private const val SIGNAL_RED = 0xFFEF4444.toInt()
+    private const val SIGNAL_AMBER = 0xFFF59E0B.toInt()
+    private const val SIGNAL_GREEN = 0xFF22C55E.toInt()
 
     /** Adds every icon to [style]. A new style starts without them, so this runs after each style change. */
     fun addTo(style: Style, context: Context) {
@@ -39,6 +45,8 @@ object MapIcons {
             }
         }
         DenmIconGroup.entries.forEach { style.addImage(it.icon, painter.sign(it)) }
+        style.addImage(RoadSideUnitHistory.TRAFFIC_LIGHT_ICON, painter.trafficLight())
+        style.addImage(RoadSideUnitHistory.ROAD_SIDE_UNIT_ICON, painter.roadSideUnit())
     }
 
     // Not the blue of the own position.
@@ -76,6 +84,42 @@ object MapIcons {
                     drawCircle(size / 2f, size / 2f, radius, outline)
                     drawCircle(size / 2f, size / 2f, radius, fill)
                 }
+            }
+        }
+
+        /** A traffic light head: a dark housing with red, amber and green lamps. */
+        fun trafficLight(): Bitmap = draw(ROAD_SIDE_UNIT_SIZE_DP) { size ->
+            val housing = RectF(0.27f * size, 0.06f * size, 0.73f * size, 0.94f * size)
+            val corner = 0.14f * size
+            drawRoundRect(housing, corner, corner, outline)
+            fill.color = INK
+            drawRoundRect(housing, corner, corner, fill)
+            listOf(SIGNAL_RED to 0.24f, SIGNAL_AMBER to 0.5f, SIGNAL_GREEN to 0.76f).forEach { (color, y) ->
+                fill.color = color
+                drawCircle(0.5f * size, y * size, 0.1f * size, fill)
+            }
+        }
+
+        /** A rounded square with a mast sending radio waves to both sides. */
+        fun roadSideUnit(): Bitmap = draw(ROAD_SIDE_UNIT_SIZE_DP) { size ->
+            val square = RectF(0.08f * size, 0.08f * size, 0.92f * size, 0.92f * size)
+            val corner = 0.18f * size
+            drawRoundRect(square, corner, corner, outline)
+            fill.color = SLATE
+            drawRoundRect(square, corner, corner, fill)
+            val line = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                style = Paint.Style.STROKE
+                strokeCap = Paint.Cap.ROUND
+                strokeWidth = 0.07f * size
+                color = OUTLINE
+            }
+            val top = 0.38f * size
+            drawLine(0.5f * size, top, 0.5f * size, 0.78f * size, line)
+            drawLine(0.38f * size, 0.78f * size, 0.62f * size, 0.78f * size, line)
+            for (radius in listOf(0.13f * size, 0.24f * size)) {
+                val waves = RectF(0.5f * size - radius, top - radius, 0.5f * size + radius, top + radius)
+                drawArc(waves, -45f, 90f, false, line)
+                drawArc(waves, 135f, 90f, false, line)
             }
         }
 
