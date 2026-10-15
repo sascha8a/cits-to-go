@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- stationType 2 cyclist, converted from images/station-types. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="68"
+    android:viewportHeight="68">
+    <group
+        android:translateX="10"
+        android:translateY="10">
+        <path
+            android:pathData="M5,-10H43A15,15 0 0 1 58,5V43A15,15 0 0 1 43,58H5A15,15 0 0 1 -10,43V5A15,15 0 0 1 5,-10z"
+            android:fillColor="#1A2540" />
+        <path
+            android:pathData="M4,34A7,7 0 1 0 18,34A7,7 0 1 0 4,34z"
+            android:strokeColor="#2DD4BF"
+            android:strokeWidth="3.2"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M30,34A7,7 0 1 0 44,34A7,7 0 1 0 30,34z"
+            android:strokeColor="#2DD4BF"
+            android:strokeWidth="3.2"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M11 34L19 23H31L37 34M19 23L23 34L31 23M31 23L33 19H36M16 23H23"
+            android:strokeColor="#2DD4BF"
+            android:strokeWidth="3.2"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M22.2,8A2.8,2.8 0 1 0 27.8,8A2.8,2.8 0 1 0 22.2,8z"
+            android:fillColor="#2DD4BF" />
+        <path
+            android:pathData="M24 12L19 22M24 14L32 19"
+            android:strokeColor="#2DD4BF"
+            android:strokeWidth="3.2"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+    </group>
+</vector>

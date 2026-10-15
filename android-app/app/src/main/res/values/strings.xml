@@ -39,6 +39,13 @@
     <string name="srem_previous">Previous</string>
     <string name="srem_next">Next</string>
 
+    <!-- Vehicle profile -->
+    <string name="vehicle_profile_label">Vehicle profile</string>
+    <string name="vehicle_profile_choose">Choose vehicle profile</string>
+    <string name="vehicle_profile_hint">Used for CAM broadcasts and SREM requests. A change applies at once, also while broadcasting.</string>
+    <string name="vehicle_profile_cam_on">CAM broadcast on</string>
+    <string name="vehicle_profile_cam_off">CAM broadcast off</string>
+
     <!-- Map -->
     <string name="map_history_show">Show road side units heard before</string>
     <string name="map_history_hide">Hide road side units heard before</string>

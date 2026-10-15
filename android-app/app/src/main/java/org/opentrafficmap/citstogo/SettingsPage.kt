@@ -34,7 +34,6 @@ import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Storage
 import androidx.compose.material.icons.rounded.CellTower
-import androidx.compose.material.icons.automirrored.rounded.DirectionsWalk
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -389,20 +388,7 @@ private fun VehicleTypeCard(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(Color(ContextCompat.getColor(context, R.color.secondary_container))),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.DirectionsWalk,
-                        contentDescription = null,
-                        tint = Color(ContextCompat.getColor(context, R.color.secondary)),
-                        modifier = Modifier.size(22.dp),
-                    )
-                }
+                VehicleProfileIcon(sremProfile, size = 40.dp)
                 Column(
                     modifier = Modifier
                         .weight(1f)

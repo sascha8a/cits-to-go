@@ -1,6 +1,7 @@
 package org.opentrafficmap.citstogo
 
 import org.opentrafficmap.citstogo.bridge.BridgeStatus
+import org.opentrafficmap.citstogo.srem.SremProfile
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -46,11 +47,14 @@ fun CamBroadcastPage(
     randomizationIntervalSeconds: String,
     onRandomizationIntervalChange: (String) -> Unit,
     onConfigure: (Boolean) -> Unit,
+    vehicleProfile: SremProfile,
+    onVehicleProfileChange: (SremProfile) -> Unit,
 ) {
     Column(
         Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        VehicleProfileSelector(profile = vehicleProfile, onProfileChange = onVehicleProfileChange)
         CamPanel(
             status = status,
             intervalMs = intervalMs,

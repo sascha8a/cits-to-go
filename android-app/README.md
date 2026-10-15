@@ -80,8 +80,10 @@ To broadcast CAM:
    transmissions are blocked. The approval is stored and can be revoked in
    **Settings** with **Revoke TX Approval**. Transmitting in the 5.9 GHz ITS band
    is regulated, see [RF safety](../docs/CAM.md#rf-safety).
-2. Choose the station type under **Settings → Vehicle Type**. SREM requests use
-   it as well.
+2. Choose the vehicle profile on the **CAM Broadcast** page or under
+   **Settings → Vehicle Type**; SREM requests use it as well. On the CAM
+   Broadcast page a change applies at once, also during a broadcast, and Home
+   shows the active profile.
 3. Start a capture on **Home**. Then set a 100–1000 ms maximum interval on the
    **CAM Broadcast** page, tap **Start CAM broadcast** and grant location
    permission.

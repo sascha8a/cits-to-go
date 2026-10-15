@@ -250,6 +250,7 @@ fun CitsApp(
     onConfigureCam: (Boolean) -> Unit,
     sremProfile: SremProfile,
     onSremProfileChange: (SremProfile) -> Unit,
+    onSelectVehicleProfile: (SremProfile) -> Unit,
     txApproved: Boolean,
     debugMenuEnabled: Boolean,
     onDebugMenuEnabledChange: (Boolean) -> Unit,
@@ -455,6 +456,8 @@ fun CitsApp(
                             onStartReplay = onStartReplay,
                             onStopReplay = onStopReplay,
                             onOpenDiscoveredStations = { selectedPage = AppPage.DiscoveredStations },
+                            vehicleProfile = sremProfile.takeIf { txApproved },
+                            onOpenVehicleProfile = { selectedPage = AppPage.CamBroadcast },
                         )
                         AppPage.DiscoveredStations -> DiscoveredStationsPage(
                             stations = discoveredStations,
@@ -481,6 +484,8 @@ fun CitsApp(
                             randomizationIntervalSeconds = camRandomizationIntervalSeconds,
                             onRandomizationIntervalChange = onCamRandomizationIntervalChange,
                             onConfigure = onConfigureCam,
+                            vehicleProfile = sremProfile,
+                            onVehicleProfileChange = onSelectVehicleProfile,
                         )
                         AppPage.IntersectionView -> IntersectionViewPage(
                             snapshots = intersectionSnapshots,

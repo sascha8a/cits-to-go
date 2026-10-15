@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 676" width="680" height="676" font-family="Roboto,Arial,sans-serif">
+<title>C-ITS stationType (ETSI TS 102 894-2)</title><rect width="100%" height="100%" fill="#0b1220"/>
+<text x="20" y="36" font-size="20" font-weight="600" fill="#e2e8f0">C-ITS stationType (ETSI TS 102 894-2)</text>
+<defs>
+<symbol id="st0" viewBox="0 0 48 48"><circle cx="24" cy="24" r="16"/><path d="M19 20a5 5 0 1 1 7 4.6c-1.4.8-2 1.6-2 3.2"/><circle cx="24" cy="33" r="1.6" fill="#2dd4bf" stroke="none"/></symbol>
+<symbol id="st1" viewBox="0 0 48 48"><circle cx="27" cy="8" r="3.2" fill="#2dd4bf" stroke="none"/><path d="M26 14L22 27M22 27L17 40M22 27L28 33V41M24.5 17L18 21M24.5 17L30 22L32 27"/></symbol>
+<symbol id="st2" viewBox="0 0 48 48"><circle cx="11" cy="34" r="7"/><circle cx="37" cy="34" r="7"/><path d="M11 34L19 23H31L37 34M19 23L23 34L31 23M31 23L33 19H36M16 23H23"/><circle cx="25" cy="8" r="2.8" fill="#2dd4bf" stroke="none"/><path d="M24 12L19 22M24 14L32 19"/></symbol>
+<symbol id="st3" viewBox="0 0 48 48"><path d="M6 30Q6 25 12 25H24L28 36H32M32 36L30 13M25 13H34M18 25V20H26"/><circle cx="11" cy="37" r="5" fill="#1a2540"/><circle cx="37" cy="37" r="5" fill="#1a2540"/></symbol>
+<symbol id="st4" viewBox="0 0 48 48"><path d="M11 35L20 22H30M20 22L25 29H33M37 35L31 17H36M15 22H26M22 35H29"/><circle cx="11" cy="35" r="7" fill="#1a2540"/><circle cx="37" cy="35" r="7" fill="#1a2540"/></symbol>
+<symbol id="st5" viewBox="0 0 48 48"><path d="M10 32H6V27Q6 25 9 24L15 23L19 16H30L35 23L40 24Q43 25 43 28V32H39M18 32H31M15 23H35M24.5 16V23"/><circle cx="14" cy="32" r="4"/><circle cx="35" cy="32" r="4"/></symbol>
+<symbol id="st6" viewBox="0 0 48 48"><rect x="6" y="9" width="36" height="26" rx="4"/><path d="M6 25H42M15 9V25M24 9V25M33 9V25M6 30H42"/><circle cx="15" cy="37" r="3.5" fill="#1a2540"/><circle cx="33" cy="37" r="3.5" fill="#1a2540"/></symbol>
+<symbol id="st7" viewBox="0 0 48 48"><rect x="5" y="11" width="24" height="22" rx="1.5"/><path d="M29 17H37L43 25V33H29M29 33H5"/><circle cx="14" cy="35" r="4" fill="#1a2540"/><circle cx="36" cy="35" r="4" fill="#1a2540"/></symbol>
+<symbol id="st8" viewBox="0 0 48 48"><rect x="3" y="9" width="28" height="24" rx="1.5"/><path d="M31 16H38L45 24V33H31M31 33H3"/><circle cx="9" cy="36" r="3.6" fill="#1a2540"/><circle cx="20" cy="36" r="3.6" fill="#1a2540"/><circle cx="38" cy="36" r="3.6" fill="#1a2540"/></symbol>
+<symbol id="st9" viewBox="0 0 48 48"><rect x="4" y="10" width="30" height="22" rx="1.5"/><path d="M34 27H44M36 27V35"/><circle cx="44" cy="27" r="1.5"/><circle cx="13" cy="35" r="3.8" fill="#1a2540"/><circle cx="24" cy="35" r="3.8" fill="#1a2540"/></symbol>
+<symbol id="st10" viewBox="0 0 48 48"><rect x="6" y="16" width="36" height="18" rx="3"/><path d="M24 21V29M20 25H28M24 6V8M17 8L18.5 9.5M31 8L29.5 9.5"/><path d="M20 15V12a4 4 0 0 1 8 0V15"/><circle cx="14" cy="36" r="3.8" fill="#1a2540"/><circle cx="34" cy="36" r="3.8" fill="#1a2540"/></symbol>
+<symbol id="st11" viewBox="0 0 48 48"><rect x="9" y="9" width="30" height="25" rx="5"/><rect x="13" y="13" width="22" height="9" rx="2"/><path d="M24 9V4M17 4H31M14 34L12 40M34 34L36 40M8 40H40"/><circle cx="16" cy="28" r="1.6" fill="#2dd4bf" stroke="none"/><circle cx="32" cy="28" r="1.6" fill="#2dd4bf" stroke="none"/></symbol>
+<symbol id="st12" viewBox="0 0 48 48"><path d="M38 37L34 8M30 8H38"/><rect x="12" y="33" width="24" height="3.5" rx="1.7"/><path d="M25 14L19 24H25L21 32"/><circle cx="10" cy="38" r="4" fill="#1a2540"/><circle cx="38" cy="38" r="4" fill="#1a2540"/></symbol>
+<symbol id="st13" viewBox="0 0 48 48"><ellipse cx="22" cy="23" rx="11" ry="6"/><path d="M14 28V39M19 29V39M26 29V39M31 28V39M31 19L37 13M13 21L8 16M37 8L36 5M40 8L41 5"/><circle cx="39" cy="12" r="3.5"/></symbol>
+<symbol id="st14" viewBox="0 0 48 48"><circle cx="14" cy="32" r="9"/><circle cx="39" cy="36" r="5"/><path d="M10 23V10H22V23M22 20H35L38 31M33 20V13"/><circle cx="14" cy="32" r="1.6" fill="#2dd4bf" stroke="none"/><circle cx="39" cy="36" r="1.4" fill="#2dd4bf" stroke="none"/></symbol>
+<symbol id="st15" viewBox="0 0 48 48"><circle cx="24" cy="11" r="2" fill="#2dd4bf" stroke="none"/><path d="M19 6A7 7 0 0 0 19 16M29 6A7 7 0 0 1 29 16M15 3A12 12 0 0 0 15 19M33 3A12 12 0 0 1 33 19M24 13V22M24 32V42M17 42H31"/><rect x="18" y="22" width="12" height="10" rx="1.5"/></symbol>
+</defs>
+<g id="st-0"><rect x="52" y="60" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st0" x="68" y="76" width="64" height="64"/></g>
+<text x="100" y="180" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">0 · unknown</text>
+<text x="100" y="197" font-size="12" fill="#94a3b8" text-anchor="middle">Unbekannt</text></g>
+<g id="st-1"><rect x="212" y="60" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st1" x="228" y="76" width="64" height="64"/></g>
+<text x="260" y="180" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">1 · pedestrian</text>
+<text x="260" y="197" font-size="12" fill="#94a3b8" text-anchor="middle">Fußgänger</text></g>
+<g id="st-2"><rect x="372" y="60" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st2" x="388" y="76" width="64" height="64"/></g>
+<text x="420" y="180" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">2 · cyclist</text>
+<text x="420" y="197" font-size="12" fill="#94a3b8" text-anchor="middle">Radfahrer</text></g>
+<g id="st-3"><rect x="532" y="60" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st3" x="548" y="76" width="64" height="64"/></g>
+<text x="580" y="180" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">3 · moped</text>
+<text x="580" y="197" font-size="12" fill="#94a3b8" text-anchor="middle">Moped</text></g>
+<g id="st-4"><rect x="52" y="210" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st4" x="68" y="226" width="64" height="64"/></g>
+<text x="100" y="330" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">4 · motorcycle</text>
+<text x="100" y="347" font-size="12" fill="#94a3b8" text-anchor="middle">Motorrad</text></g>
+<g id="st-5"><rect x="212" y="210" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st5" x="228" y="226" width="64" height="64"/></g>
+<text x="260" y="330" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">5 · passengerCar</text>
+<text x="260" y="347" font-size="12" fill="#94a3b8" text-anchor="middle">PKW</text></g>
+<g id="st-6"><rect x="372" y="210" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st6" x="388" y="226" width="64" height="64"/></g>
+<text x="420" y="330" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">6 · bus</text>
+<text x="420" y="347" font-size="12" fill="#94a3b8" text-anchor="middle">Bus</text></g>
+<g id="st-7"><rect x="532" y="210" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st7" x="548" y="226" width="64" height="64"/></g>
+<text x="580" y="330" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">7 · lightTruck</text>
+<text x="580" y="347" font-size="12" fill="#94a3b8" text-anchor="middle">Lieferwagen</text></g>
+<g id="st-8"><rect x="52" y="360" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st8" x="68" y="376" width="64" height="64"/></g>
+<text x="100" y="480" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">8 · heavyTruck</text>
+<text x="100" y="497" font-size="12" fill="#94a3b8" text-anchor="middle">LKW</text></g>
+<g id="st-9"><rect x="212" y="360" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st9" x="228" y="376" width="64" height="64"/></g>
+<text x="260" y="480" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">9 · trailer</text>
+<text x="260" y="497" font-size="12" fill="#94a3b8" text-anchor="middle">Anhänger</text></g>
+<g id="st-10"><rect x="372" y="360" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st10" x="388" y="376" width="64" height="64"/></g>
+<text x="420" y="480" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">10 · specialVehicles</text>
+<text x="420" y="497" font-size="12" fill="#94a3b8" text-anchor="middle">Sonderfahrzeug</text></g>
+<g id="st-11"><rect x="532" y="360" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st11" x="548" y="376" width="64" height="64"/></g>
+<text x="580" y="480" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">11 · tram</text>
+<text x="580" y="497" font-size="12" fill="#94a3b8" text-anchor="middle">Straßenbahn</text></g>
+<g id="st-12"><rect x="52" y="510" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st12" x="68" y="526" width="64" height="64"/></g>
+<text x="100" y="630" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">12 · lightVruVehicle</text>
+<text x="100" y="647" font-size="12" fill="#94a3b8" text-anchor="middle">E-Scooter</text></g>
+<g id="st-13"><rect x="212" y="510" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st13" x="228" y="526" width="64" height="64"/></g>
+<text x="260" y="630" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">13 · animal</text>
+<text x="260" y="647" font-size="12" fill="#94a3b8" text-anchor="middle">Tier</text></g>
+<g id="st-14"><rect x="372" y="510" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st14" x="388" y="526" width="64" height="64"/></g>
+<text x="420" y="630" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">14 · agricultural</text>
+<text x="420" y="647" font-size="12" fill="#94a3b8" text-anchor="middle">Traktor</text></g>
+<g id="st-15"><rect x="532" y="510" width="96" height="96" rx="22" fill="#1a2540"/>
+<g stroke="#2dd4bf" fill="none" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><use href="#st15" x="548" y="526" width="64" height="64"/></g>
+<text x="580" y="630" font-size="14" font-weight="600" fill="#e2e8f0" text-anchor="middle">15 · roadSideUnit</text>
+<text x="580" y="647" font-size="12" fill="#94a3b8" text-anchor="middle">RSU</text></g>
+</svg>

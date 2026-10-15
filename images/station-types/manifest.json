@@ -1,0 +1,100 @@
+{
+  "stationType": [
+    {
+      "value": 0,
+      "name": "unknown",
+      "de": "Unbekannt",
+      "file": "00-unknown.svg"
+    },
+    {
+      "value": 1,
+      "name": "pedestrian",
+      "de": "Fußgänger",
+      "file": "01-pedestrian.svg"
+    },
+    {
+      "value": 2,
+      "name": "cyclist",
+      "de": "Radfahrer",
+      "file": "02-cyclist.svg"
+    },
+    {
+      "value": 3,
+      "name": "moped",
+      "de": "Moped",
+      "file": "03-moped.svg"
+    },
+    {
+      "value": 4,
+      "name": "motorcycle",
+      "de": "Motorrad",
+      "file": "04-motorcycle.svg"
+    },
+    {
+      "value": 5,
+      "name": "passengerCar",
+      "de": "PKW",
+      "file": "05-passengerCar.svg"
+    },
+    {
+      "value": 6,
+      "name": "bus",
+      "de": "Bus",
+      "file": "06-bus.svg"
+    },
+    {
+      "value": 7,
+      "name": "lightTruck",
+      "de": "Lieferwagen",
+      "file": "07-lightTruck.svg"
+    },
+    {
+      "value": 8,
+      "name": "heavyTruck",
+      "de": "LKW",
+      "file": "08-heavyTruck.svg"
+    },
+    {
+      "value": 9,
+      "name": "trailer",
+      "de": "Anhänger",
+      "file": "09-trailer.svg"
+    },
+    {
+      "value": 10,
+      "name": "specialVehicles",
+      "de": "Sonderfahrzeug",
+      "file": "10-specialVehicles.svg"
+    },
+    {
+      "value": 11,
+      "name": "tram",
+      "de": "Straßenbahn",
+      "file": "11-tram.svg"
+    },
+    {
+      "value": 12,
+      "name": "lightVruVehicle",
+      "de": "E-Scooter",
+      "file": "12-lightVruVehicle.svg"
+    },
+    {
+      "value": 13,
+      "name": "animal",
+      "de": "Tier",
+      "file": "13-animal.svg"
+    },
+    {
+      "value": 14,
+      "name": "agricultural",
+      "de": "Traktor",
+      "file": "14-agricultural.svg"
+    },
+    {
+      "value": 15,
+      "name": "roadSideUnit",
+      "de": "RSU",
+      "file": "15-roadSideUnit.svg"
+    }
+  ]
+}

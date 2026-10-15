@@ -487,6 +487,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     onConfigureCam = ::configureCam,
                     sremProfile = sremProfile,
                     onSremProfileChange = { sremProfile = it },
+                    onSelectVehicleProfile = ::selectVehicleProfile,
                     txApproved = txApproved,
                     debugMenuEnabled = debugMenuEnabled,
                     onDebugMenuEnabledChange = { enabled ->
@@ -1193,6 +1194,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             putExtra(CitsBridgeService.EXTRA_CAM_RANDOMIZE_MAC, camRandomizationEnabled)
             putExtra(CitsBridgeService.EXTRA_CAM_RANDOMIZATION_INTERVAL_MS, randomizationIntervalMs)
         }
+    }
+
+    /** A profile picked outside the settings is stored at once, and a running CAM broadcast switches to it. */
+    private fun selectVehicleProfile(profile: SremProfile) {
+        sremProfile = profile
+        getSharedPreferences(CitsBridgeService.PREFS, MODE_PRIVATE).edit()
+            .putInt(CitsBridgeService.PREF_VEHICLE_TYPE, profile.preferenceCode)
+            .apply()
+        if (status.camEnabled) configureCam(true)
     }
 
     private fun sendSrem(snapshot: IntersectionSnapshot, inboundLaneId: Int, outboundLaneId: Int) {

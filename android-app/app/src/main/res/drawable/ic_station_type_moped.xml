@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- stationType 3 moped, converted from images/station-types. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="68"
+    android:viewportHeight="68">
+    <group
+        android:translateX="10"
+        android:translateY="10">
+        <path
+            android:pathData="M5,-10H43A15,15 0 0 1 58,5V43A15,15 0 0 1 43,58H5A15,15 0 0 1 -10,43V5A15,15 0 0 1 5,-10z"
+            android:fillColor="#1A2540" />
+        <path
+            android:pathData="M6 30Q6 25 12 25H24L28 36H32M32 36L30 13M25 13H34M18 25V20H26"
+            android:strokeColor="#2DD4BF"
+            android:strokeWidth="3.2"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M6,37A5,5 0 1 0 16,37A5,5 0 1 0 6,37z"
+            android:fillColor="#1A2540"
+            android:strokeColor="#2DD4BF"
+            android:strokeWidth="3.2"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+        <path
+            android:pathData="M32,37A5,5 0 1 0 42,37A5,5 0 1 0 32,37z"
+            android:fillColor="#1A2540"
+            android:strokeColor="#2DD4BF"
+            android:strokeWidth="3.2"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+    </group>
+</vector>

@@ -32,12 +32,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import org.opentrafficmap.citstogo.bridge.BridgeStatus
+import org.opentrafficmap.citstogo.srem.SremProfile
 import org.opentrafficmap.citstogo.bridge.ConnectionMode
 
 @Composable
@@ -56,9 +58,12 @@ fun HomePage(
     onStartReplay: () -> Unit,
     onStopReplay: () -> Unit,
     onOpenDiscoveredStations: () -> Unit,
+    vehicleProfile: SremProfile?,
+    onOpenVehicleProfile: () -> Unit,
 ) {
     val packetsPerSecond = rememberPacketRate(status.packets, status.running)
     HomeStatusBanner(status)
+    vehicleProfile?.let { HomeVehicleProfile(it, status.camEnabled, onOpenVehicleProfile) }
     Text("Connection", fontSize = 20.sp, fontWeight = FontWeight.Medium)
     ConnectionTabs(
         selectedMode = connectionMode,
@@ -262,6 +267,48 @@ private fun HomeMetrics(
     metrics.chunked(2).forEach { row ->
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             row.forEach { metric -> HomeMetricCard(metric, Modifier.weight(1f)) }
+        }
+    }
+}
+
+/** The vehicle profile that CAMs and SREMs go out with; the card opens the CAM Broadcast page to change it. */
+@Composable
+private fun HomeVehicleProfile(profile: SremProfile, camEnabled: Boolean, onOpen: () -> Unit) {
+    val context = LocalContext.current
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClickLabel = stringResource(R.string.vehicle_profile_choose), onClick = onOpen),
+        shape = RoundedCornerShape(7.dp),
+        border = BorderStroke(1.dp, Color(ContextCompat.getColor(context, R.color.border_active))),
+        colors = CardDefaults.cardColors(containerColor = Color(ContextCompat.getColor(context, R.color.card))),
+    ) {
+        Row(Modifier.padding(horizontal = 11.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            VehicleProfileIcon(profile, size = 40.dp)
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 12.dp),
+            ) {
+                Text(
+                    stringResource(R.string.vehicle_profile_label),
+                    color = MaterialTheme.colorScheme.secondary,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(profile.displayName, fontSize = 18.sp, fontWeight = FontWeight.Medium)
+                Text(
+                    stringResource(if (camEnabled) R.string.vehicle_profile_cam_on else R.string.vehicle_profile_cam_off),
+                    color = MaterialTheme.colorScheme.secondary,
+                    fontSize = 12.sp,
+                )
+            }
+            Icon(
+                imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(14.dp),
+            )
         }
     }
 }
