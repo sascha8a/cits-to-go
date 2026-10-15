@@ -29,6 +29,11 @@ data class StationObservation(
     val rssiDbm: Int? = null,
     val latitudeE7: Int? = null,
     val longitudeE7: Int? = null,
+    /**
+     * The link-layer address of the station that created the packet, when another radio forwarded it. The
+     * position is then that station's, not the position of the radio that sent the frame.
+     */
+    val forwardedFrom: String? = null,
 )
 
 /**

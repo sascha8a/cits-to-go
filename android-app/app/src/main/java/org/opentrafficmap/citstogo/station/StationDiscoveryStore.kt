@@ -25,6 +25,10 @@ class StationDiscoveryStore(private val maxStations: Int = MAX_STATIONS) {
     /**
      * Folds one received packet into the record of [macAddress]. [seenAtMs] is the wall-clock time
      * the frame was received, so a PCAP replay records the times of the original capture.
+     *
+     * The position of a packet that another radio forwarded belongs to the station that created it,
+     * so it goes to that station's record, which is added if the receiver has not heard it itself.
+     * Message counts and signal strength stay with the radio that sent the frame.
      */
     fun observe(macAddress: String, observation: StationObservation, seenAtMs: Long) {
         synchronized(this) {
@@ -36,15 +40,20 @@ class StationDiscoveryStore(private val maxStations: Int = MAX_STATIONS) {
                 record.lastRssiDbm = rssi
                 record.bestRssiDbm = maxOf(record.bestRssiDbm ?: rssi, rssi)
             }
+            record.seen(seenAtMs)
+            val source = when (val forwardedFrom = observation.forwardedFrom) {
+                null, macAddress -> record
+                else -> forwardedFrom.takeIf(::isUnicastAddress)?.let { address ->
+                    records.getOrPut(address) { Record(address) }.also { it.seen(seenAtMs) }
+                }
+            }
             val latitude = observation.latitudeE7
             val longitude = observation.longitudeE7
-            if (latitude != null && longitude != null && isUsablePosition(latitude, longitude)) {
-                record.latitudeE7 = latitude
-                record.longitudeE7 = longitude
-                record.positionTimeMs = seenAtMs
+            if (source != null && latitude != null && longitude != null && isUsablePosition(latitude, longitude)) {
+                source.latitudeE7 = latitude
+                source.longitudeE7 = longitude
+                source.positionTimeMs = seenAtMs
             }
-            record.firstSeenMs = if (record.firstSeenMs == 0L) seenAtMs else minOf(record.firstSeenMs, seenAtMs)
-            record.lastSeenMs = maxOf(record.lastSeenMs, seenAtMs)
             generationCounter.incrementAndGet()
             evictLeastRecentlySeen()
         }
@@ -125,6 +134,16 @@ class StationDiscoveryStore(private val maxStations: Int = MAX_STATIONS) {
             longitudeE7 > MIN_LONGITUDE_E7 && longitudeE7 < MAX_LONGITUDE_E7
 
     /**
+     * An address as [org.opentrafficmap.citstogo.protocol.Ieee80211Mac.sourceAddress] writes it,
+     * neither zero nor a group address.
+     */
+    private fun isUnicastAddress(address: String): Boolean {
+        val octets = address.split(':').map { it.toIntOrNull(16) ?: return false }
+        return octets.size == MAC_ADDRESS_LEN && octets.all { it in 0..0xff } && octets.any { it != 0 } &&
+            octets[0] and 0x01 == 0
+    }
+
+    /**
      * One address as it is accumulated and stored. Fields are added here in the same order the
      * discovery table shows them; [fromJson] tolerates records written by an older app, which also
      * carried the station ID, station type and packet total no column shows any more.
@@ -138,6 +157,11 @@ class StationDiscoveryStore(private val maxStations: Int = MAX_STATIONS) {
         var latitudeE7: Int? = null
         var longitudeE7: Int? = null
         var positionTimeMs: Long = 0L
+
+        fun seen(atMs: Long) {
+            firstSeenMs = if (firstSeenMs == 0L) atMs else minOf(firstSeenMs, atMs)
+            lastSeenMs = maxOf(lastSeenMs, atMs)
+        }
 
         fun toStation(): DiscoveredStation = DiscoveredStation(
             macAddress = macAddress,
@@ -199,6 +223,7 @@ class StationDiscoveryStore(private val maxStations: Int = MAX_STATIONS) {
         private const val MAX_LATITUDE_E7 = 900_000_000
         private const val MIN_LONGITUDE_E7 = -1_800_000_000
         private const val MAX_LONGITUDE_E7 = 1_800_000_000
+        private const val MAC_ADDRESS_LEN = 6
 
         private const val JSON_VERSION = 1
         private const val KEY_VERSION = "version"

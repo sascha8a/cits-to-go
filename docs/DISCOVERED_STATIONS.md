@@ -4,9 +4,10 @@
 
 The Home screen's `Discovered` tile opens the *Discovered Stations* page: one
 row per station the receiver has heard from, keyed by the IEEE 802.11 source
-address of its frames. The columns are MAC address, last seen, first seen,
-GeoNetworking position, one counter per decoded ITS message type (DENM, CAM,
-SPATEM, MAPEM, IVIM, SREM, SSEM), last RSSI and best RSSI.
+address of its frames, or, for a station heard only through forwarders, by the
+MID of its GeoNetworking address. The columns are MAC address, last seen, first
+seen, GeoNetworking position, one counter per decoded ITS message type (DENM,
+CAM, SPATEM, MAPEM, IVIM, SREM, SSEM), last RSSI and best RSSI.
 
 Every column sorts by tapping its header. Filtering is per column behind the funnel icon, and each
 kind of column gets an editor that fits its values: the MAC address matches as text (contains, starts
@@ -43,17 +44,30 @@ the measurement. Dragged widths are stored with the sort and filters.
 ## Where the values come from
 
 `StationDiscoveryStore` folds every received packet into one record per source
-address. It runs on the serial read thread and is guarded by a lock, so live
-reception and PCAP replay use the same path.
+address, and a forwarded packet's position also into the record of the station
+that created it. It runs on the serial read thread and is guarded by a lock, so
+live reception and PCAP replay use the same path.
 
 - The message-type counters come from the `messageId` of the ITS-PDU header that
   `ItsFrameExtractor` decodes. Frames the receiver cannot decode still create a
   row, so a station is never missing from the table; its counters just stay at
   zero.
-- The GeoNetworking position is the source position vector of the transmitting
-  radio, from the GeoNetworking header, not a position inside the ITS container.
-  Positions outside the valid coordinate range, and the zeroed position vector
-  most senders leave in place, are ignored.
+- The GeoNetworking position is the Source Position Vector from the
+  GeoNetworking header, not a position inside the ITS container. Beacons, which
+  carry nothing else, provide it as well. Positions outside the valid coordinate
+  range, and the zeroed position vector most senders leave in place, are
+  ignored.
+- A forwarded packet keeps the Source Position Vector of the station that
+  created it: a forwarder leaves it as the source set it and decrements the
+  remaining hop limit (EN 302 636-4-1 V1.4.1, clause 10.3.11.3 step 9; clause
+  10.3.9.3 for TSB), while the frame carries the forwarder's own MAC address.
+  A packet whose remaining hop limit is below its maximum hop limit was
+  forwarded. Its position goes to the row of the source's address, the MID
+  of its GN_ADDR, which is added if the receiver has not heard that station
+  itself. The forwarded packet also updates that row's first and last seen
+  times. Message counts and RSSI stay with the radio that sent the frame, so a
+  row that exists only this way has neither; it does not count as a discovered
+  device on Home and raises no discovery notification.
 - RSSI is the firmware's report for the frame; `Last RSSI` is the most recent,
   `Best RSSI` the strongest one seen. A replay fills these in too, provided the
   recording carries the signal strength, which the

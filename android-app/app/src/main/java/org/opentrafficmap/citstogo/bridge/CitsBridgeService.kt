@@ -34,6 +34,7 @@ import org.opentrafficmap.citstogo.cam.randomizedCamIdentity
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshot
 import org.opentrafficmap.citstogo.intersection.IntersectionSnapshotList
 import org.opentrafficmap.citstogo.intersection.IntersectionStateStore
+import org.opentrafficmap.citstogo.intersection.ItsExtractionResult
 import org.opentrafficmap.citstogo.intersection.ItsFrameExtractor
 import org.opentrafficmap.citstogo.intersection.ItsPacket
 import org.opentrafficmap.citstogo.intersection.SsemDecoder
@@ -636,7 +637,9 @@ class CitsBridgeService : Service() {
             storeDiscoveredMacAddresses()
             sendStationDiscoveryNotification(discoveredMacAddress)
         }
-        val itsPacket = ItsFrameExtractor.extract(packet.payload)
+        val extraction = ItsFrameExtractor.extractDetailed(packet.payload)
+        val itsPacket = (extraction as? ItsExtractionResult.Success)?.packet
+        val geoNetworkingSource = itsPacket?.geoNetworkingSource ?: (extraction as? ItsExtractionResult.Beacon)?.source
         val itsType = itsPacket?.messageId?.let(ItsPacketType::fromMessageId)
         if (discoveredMacAddress != null) {
             stationStore.observe(
@@ -644,8 +647,9 @@ class CitsBridgeService : Service() {
                 StationObservation(
                     packetType = itsType,
                     rssiDbm = packet.rssiDbm.takeIf { it != 0 },
-                    latitudeE7 = itsPacket?.sourceLatitude,
-                    longitudeE7 = itsPacket?.sourceLongitude,
+                    latitudeE7 = geoNetworkingSource?.latitude,
+                    longitudeE7 = geoNetworkingSource?.longitude,
+                    forwardedFrom = geoNetworkingSource?.takeIf { it.forwarded }?.address,
                 ),
                 packet.wallClockMs ?: System.currentTimeMillis(),
             )

@@ -72,6 +72,58 @@ class StationDiscoveryStoreTest {
     }
 
     @Test
+    fun givesTheStationThatCreatedAForwardedPacketItsPosition() {
+        store.observe(
+            MAC_A,
+            observation(type = ItsPacketType.CAM, rssi = -60, latitude = 482_000_000, longitude = 163_000_000),
+            1_000L,
+        )
+        store.observe(
+            MAC_A,
+            observation(
+                type = ItsPacketType.IVIM,
+                rssi = -62,
+                latitude = 481_000_000,
+                longitude = 162_000_000,
+                forwardedFrom = MAC_B,
+            ),
+            2_000L,
+        )
+
+        val forwarder = store.snapshot().first { it.macAddress == MAC_A }
+        assertEquals(482_000_000, forwarder.latitudeE7)
+        assertEquals(163_000_000, forwarder.longitudeE7)
+        assertEquals(1_000L, forwarder.positionTimeMs)
+        assertEquals(mapOf(ItsPacketType.CAM to 1, ItsPacketType.IVIM to 1), forwarder.typeCounts)
+        assertEquals(-62, forwarder.lastRssiDbm)
+        assertEquals(2_000L, forwarder.lastSeenMs)
+        val source = store.snapshot().first { it.macAddress == MAC_B }
+        assertEquals(481_000_000, source.latitudeE7)
+        assertEquals(162_000_000, source.longitudeE7)
+        assertEquals(2_000L, source.positionTimeMs)
+        assertEquals(2_000L, source.firstSeenMs)
+        assertEquals(2_000L, source.lastSeenMs)
+        assertTrue(source.typeCounts.isEmpty())
+        assertNull(source.lastRssiDbm)
+    }
+
+    @Test
+    fun dropsTheForwardedPositionOfAnUnusableSourceAddress() {
+        listOf("00:00:00:00:00:00", "ff:ff:ff:ff:ff:ff", "not an address").forEachIndexed { index, address ->
+            store.observe(
+                MAC_A,
+                observation(type = ItsPacketType.DENM, latitude = 481_000_000, longitude = 162_000_000, forwardedFrom = address),
+                (index + 1) * 1_000L,
+            )
+        }
+
+        val station = store.snapshot().single()
+        assertEquals(MAC_A, station.macAddress)
+        assertNull(station.latitudeE7)
+        assertEquals(3, station.typeCounts.getValue(ItsPacketType.DENM))
+    }
+
+    @Test
     fun tracksStationsWhoseFramesItCannotDecode() {
         store.observe(MAC_A, observation(), 1_000L)
 
@@ -228,11 +280,13 @@ class StationDiscoveryStoreTest {
         rssi: Int? = null,
         latitude: Int? = null,
         longitude: Int? = null,
+        forwardedFrom: String? = null,
     ) = StationObservation(
         packetType = type,
         rssiDbm = rssi,
         latitudeE7 = latitude,
         longitudeE7 = longitude,
+        forwardedFrom = forwardedFrom,
     )
 
     private companion object {
