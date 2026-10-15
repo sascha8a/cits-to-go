@@ -95,7 +95,12 @@ private fun HomeStatusBanner(status: BridgeStatus) {
             verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
             Text(
-                if (status.running) "Capture active" else "Capture stopped",
+                when {
+                    status.running && status.usbState == "USB permission required" ->
+                        "Waiting for USB permission"
+                    status.running -> "Capture active"
+                    else -> "Capture stopped"
+                },
                 color = bannerInk,
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold,

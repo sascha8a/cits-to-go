@@ -84,6 +84,8 @@ class CitsBridgeService : Service() {
     private var mqttFlushing = AtomicBoolean(false)
     private var mqttReconnectDelayMs = 1_000L
     private var selectedDeviceName: String? = null
+    /** Device the service has already shown the USB permission prompt for in this connection. */
+    private var permissionRequestedDeviceName: String? = null
     private var mqttUri = ""
     private var nodeId = ""
     private var mqttMaxQueueLength = DEFAULT_MQTT_MAX_QUEUE_LENGTH
@@ -148,14 +150,22 @@ class CitsBridgeService : Service() {
                         handleDiscoveredDevice(device)
                         selectedDeviceName = device.deviceName
                     }
+                    // A fresh connection has no stored grant or denial, so a new prompt is allowed.
+                    permissionRequestedDeviceName = null
                     if (connectionWanted && connectionMode == ConnectionMode.USB && serial == null) scheduleConnectionReconnect(0)
                 }
                 UsbManager.ACTION_USB_DEVICE_DETACHED -> {
                     val device = intent.parcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
                     if (device == null || device.deviceName == selectedDeviceName) {
+                        permissionRequestedDeviceName = null
                         closeSerial("USB device detached")
                         if (connectionWanted && connectionMode == ConnectionMode.USB) scheduleConnectionReconnect(2_000)
                     }
+                }
+                ACTION_USB_PERMISSION -> {
+                    // Either answer ends the wait: granted opens the port right away, denied falls
+                    // back to the slow reconnect poll without nagging the user with another prompt.
+                    if (connectionWanted && connectionMode == ConnectionMode.USB && serial == null) scheduleConnectionReconnect(0)
                 }
             }
         }
@@ -273,6 +283,7 @@ class CitsBridgeService : Service() {
         registerReceiverCompat(usbReceiver, IntentFilter().apply {
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+            addAction(ACTION_USB_PERMISSION)
         })
         startInForeground("Starting")
         scanKnownUsbDevices()
@@ -346,6 +357,7 @@ class CitsBridgeService : Service() {
         startElapsedMs = SystemClock.elapsedRealtime()
         connectionMode = requestedConnectionMode
         selectedDeviceName = deviceName?.takeIf { it.isNotBlank() } ?: selectedDeviceName
+        permissionRequestedDeviceName = null
         if (requestedNodeId.isNotBlank()) {
             nodeId = requestedNodeId.trim()
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString(PREF_NODE_ID, nodeId).apply()
@@ -430,6 +442,8 @@ class CitsBridgeService : Service() {
         if (!usbManager.hasPermission(device)) {
             status = status.copy(running = connectionWanted, usbState = "USB permission required")
             publishStatus("Grant USB permission in the app")
+            requestUsbPermission(device)
+            scheduleConnectionReconnect(2_000)
             return
         }
 
@@ -473,6 +487,24 @@ class CitsBridgeService : Service() {
             status = status.copy(running = connectionWanted, usbState = "USB error", lastError = "USB open failed: ${e.message}")
             publishStatus(status.lastError)
             scheduleConnectionReconnect(2_000)
+        }
+    }
+
+    /**
+     * Prompts for USB permission from the service so a capture that was started before the grant
+     * exists (for example right after plugging in, while the phone is still enumerating) recovers
+     * on its own once the user taps Allow. The prompt is shown once per device connection; after a
+     * denial the reconnect poll keeps waiting instead of nagging, and an explicit Start press or a
+     * fresh attach allows a new prompt again. The result arrives through [usbReceiver].
+     */
+    private fun requestUsbPermission(device: UsbDevice) {
+        if (permissionRequestedDeviceName == device.deviceName) return
+        permissionRequestedDeviceName = device.deviceName
+        val intent = Intent(ACTION_USB_PERMISSION).setPackage(packageName)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+        runCatching {
+            usbManager.requestPermission(device, PendingIntent.getBroadcast(this, USB_PERMISSION_REQUEST_CODE, intent, flags))
         }
     }
 
@@ -1813,6 +1845,8 @@ class CitsBridgeService : Service() {
         private const val USB_READ_TIMEOUT_MS = 5_000
         private const val BLE_WRITE_TIMEOUT_MS = 5_000
         private const val USB_WRITE_TIMEOUT_MS = 2_000
+        /** Distinct from the activity's permission prompt codes 20..22. */
+        private const val USB_PERMISSION_REQUEST_CODE = 23
         private const val MAX_TX_QUEUE = 64
         private const val MAX_LOCATION_AGE_MS = 5_000L
         private const val MAX_SREM_ETA_MS = 60_000L
