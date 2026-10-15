@@ -39,6 +39,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
@@ -101,8 +102,8 @@ fun FlashingPage(
         )
         FlashingDetail("Device", state.deviceName ?: "Waiting for ESP32-C5…")
         Text(
-            if (bridgeRunning && state.phase == FirmwareFlashingPhase.Ready) {
-                "Stop the receiver on the Home page before flashing."
+            if (bridgeRunning && !state.busy && state.phase != FirmwareFlashingPhase.Error && state.phase != FirmwareFlashingPhase.Complete) {
+                "The receiver is running. It will be stopped automatically before flashing starts."
             } else {
                 state.message
             },
@@ -163,8 +164,10 @@ fun FlashingPage(
                     onFlash()
                 }
             },
-            enabled = !bridgeRunning,
-            modifier = Modifier.fillMaxWidth(),
+            enabled = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("flash_receiver_slider"),
         )
     }
     FlashingLogCard(log)

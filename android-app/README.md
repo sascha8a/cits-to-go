@@ -17,10 +17,12 @@ The latest debug APK can be downloaded from the releases page:
 The app's **Flashing** navigation item looks up the Codeberg release whose tag
 matches the installed app version, verifies the merged ESP32-C5 firmware
 artifact against `SHA256sum.txt`, and flashes a connected XIAO ESP32-C5 over
-USB. Stop the receiver first, connect the board directly to the Android USB
+USB. A running receiver (USB or Bluetooth) is stopped automatically when you
+pull the flash slider; connect the board directly to the Android USB
 host, and put the ESP32-C5 into boot mode: hold **BOOT** while connecting or
 resetting the board, and keep it held until flashing starts. Then pull the
-confirmation slider fully to the right.
+confirmation slider fully to the right. After flashing, restart the receiver
+from the Home page.
 
 ---
 

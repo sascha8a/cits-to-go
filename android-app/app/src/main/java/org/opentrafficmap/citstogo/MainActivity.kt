@@ -22,6 +22,7 @@ import android.location.LocationManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.provider.OpenableColumns
@@ -118,6 +119,17 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     private var customFirmwareUri: Uri? = null
     private var releaseLookupRunning = false
     private var flashAfterPermission = false
+    private var flashAfterStop = false
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val flashStopTimeout = Runnable {
+        if (!flashAfterStop) return@Runnable
+        flashAfterStop = false
+        logFlash(ActivityLevel.ERROR, "Timed out waiting for the receiver to stop.")
+        flashingState = flashingState.copy(
+            phase = FirmwareFlashingPhase.Error,
+            message = "Could not stop the receiver. Stop it on the Home page and retry.",
+        )
+    }
     private var flashingState by mutableStateOf(FirmwareFlashingState.initial(BuildConfig.VERSION_NAME))
     private var flashingLog by mutableStateOf<List<FirmwareFlashLogEntry>>(emptyList())
 
@@ -186,8 +198,13 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             if (granted) {
                 selectedDeviceName = device?.deviceName ?: selectedDeviceName
                 if (flashAfterPermission && device != null) {
-                    logFlash(ActivityLevel.INFO, "USB permission granted. Continuing flash.")
-                    startFirmwareFlash(device)
+                    if (status.running || status.replaying) {
+                        logFlash(ActivityLevel.INFO, "Receiver became active. Stopping it before flashing…")
+                        beginStopForFlash()
+                    } else {
+                        logFlash(ActivityLevel.INFO, "USB permission granted. Continuing flash.")
+                        startFirmwareFlash(device)
+                    }
                 } else if (enrollmentAfterPermission) {
                     if (device != null) {
                         startBluetoothEnrollment(device)
@@ -280,6 +297,15 @@ class MainActivity : ComponentActivity(), SensorEventListener {
             intent.serializableExtra<IntersectionSnapshot>(CitsBridgeService.EXTRA_INTERSECTION_SNAPSHOT)?.let {
                 intersectionSnapshot = it
                 if (intersectionSnapshots.isEmpty()) intersectionSnapshots = listOf(it)
+            }
+            if (flashAfterStop && !status.running && !status.replaying) {
+                flashAfterStop = false
+                mainHandler.removeCallbacks(flashStopTimeout)
+                logFlash(ActivityLevel.INFO, "Receiver stopped. Continuing flash.")
+                connectedEspressifDevice()?.let(::ensureFlashUsbPermission) ?: run {
+                    logFlash(ActivityLevel.ERROR, "Cannot flash: no ESP32-C5 is connected.")
+                    updateFlashingDeviceState()
+                }
             }
         }
     }
@@ -507,6 +533,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     override fun onDestroy() {
         stopIntersectionLocationUpdates()
+        mainHandler.removeCallbacks(flashStopTimeout)
         runCatching { unregisterReceiver(usbPermissionReceiver) }
         runCatching { unregisterReceiver(statusReceiver) }
         runCatching { unregisterReceiver(usbDeviceReceiver) }
@@ -811,30 +838,44 @@ class MainActivity : ComponentActivity(), SensorEventListener {
 
     private fun requestFirmwareFlash() {
         logFlash(ActivityLevel.INFO, "Flash requested.")
+        if (flashAfterStop) return
         val device = connectedEspressifDevice() ?: run {
             logFlash(ActivityLevel.ERROR, "Cannot flash: no ESP32-C5 is connected.")
             updateFlashingDeviceState()
             return
         }
-        if (status.running) {
-            logFlash(ActivityLevel.ERROR, "Cannot flash: the receiver is running. Stop it on the Home page.")
-            flashingState = flashingState.copy(
-                phase = FirmwareFlashingPhase.Error,
-                message = "Stop the receiver on the Home page before flashing.",
-            )
+        if (status.running || status.replaying) {
+            logFlash(ActivityLevel.INFO, "Receiver is active. Stopping it automatically before flashing.")
+            beginStopForFlash()
             return
         }
-        if (!usbManager.hasPermission(device)) {
-            logFlash(ActivityLevel.INFO, "Requesting USB permission for the ESP32-C5…")
-            flashAfterPermission = true
-            val intent = Intent(CitsBridgeService.ACTION_USB_PERMISSION).setPackage(packageName)
-            val flags = PendingIntent.FLAG_UPDATE_CURRENT or
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
-            usbManager.requestPermission(device, PendingIntent.getBroadcast(this, 21, intent, flags))
-            flashingState = flashingState.copy(message = "Grant USB permission to continue flashing.")
+        ensureFlashUsbPermission(device)
+    }
+
+    /** Sends the stop command and defers the flash until the service reports running = false. */
+    private fun beginStopForFlash() {
+        flashingState = flashingState.copy(
+            phase = FirmwareFlashingPhase.Ready,
+            message = "Stopping the receiver…",
+            progress = 0f,
+        )
+        flashAfterStop = true
+        mainHandler.postDelayed(flashStopTimeout, FLASH_STOP_TIMEOUT_MS)
+        sendServiceIntent(CitsBridgeService.ACTION_STOP)
+    }
+
+    private fun ensureFlashUsbPermission(device: UsbDevice) {
+        if (usbManager.hasPermission(device)) {
+            startFirmwareFlash(device)
             return
         }
-        startFirmwareFlash(device)
+        logFlash(ActivityLevel.INFO, "Requesting USB permission for the ESP32-C5…")
+        flashAfterPermission = true
+        val intent = Intent(CitsBridgeService.ACTION_USB_PERMISSION).setPackage(packageName)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
+        usbManager.requestPermission(device, PendingIntent.getBroadcast(this, 21, intent, flags))
+        flashingState = flashingState.copy(message = "Grant USB permission to continue flashing.")
     }
 
     private fun startFirmwareFlash(device: UsbDevice) {
@@ -842,6 +883,8 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         val release = firmwareRelease
         if (customUri == null && release == null) return
         if (flashingState.busy) return
+        flashAfterStop = false
+        mainHandler.removeCallbacks(flashStopTimeout)
         flashingState = flashingState.copy(
             phase = FirmwareFlashingPhase.Downloading,
             message = if (customUri != null) {
@@ -921,7 +964,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                 runOnUiThread {
                     flashingState = flashingState.copy(
                         phase = FirmwareFlashingPhase.Complete,
-                        message = "Firmware flashed and verified successfully.",
+                        message = "Firmware flashed and verified successfully. Restart the receiver from the Home page.",
                         progress = 1f,
                     )
                     logFlash(ActivityLevel.INFO, "Firmware flashed and verified successfully.")
@@ -1418,6 +1461,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         private const val INTERSECTION_LOCATION_MIN_TIME_MS = 500L
         private const val TX_SHAKE_THRESHOLD_G = 2.7f
         private const val TX_SHAKE_COOLDOWN_MS = 1_200L
+        private const val FLASH_STOP_TIMEOUT_MS = 5_000L
         private const val ESPRESSIF_USB_VENDOR_ID = 0x303a
         private const val ESPRESSIF_USB_JTAG_SERIAL_PRODUCT_ID = 0x1001
         private const val PREF_LAST_NOTIFIED_UPDATE_TAG = "last_notified_app_update_tag"
