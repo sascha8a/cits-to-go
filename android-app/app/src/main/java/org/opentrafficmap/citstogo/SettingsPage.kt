@@ -30,6 +30,7 @@ import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.Storage
+import androidx.compose.material.icons.rounded.CellTower
 import androidx.compose.material.icons.automirrored.rounded.DirectionsWalk
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -126,6 +127,11 @@ fun SettingsPage(
             onEnrollBluetooth = onEnrollBluetooth,
         )
 
+        TxApprovalCard(
+            txApproved = txApproved,
+            onRevokeTxApproval = onRevokeTxApproval,
+        )
+
         NotificationsCard(
             stationDiscoveryNotificationEnabled = stationDiscoveryNotificationEnabled,
             onStationDiscoveryNotificationChange = onStationDiscoveryNotificationChange,
@@ -143,8 +149,6 @@ fun SettingsPage(
         DebugCard(
             debugMenuEnabled = debugMenuEnabled,
             onDebugMenuEnabledChange = onDebugMenuEnabledChange,
-            txApproved = txApproved,
-            onRevokeTxApproval = onRevokeTxApproval,
         )
 
         Button(
@@ -836,11 +840,119 @@ private fun SettingToggleRow(
 }
 
 @Composable
+private fun TxApprovalCard(
+    txApproved: Boolean,
+    onRevokeTxApproval: () -> Unit,
+) {
+    val context = LocalContext.current
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(ContextCompat.getColor(context, R.color.card)),
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(ContextCompat.getColor(context, R.color.secondary_container))),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.CellTower,
+                        contentDescription = null,
+                        tint = Color(ContextCompat.getColor(context, R.color.secondary)),
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 12.dp),
+                ) {
+                    Text(
+                        "TX Transmission",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(ContextCompat.getColor(context, R.color.on_surface)),
+                    )
+                    Text(
+                        "Regulated radio transmission in the 5.9 GHz ITS band",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
+                    )
+                }
+            }
+
+            HorizontalDivider(
+                color = Color(ContextCompat.getColor(context, R.color.divider)),
+                modifier = Modifier.padding(vertical = 4.dp),
+            )
+
+            StatusMessageRow(
+                message = if (txApproved) {
+                    "TX approval is active. The device may transmit around you."
+                } else {
+                    "TX approval is not active. Capture, PCAP, and MQTT keep working."
+                },
+                isError = false,
+                icon = Icons.Rounded.Info,
+            )
+
+            Text(
+                "To unlock TX: shake this phone firmly anywhere in the app. On the TX approval " +
+                    "screen, confirm the regulation notice and pull the red handle fully to the " +
+                    "right. TX stays approved until you revoke it here.",
+                style = MaterialTheme.typography.bodySmall,
+                color = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
+            )
+
+            Button(
+                onClick = onRevokeTxApproval,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(52.dp),
+                enabled = txApproved,
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (txApproved) {
+                        Color(ContextCompat.getColor(context, R.color.error_light))
+                    } else {
+                        Color(ContextCompat.getColor(context, R.color.divider))
+                    },
+                    contentColor = if (txApproved) {
+                        Color(ContextCompat.getColor(context, R.color.error))
+                    } else {
+                        Color(ContextCompat.getColor(context, R.color.disabled))
+                    },
+                ),
+            ) {
+                Text(
+                    if (txApproved) "Revoke TX Approval" else "TX Approval not active",
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun DebugCard(
     debugMenuEnabled: Boolean,
     onDebugMenuEnabledChange: (Boolean) -> Unit,
-    txApproved: Boolean,
-    onRevokeTxApproval: () -> Unit,
 ) {
     val context = LocalContext.current
 
@@ -895,38 +1007,6 @@ private fun DebugCard(
                 Switch(
                     checked = debugMenuEnabled,
                     onCheckedChange = onDebugMenuEnabledChange,
-                )
-            }
-
-            HorizontalDivider(
-                color = Color(ContextCompat.getColor(context, R.color.divider)),
-                modifier = Modifier.padding(vertical = 4.dp),
-            )
-
-            Button(
-                onClick = onRevokeTxApproval,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(52.dp),
-                enabled = txApproved,
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (txApproved) {
-                        Color(ContextCompat.getColor(context, R.color.error_light))
-                    } else {
-                        Color(ContextCompat.getColor(context, R.color.divider))
-                    },
-                    contentColor = if (txApproved) {
-                        Color(ContextCompat.getColor(context, R.color.error))
-                    } else {
-                        Color(ContextCompat.getColor(context, R.color.disabled))
-                    },
-                ),
-            ) {
-                Text(
-                    if (txApproved) "Revoke TX Approval" else "TX Approval not active",
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Medium,
                 )
             }
         }

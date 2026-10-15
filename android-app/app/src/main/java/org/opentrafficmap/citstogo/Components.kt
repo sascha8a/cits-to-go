@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.FormatListBulleted
@@ -29,8 +30,10 @@ import androidx.compose.material.icons.rounded.Bluetooth
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material.icons.rounded.PrivacyTip
 import androidx.compose.material.icons.rounded.RadioButtonChecked
 import androidx.compose.material.icons.rounded.Replay
+import androidx.compose.material.icons.rounded.Rule
 import androidx.compose.material.icons.rounded.Sensors
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material.icons.rounded.Usb
@@ -39,6 +42,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -56,14 +60,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.IntSize
@@ -623,16 +630,16 @@ fun TxApprovalSlider(
         onPositionChange = onPositionChange,
         enabled = enabled,
         direction = DragConfirmDirection.LeftToRight,
-        trackColor = if (enabled) Color(ContextCompat.getColor(context, R.color.error_container)) else Color(ContextCompat.getColor(context, R.color.error_container)),
-        fillColor = Color(ContextCompat.getColor(context, R.color.error)),
-        thumbRingColor = Color(ContextCompat.getColor(context, R.color.on_error)),
+        trackColor = if (enabled) Color(ContextCompat.getColor(context, R.color.error_container)) else Color(ContextCompat.getColor(context, R.color.divider)),
+        fillColor = if (enabled) Color(ContextCompat.getColor(context, R.color.error)) else Color(ContextCompat.getColor(context, R.color.disabled)),
+        thumbRingColor = if (enabled) Color(ContextCompat.getColor(context, R.color.on_error)) else Color(ContextCompat.getColor(context, R.color.border)),
         modifier = modifier.height(96.dp),
     ) { center, _ ->
         val arrowLength = 22.dp.toPx()
         val arrowHead = 8.dp.toPx()
         val arrowStart = Offset(center.x - arrowLength / 2f, center.y)
         val arrowEnd = Offset(center.x + arrowLength / 2f, center.y)
-        val ink = Color(ContextCompat.getColor(context, R.color.on_error))
+        val ink = if (enabled) Color(ContextCompat.getColor(context, R.color.on_error)) else Color(ContextCompat.getColor(context, R.color.on_surface_variant))
         drawLine(ink, arrowStart, arrowEnd, 4.dp.toPx(), StrokeCap.Round)
         drawLine(ink, arrowEnd, Offset(arrowEnd.x - arrowHead, arrowEnd.y - arrowHead), 4.dp.toPx(), StrokeCap.Round)
         drawLine(ink, arrowEnd, Offset(arrowEnd.x - arrowHead, arrowEnd.y + arrowHead), 4.dp.toPx(), StrokeCap.Round)
@@ -717,10 +724,11 @@ private fun deviceLabel(device: android.hardware.usb.UsbDevice): String {
 }
 
 @Composable
-fun TxApprovalOverlay(
+fun TxApprovalScreen(
     state: TxApprovalPromptState,
     onGrantApproval: () -> Unit,
     onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     if (state == TxApprovalPromptState.Hidden) return
     val context = LocalContext.current
@@ -728,71 +736,194 @@ fun TxApprovalOverlay(
         mutableStateOf(if (state == TxApprovalPromptState.Granting) 1f else 0f)
     }
     var submitted by rememberSaveable(state) { mutableStateOf(state == TxApprovalPromptState.Granting) }
+    var confirmed by rememberSaveable(state) { mutableStateOf(state == TxApprovalPromptState.Granting) }
     val granting = state == TxApprovalPromptState.Granting
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(Color(ContextCompat.getColor(context, R.color.background)))
-            .windowInsetsPadding(WindowInsets.safeDrawing)
-            .pointerInput(state) {
-                awaitEachGesture {
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        event.changes.forEach { it.consume() }
-                        if (event.changes.none { it.pressed }) break
-                    }
-                }
-            },
+    Column(
+        modifier.fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Column(
             Modifier
-                .fillMaxSize()
-                .padding(20.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
+                .fillMaxWidth()
+                .weight(1f)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .background(Color(ContextCompat.getColor(context, R.color.card)), RoundedCornerShape(8.dp))
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+            TxApprovalSectionCard(
+                icon = Icons.Rounded.PrivacyTip,
+                containerColorRes = R.color.error_light,
+                iconTintRes = R.color.error,
+                title = "Regulation",
+                subtitle = "The 5.9 GHz ITS band is protected spectrum",
             ) {
-                Text("TX approval", style = MaterialTheme.typography.titleMedium)
+                TxApprovalBullet("Reserved for road-safety communications and regulated in most countries.")
+                TxApprovalBullet("In the EU, use follows Commission Decision 2009/449/EC and the ETSI EN 302 663 / EN 302 636 standards.")
+                TxApprovalBullet("Elsewhere, national spectrum authorities set the rules, and a licence may be required.")
+                TxApprovalBullet("This app grants no rights and cannot verify your authorisation.")
+            }
+            TxApprovalSectionCard(
+                icon = Icons.Rounded.Rule,
+                containerColorRes = R.color.tertiary_container,
+                iconTintRes = R.color.tertiary,
+                title = "Implications",
+                subtitle = "What approving commits you to",
+            ) {
+                TxApprovalBullet("You act as the radio operator and are responsible for everything this device transmits.")
+                TxApprovalBullet("Transmit only where you are authorised, or inside a shielded test setup.")
+                TxApprovalBullet("Never inject deceptive or spoofed traffic into a live road environment.")
+                TxApprovalBullet("Approval covers CAM broadcast and SREM requests until you revoke it in Settings.")
+            }
+            if (granting) {
                 Text(
-                    "You are responsible for any regulatory matters when transmitting data. Consult local legislation before transmitting.",
+                    "TX approval granted. Returning home...",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = Color(ContextCompat.getColor(context, R.color.tertiary)),
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    if (granting) {
-                        "TX approval granted. Returning home..."
-                    } else {
-                        "Pull the red handle fully from left to right to approve TX."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.secondary,
                 )
-                TextButton(
-                    onClick = onDismiss,
-                    enabled = !granting,
+            } else {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(ContextCompat.getColor(context, R.color.card)),
+                    ),
                 ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(
+                            checked = confirmed,
+                            onCheckedChange = { confirmed = it },
+                            modifier = Modifier.testTag("tx_approval_confirm"),
+                        )
+                        Text(
+                            "I confirm that I am authorised to transmit in this environment.",
+                            modifier = Modifier.padding(start = 4.dp, end = 8.dp),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(ContextCompat.getColor(context, R.color.on_surface)),
+                        )
+                    }
+                }
+                TextButton(onClick = onDismiss) {
                     Text("Cancel")
                 }
             }
-            TxApprovalSlider(
-                position = sliderPosition,
-                onPositionChange = {
-                    sliderPosition = it
-                    if (!submitted && it >= 0.995f) {
-                        submitted = true
-                        sliderPosition = 1f
-                        onGrantApproval()
-                    }
-                },
-                enabled = !granting,
-                modifier = Modifier.fillMaxWidth(),
-            )
         }
+        Text(
+            when {
+                granting -> "TX approval granted."
+                confirmed -> "Pull the red handle fully from left to right to approve TX."
+                else -> "Tick the confirmation above to unlock the red handle."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.secondary,
+        )
+        TxApprovalSlider(
+            position = sliderPosition,
+            onPositionChange = {
+                sliderPosition = it
+                if (!submitted && it >= 0.995f) {
+                    submitted = true
+                    sliderPosition = 1f
+                    onGrantApproval()
+                }
+            },
+            enabled = confirmed && !granting,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = 4.dp)
+                .testTag("tx_approval_slider"),
+        )
+    }
+}
+
+@Composable
+private fun TxApprovalSectionCard(
+    icon: ImageVector,
+    containerColorRes: Int,
+    iconTintRes: Int,
+    title: String,
+    subtitle: String,
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    val context = LocalContext.current
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = Color(ContextCompat.getColor(context, R.color.card)),
+        ),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(ContextCompat.getColor(context, containerColorRes))),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = Color(ContextCompat.getColor(context, iconTintRes)),
+                        modifier = Modifier.size(22.dp),
+                    )
+                }
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 12.dp),
+                ) {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(ContextCompat.getColor(context, R.color.on_surface)),
+                    )
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
+                    )
+                }
+            }
+            HorizontalDivider(
+                color = Color(ContextCompat.getColor(context, R.color.divider)),
+                modifier = Modifier.padding(vertical = 4.dp),
+            )
+            content()
+        }
+    }
+}
+
+@Composable
+private fun TxApprovalBullet(text: String) {
+    val context = LocalContext.current
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            "•",
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
+        )
+        Text(
+            text,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyMedium,
+            color = Color(ContextCompat.getColor(context, R.color.on_surface_variant)),
+        )
     }
 }

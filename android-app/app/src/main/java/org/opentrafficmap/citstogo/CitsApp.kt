@@ -316,9 +316,6 @@ fun CitsApp(
     }
     
     LaunchedEffect(txApprovalPromptState) {
-        if (txApprovalPromptState != TxApprovalPromptState.Hidden) {
-            drawerState.close()
-        }
         if (txApprovalPromptState == TxApprovalPromptState.Granting) {
             delay(500L)
             selectedPage = AppPage.Home
@@ -333,7 +330,6 @@ fun CitsApp(
                 drawerState = drawerState,
                 // Child controls reserve their gestures by consuming pointer changes. Do not
                 // reconfigure the drawer's drag detector in the middle of a slider gesture.
-                gesturesEnabled = txApprovalPromptState == TxApprovalPromptState.Hidden,
                 drawerContent = {
                     ModalDrawerSheet(
                         drawerContainerColor = MaterialTheme.colorScheme.surface,
@@ -351,6 +347,9 @@ fun CitsApp(
                                 label = { Text(page.title) },
                                 selected = page == selectedPage,
                                 onClick = {
+                                    if (txApprovalPromptState == TxApprovalPromptState.Ready) {
+                                        onDismissTxApproval()
+                                    }
                                     selectedPage = page
                                     scope.launch { drawerState.close() }
                                 },
@@ -367,12 +366,13 @@ fun CitsApp(
                 },
             ) {
                 val mainScrollState = rememberScrollState()
+                val txPromptActive = txApprovalPromptState != TxApprovalPromptState.Hidden
                 val contentModifier = Modifier
                     .fillMaxSize()
                     .windowInsetsPadding(WindowInsets.safeDrawing)
-                    .padding(if (selectedPage == AppPage.Home) 16.dp else 20.dp)
+                    .padding(if (selectedPage == AppPage.Home && !txPromptActive) 16.dp else 20.dp)
                     .then(
-                        if (selectedPage == AppPage.IntersectionView || selectedPage == AppPage.DiscoveredStations) {
+                        if (txPromptActive || selectedPage == AppPage.IntersectionView || selectedPage == AppPage.DiscoveredStations) {
                             Modifier
                         } else {
                             Modifier.verticalScroll(mainScrollState)
@@ -382,16 +382,24 @@ fun CitsApp(
                     modifier = contentModifier,
                     verticalArrangement = Arrangement.spacedBy(if (selectedPage == AppPage.Home) 10.dp else 14.dp),
                 ) {
-                    val headerSubtitle = when (selectedPage) {
-                        AppPage.About -> "Version ${BuildConfig.VERSION_NAME}"
+                    val headerSubtitle = when {
+                        txPromptActive -> "Regulated 5.9 GHz ITS transmission"
+                        selectedPage == AppPage.About -> "Version ${BuildConfig.VERSION_NAME}"
                         else -> null
                     }
                     AppHeader(
-                        title = selectedPage.title,
+                        title = if (txPromptActive) "TX Approval" else selectedPage.title,
                         onOpenMenu = { scope.launch { drawerState.open() } },
                         subtitle = headerSubtitle,
                     )
-                    when (selectedPage) {
+                    if (txPromptActive) {
+                        TxApprovalScreen(
+                            state = txApprovalPromptState,
+                            onGrantApproval = onGrantTxApproval,
+                            onDismiss = onDismissTxApproval,
+                            modifier = Modifier.weight(1f),
+                        )
+                    } else when (selectedPage) {
                         AppPage.Home -> HomePage(
                             devices = devices,
                             selectedDeviceName = selectedDeviceName,
@@ -497,11 +505,6 @@ fun CitsApp(
                     }
                 }
             }
-            TxApprovalOverlay(
-                state = txApprovalPromptState,
-                onGrantApproval = onGrantTxApproval,
-                onDismiss = onDismissTxApproval,
-            )
             ConfettiOverlay(run = confettiRun)
         }
     }
