@@ -104,6 +104,9 @@ DENM events have no timeout of their own: they show until they expire or are ter
   disappears. Tapping the map elsewhere closes it. For DENMs of infrastructure senders (station types 9, 10 and 15)
   the card reads "Updated n s ago" instead of "Detected n s ago", because they set a new detection time with every
   update.
+- While CAMs are broadcast, the **own position** shows the icon of the vehicle profile instead of the blue dot, at
+  about the size of a station marker. Like the station icons it stays upright, so it has no heading arrow; a
+  position that has gone stale still shows as the grey dot.
 - **Follow** (on by default) keeps the own position in the centre. Moving the map turns it off, also before the
   first position fix. The button appears with the own position, turns follow on again and zooms in from an overview.
   Before the first position fix the map shows Austria.

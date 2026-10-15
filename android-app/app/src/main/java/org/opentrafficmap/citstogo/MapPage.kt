@@ -67,6 +67,7 @@ import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.gestures.MoveGestureDetector
 import org.maplibre.android.location.LocationComponent
 import org.maplibre.android.location.LocationComponentActivationOptions
+import org.maplibre.android.location.LocationComponentOptions
 import org.maplibre.android.location.OnCameraTrackingChangedListener
 import org.maplibre.android.location.modes.CameraMode
 import org.maplibre.android.location.modes.RenderMode
@@ -87,6 +88,7 @@ import org.opentrafficmap.citstogo.livemap.MarkerRef
 import org.opentrafficmap.citstogo.livemap.RoadSideUnitHistory
 import org.opentrafficmap.citstogo.livemap.RoadSideUnitMarker
 import org.opentrafficmap.citstogo.station.DiscoveredStation
+import org.opentrafficmap.citstogo.srem.SremProfile
 
 private const val LIGHT_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty"
 private const val DARK_STYLE_URL = "https://tiles.openfreemap.org/styles/dark"
@@ -95,6 +97,9 @@ private const val FOLLOW_ZOOM = 16.0
 private const val FOLLOW_MIN_ZOOM = 12.0
 private const val FOLLOW_TRANSITION_MS = 750L
 private const val FOCUS_ZOOM = 17.0
+// The 48 dp profile icon shrinks to about a 29 dp station marker, and further when zoomed out.
+private const val OWN_VEHICLE_MAX_SCALE = 0.6f
+private const val OWN_VEHICLE_MIN_SCALE = 0.4f
 
 private data class SavedCamera(
     val latitude: Double,
@@ -116,6 +121,7 @@ private data class MapFrame(val liveMap: LiveMap, val roadSideUnits: List<RoadSi
  * [historyShown], the map also shows the [roadSideUnits] of the discovery table heard within [historyDays], all of
  * them for 0 days. A [focusStation] of the discovery table gets a pin and its detail card, until the card is closed,
  * another marker is tapped or [onFocusStationCleared] is called; a road side unit the history shows needs no pin.
+ * While CAMs go out with [ownVehicleProfile], the own position shows its icon instead of the dot.
  */
 @Composable
 fun MapPage(
@@ -127,6 +133,7 @@ fun MapPage(
     historyDays: Int,
     focusStation: DiscoveredStation?,
     onFocusStationCleared: () -> Unit,
+    ownVehicleProfile: SremProfile?,
     currentPosition: DevicePosition?,
     darkTheme: Boolean,
     receiving: Boolean,
@@ -245,11 +252,12 @@ fun MapPage(
         style?.let { LiveMapLayers.update(it, frame.liveMap, frame.roadSideUnits, focusMarker) }
     }
 
-    LaunchedEffect(style, currentPosition) {
+    LaunchedEffect(style, currentPosition, ownVehicleProfile) {
         val loadedMap = map ?: return@LaunchedEffect
         val loadedStyle = style ?: return@LaunchedEffect
         val position = currentPosition ?: return@LaunchedEffect
-        if (loadedMap.locationComponent.showPosition(context, loadedStyle, position, trackingListener)) {
+        val component = loadedMap.locationComponent
+        if (component.showPosition(context, loadedStyle, position, trackingListener, ownVehicleProfile)) {
             locationShown = true
         }
     }
@@ -399,7 +407,8 @@ private fun MapViewLifecycle(mapView: MapView) {
 }
 
 /**
- * Shows [position] as the own location, with an arrow while moving. MapLibre's own location engine stays off.
+ * Shows [position] as the own location, with an arrow while moving, or with the upright icon of [vehicleProfile]
+ * while CAMs go out with it. MapLibre's own location engine stays off.
  * Returns false without location permission; the activity asks for it when the page opens.
  */
 private fun LocationComponent.showPosition(
@@ -407,6 +416,7 @@ private fun LocationComponent.showPosition(
     style: Style,
     position: DevicePosition,
     trackingListener: OnCameraTrackingChangedListener,
+    vehicleProfile: SremProfile?,
 ): Boolean {
     val permitted = listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
         .any { ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED }
@@ -416,15 +426,36 @@ private fun LocationComponent.showPosition(
         activateLocationComponent(
             LocationComponentActivationOptions.builder(context, style)
                 .useDefaultLocationEngine(false)
+                .locationComponentOptions(ownPositionOptions(context, vehicleProfile))
                 .build(),
         )
         addOnCameraTrackingChangedListener(trackingListener)
     }
     if (!isLocationComponentEnabled) isLocationComponentEnabled = true
-    val mode = if (position.movingHeadingDeg != null) RenderMode.GPS else RenderMode.NORMAL
+    val options = ownPositionOptions(context, vehicleProfile)
+    if (locationComponentOptions.foregroundDrawable() != options.foregroundDrawable()) applyStyle(options)
+    // The vehicle icon stays upright like the station icons; the moving arrow is for the plain dot only.
+    val mode = if (vehicleProfile == null && position.movingHeadingDeg != null) RenderMode.GPS else RenderMode.NORMAL
     if (renderMode != mode) renderMode = mode
     forceLocationUpdate(position.toLocation())
     return true
+}
+
+/**
+ * MapLibre's blue dot, or the icon of [vehicleProfile] at about the size of a station marker. A position that has
+ * gone stale keeps MapLibre's grey dot, so that a lost fix still shows.
+ */
+private fun ownPositionOptions(context: Context, vehicleProfile: SremProfile?): LocationComponentOptions {
+    val builder = LocationComponentOptions.builder(context)
+    vehicleProfile?.iconRes()?.let { icon ->
+        builder
+            .foregroundDrawable(icon)
+            .backgroundDrawable(icon)
+            .gpsDrawable(icon)
+            .maxZoomIconScale(OWN_VEHICLE_MAX_SCALE)
+            .minZoomIconScale(OWN_VEHICLE_MIN_SCALE)
+    }
+    return builder.build()
 }
 
 /** Tracks the own position, zooming in from an overview; a pan on the map ends the tracking. */

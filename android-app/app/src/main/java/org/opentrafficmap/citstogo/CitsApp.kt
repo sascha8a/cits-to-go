@@ -515,6 +515,7 @@ fun CitsApp(
                                             ?: focus
                                     },
                                     onFocusStationCleared = { mapFocusStation = null },
+                                    ownVehicleProfile = sremProfile.takeIf { status.camEnabled },
                                     currentPosition = currentPosition,
                                     darkTheme = resolveDarkTheme(themeMode, isSystemInDarkTheme()),
                                     receiving = status.running,
